@@ -19,20 +19,27 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     const loadSession = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const session = sessionData?.session;
+      try {
+        const { data: sessionData, error } = await supabase.auth.getSession();
+        if (error) {
+          console.warn("Error obteniendo sesión:", error.message);
+          return;
+        }
 
-      if (session?.user) {
+        const session = sessionData?.session;
+        if (!session?.user) {
+          console.log("No hay sesión activa.");
+          return;
+        }
+
         const userId = session.user.id;
 
-        // Cargar perfil
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', userId)
           .single();
 
-        // Cargar saldos
         const { data: balanceData, error: balanceError } = await supabase
           .from('balances')
           .select('*')
@@ -47,9 +54,11 @@ export function AuthProvider({ children }) {
         });
 
         setIsAuthenticated(true);
+      } catch (err) {
+        console.error("Error al cargar sesión:", err.message);
+      } finally {
+        setLoading(false);
       }
-
-      setLoading(false);
     };
 
     loadSession();
@@ -71,7 +80,7 @@ export function AuthProvider({ children }) {
       const { error, data } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
-      await loadUserSession(data.user.id); // Cargar datos extendidos
+      await loadUserSession(data.user.id);
 
       toast({
         title: "¡Bienvenido!",
@@ -111,8 +120,7 @@ export function AuthProvider({ children }) {
         description: "Tu cuenta ha sido creada correctamente",
       });
 
-      await loadUserSession(userId); // Cargar datos extendidos tras registro
-
+      await loadUserSession(userId);
       return data.user;
     } catch (error) {
       toast({
@@ -125,17 +133,30 @@ export function AuthProvider({ children }) {
   };
 
   const loadUserSession = async (userId) => {
-    const { data: profile } = await supabase.from('profiles').select('*').eq('id', userId).single();
-    const { data: balance } = await supabase.from('balances').select('*').eq('user_id', userId).single();
+    try {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
 
-    setUser(prev => ({
-      ...prev,
-      ...profile,
-      balance: balance?.amount ?? 0,
-      demo_balance: balance?.demo_amount ?? 0
-    }));
+      const { data: balance } = await supabase
+        .from('balances')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
 
-    setIsAuthenticated(true);
+      setUser((prev) => ({
+        ...prev,
+        ...profile,
+        balance: balance?.amount ?? 0,
+        demo_balance: balance?.demo_amount ?? 0
+      }));
+
+      setIsAuthenticated(true);
+    } catch (error) {
+      console.error("Error al cargar datos del usuario:", error.message);
+    }
   };
 
   const logout = async () => {
