@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  TrendingUp, 
-  TrendingDown, 
-  Wallet, 
-  Users, 
+import {
+  TrendingUp,
+  TrendingDown,
+  Wallet,
+  Users,
   DollarSign,
   BarChart3,
   PieChart,
@@ -22,16 +22,27 @@ const Dashboard = () => {
   const [referrals, setReferrals] = useState([]);
 
   useEffect(() => {
-    if (user) {
-      setInvestments(getInvestments().filter(inv => inv.userId === user.id));
-      setReferrals(getReferrals(user.id));
-    }
+    const fetchData = async () => {
+      if (!user) return;
+
+      try {
+        const invs = await getInvestments();
+        const refs = await getReferrals(user.id);
+
+        setInvestments(invs?.filter(inv => inv.userId === user.id) || []);
+        setReferrals(refs || []);
+      } catch (error) {
+        console.error("Error cargando datos del dashboard:", error);
+      }
+    };
+
+    fetchData();
   }, [user, getInvestments, getReferrals]);
 
-  const totalInvested = investments.reduce((sum, inv) => sum + inv.amount, 0);
-  const totalEarnings = investments.reduce((sum, inv) => {
+  const totalInvested = investments?.reduce?.((sum, inv) => sum + (inv?.amount || 0), 0);
+  const totalEarnings = investments?.reduce?.((sum, inv) => {
     const daysPassed = Math.floor((Date.now() - new Date(inv.createdAt).getTime()) / (1000 * 60 * 60 * 24));
-    return sum + (inv.amount * (inv.dailyReturn / 100) * Math.min(daysPassed, inv.duration));
+    return sum + ((inv?.amount || 0) * (inv?.dailyReturn || 0) / 100) * Math.min(daysPassed, inv?.duration || 0);
   }, 0);
 
   const stats = [
@@ -68,21 +79,16 @@ const Dashboard = () => {
   return (
     <Layout>
       <div className="space-y-8">
-        {/* Welcome Section */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8 }}>
           <h1 className="text-3xl font-bold text-white mb-2">
-            ¡Bienvenido de vuelta, {user?.name}!
+            ¡Bienvenido de vuelta, {user?.name || 'Usuario'}!
           </h1>
           <p className="text-slate-300">
             Aquí tienes un resumen de tu actividad de inversión
           </p>
         </motion.div>
 
-        {/* Stats Grid */}
+        {/* Stats */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {stats.map((stat, index) => {
             const Icon = stat.icon;
@@ -111,9 +117,9 @@ const Dashboard = () => {
           })}
         </div>
 
-        {/* Charts Section */}
+        {/* Crypto Prices and Inversiones Activas */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Crypto Prices */}
+          {/* Precios */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
@@ -143,14 +149,8 @@ const Dashboard = () => {
                         <div className="text-white font-semibold">
                           ${data.price.toFixed(crypto === 'USDT' ? 4 : 2)}
                         </div>
-                        <div className={`text-sm flex items-center ${
-                          data.change >= 0 ? 'text-green-400' : 'text-red-400'
-                        }`}>
-                          {data.change >= 0 ? (
-                            <TrendingUp className="h-3 w-3 mr-1" />
-                          ) : (
-                            <TrendingDown className="h-3 w-3 mr-1" />
-                          )}
+                        <div className={`text-sm flex items-center ${data.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {data.change >= 0 ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
                           {Math.abs(data.change).toFixed(2)}%
                         </div>
                       </div>
@@ -161,7 +161,7 @@ const Dashboard = () => {
             </Card>
           </motion.div>
 
-          {/* Recent Investments */}
+          {/* Inversiones */}
           <motion.div
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
@@ -211,7 +211,7 @@ const Dashboard = () => {
           </motion.div>
         </div>
 
-        {/* Quick Actions */}
+        {/* Acciones Rápidas */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -226,31 +226,19 @@ const Dashboard = () => {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <a
-                  href="/plans"
-                  className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors"
-                >
+                <a href="/plans" className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors">
                   <Wallet className="h-8 w-8 text-green-400 mb-2" />
                   <span className="text-white text-sm font-medium">Invertir</span>
                 </a>
-                <a
-                  href="/trading"
-                  className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors"
-                >
+                <a href="/trading" className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors">
                   <TrendingUp className="h-8 w-8 text-blue-400 mb-2" />
                   <span className="text-white text-sm font-medium">Trading</span>
                 </a>
-                <a
-                  href="/referrals"
-                  className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors"
-                >
+                <a href="/referrals" className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors">
                   <Users className="h-8 w-8 text-purple-400 mb-2" />
                   <span className="text-white text-sm font-medium">Referidos</span>
                 </a>
-                <a
-                  href="/history"
-                  className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors"
-                >
+                <a href="/history" className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors">
                   <BarChart3 className="h-8 w-8 text-orange-400 mb-2" />
                   <span className="text-white text-sm font-medium">Historial</span>
                 </a>
