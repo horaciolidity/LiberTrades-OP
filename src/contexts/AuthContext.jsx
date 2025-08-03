@@ -18,62 +18,43 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const loadSession = async () => {
-      try {
-        const { data: sessionData, error } = await supabase.auth.getSession();
-        if (error) {
-          console.warn("Error obteniendo sesión:", error.message);
-          return;
-        }
-
-        const session = sessionData?.session;
-        if (!session?.user) {
-          console.log("No hay sesión activa.");
-          return;
-        }
-
-        const userId = session.user.id;
-
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', userId)
-          .single();
-
-        const { data: balanceData, error: balanceError } = await supabase
-          .from('balances')
-          .select('*')
-          .eq('user_id', userId)
-          .single();
-
-        setUser({
-          ...session.user,
-          ...profile,
-          balance: balanceData?.amount ?? 0,
-          demo_balance: balanceData?.demo_amount ?? 0
-        });
-
-        setIsAuthenticated(true);
-      } catch (err) {
-        console.error("Error al cargar sesión:", err.message);
-      } finally {
-        setLoading(false);
+  const loadSession = async () => {
+    try {
+      const { data: sessionData, error } = await supabase.auth.getSession();
+      if (error) {
+        console.warn("Error al obtener sesión:", error.message);
+        return;
       }
-    };
 
-    loadSession();
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        loadSession();
-      } else {
-        setUser(null);
+      const session = sessionData?.session;
+      if (!session?.user) {
+        console.log("No hay sesión activa.");
         setIsAuthenticated(false);
+        setUser(null);
+      } else {
+        setUser(session.user);
+        setIsAuthenticated(true);
+        console.log("Sesión activa:", session.user.email);
       }
-    });
+    } catch (err) {
+      console.error("Error inesperado al cargar la sesión:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    return () => listener?.subscription?.unsubscribe();
-  }, []);
+  loadSession();
+
+  const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    setUser(session?.user ?? null);
+    setIsAuthenticated(!!session?.user);
+  });
+
+  return () => {
+    listener?.subscription?.unsubscribe?.();
+  };
+}, []);
+
 
   const login = async (email, password) => {
     try {

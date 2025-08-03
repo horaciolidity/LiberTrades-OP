@@ -41,127 +41,39 @@ function ProtectedRoute({ children, adminOnly = false }) {
 }
 
 function App() {
-  return (
-    <DataProvider>
-      <SoundProvider>
-        <Router>
-          <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+ return (
+  <DataProvider>
+    <SoundProvider>
+      <Toaster />
+      {(() => {
+        try {
+          return (
             <Routes>
               <Route path="/" element={<LandingPage />} />
               <Route path="/login" element={<LoginPage />} />
               <Route path="/register" element={<RegisterPage />} />
-              <Route
-                path="/dashboard"
-                element={
-                  <ProtectedRoute>
-                    <Dashboard />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/wallet"
-                element={
-                  <ProtectedRoute>
-                    <WalletPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/admin"
-                element={
-                  <ProtectedRoute adminOnly>
-                    <AdminDashboard />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/trading"
-                element={
-                  <ProtectedRoute>
-                    <TradingSimulator />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/plans"
-                element={
-                  <ProtectedRoute>
-                    <InvestmentPlans />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/referrals"
-                element={
-                  <ProtectedRoute>
-                    <ReferralSystem />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/history"
-                element={
-                  <ProtectedRoute>
-                    <TransactionHistory />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/profile"
-                element={
-                  <ProtectedRoute>
-                    <Profile />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/deposit"
-                element={
-                  <ProtectedRoute>
-                    <DepositPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/tokenized-projects"
-                element={
-                  <ProtectedRoute>
-                    <TokenizedProjectsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/trading-bots"
-                element={
-                  <ProtectedRoute>
-                    <TradingBotsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/stats"
-                element={
-                  <ProtectedRoute>
-                    <UserStatsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/rewards"
-                element={
-                  <ProtectedRoute>
-                    <RewardsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route path="*" element={<Navigate to="/" />} />
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/admin" element={<AdminDashboard />} />
+              <Route path="/simulator" element={<TradingSimulator />} />
+              <Route path="/plans" element={<InvestmentPlans />} />
+              <Route path="/referrals" element={<ReferralSystem />} />
+              <Route path="/history" element={<TransactionHistory />} />
+              <Route path="/profile" element={<Profile />} />
+              <Route path="/deposit" element={<DepositPage />} />
+              <Route path="/tokens" element={<TokenizedProjectsPage />} />
+              <Route path="/bots" element={<TradingBotsPage />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
-            <Toaster />
-          </div>
-        </Router>
-      </SoundProvider>
-    </DataProvider>
-  );
+          );
+        } catch (err) {
+          console.error("Error renderizando rutas:", err);
+          return <div style={{ color: "red", padding: 20 }}>⚠️ Ocurrió un error cargando la app</div>;
+        }
+      })()}
+    </SoundProvider>
+  </DataProvider>
+);
+
 }
 
 export default App;

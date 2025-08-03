@@ -104,14 +104,20 @@ const Layout = ({ children }) => {
   };
 
   useEffect(() => {
-    if(user?.web3Wallet) {
-      setWeb3Account(user.web3Wallet);
-      if (typeof window.ethereum !== 'undefined') {
-        const provider = new ethers.BrowserProvider(window.ethereum);
-        fetchBalances(provider, user.web3Wallet);
-      }
+  const fetchData = async () => {
+    try {
+      // tus llamadas await aquí
+      console.log("Cargando datos para layout...");
+      // Ejemplo:
+      // const { data, error } = await supabase.from("profiles").select("*");
+    } catch (error) {
+      console.error("Error al cargar Layout:", error);
     }
-  }, [user]);
+  };
+
+  fetchData();
+}, []);
+
 
 
   return (
