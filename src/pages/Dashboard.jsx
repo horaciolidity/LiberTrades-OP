@@ -16,28 +16,33 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
 
 const Dashboard = () => {
-  const { user } = useAuth();
-  const { cryptoPrices, getInvestments, getReferrals } = useData();
+  const { user, loading } = useAuth();
+  const { cryptoPrices = {}, getInvestments, getReferrals } = useData();
   const [investments, setInvestments] = useState([]);
   const [referrals, setReferrals] = useState([]);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     const fetchData = async () => {
       if (!user) return;
 
       try {
-        const invs = await getInvestments();
-        const refs = await getReferrals(user.id);
-
+        const invs = await getInvestments?.();
+        const refs = await getReferrals?.(user.id);
         setInvestments(invs?.filter(inv => inv.userId === user.id) || []);
         setReferrals(refs || []);
       } catch (error) {
         console.error("Error cargando datos del dashboard:", error);
+        setError("No se pudieron cargar los datos.");
       }
     };
 
     fetchData();
   }, [user, getInvestments, getReferrals]);
+
+  if (loading) return <Layout><div className="p-8 text-white">Cargando...</div></Layout>;
+  if (error) return <Layout><div className="p-8 text-red-500">{error}</div></Layout>;
+  if (!user) return <Layout><div className="p-8 text-white">Iniciá sesión para ver el dashboard.</div></Layout>;
 
   const totalInvested = investments?.reduce?.((sum, inv) => sum + (inv?.amount || 0), 0);
   const totalEarnings = investments?.reduce?.((sum, inv) => {

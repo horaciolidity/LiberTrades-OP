@@ -94,9 +94,15 @@ export function DataProvider({ children }) {
     return () => clearInterval(interval);
   }, []);
 
-  const getInvestments = () => {
-    return JSON.parse(localStorage.getItem('cryptoinvest_investments') || '[]');
-  };
+ const getInvestments = () => {
+  try {
+    const data = localStorage.getItem('cryptoinvest_investments');
+    return JSON.parse(data || '[]');
+  } catch (err) {
+    console.error("Error en getInvestments:", err);
+    return [];
+  }
+};
 
   const addInvestment = (investment) => {
     const investments = getInvestments();
@@ -128,22 +134,27 @@ export function DataProvider({ children }) {
   };
 
   const getReferrals = (userId) => {
+  try {
     const users = JSON.parse(localStorage.getItem('cryptoinvest_users') || '[]');
     const user = users.find(u => u.id === userId);
-    if (!user) return [];
-    
+    if (!user || !user.referralCode) return [];
     return users.filter(u => u.referredBy === user.referralCode);
-  };
+  } catch (err) {
+    console.error("Error en getReferrals:", err);
+    return [];
+  }
+};
 
-  const value = {
-    cryptoPrices,
-    investmentPlans,
-    getInvestments,
-    addInvestment,
-    getTransactions,
-    addTransaction,
-    getReferrals
-  };
+ const value = {
+  cryptoPrices,
+  investmentPlans,
+  getInvestments,
+  addInvestment,
+  getTransactions,
+  addTransaction,
+  getReferrals
+};
+
 
   return (
     <DataContext.Provider value={value}>
