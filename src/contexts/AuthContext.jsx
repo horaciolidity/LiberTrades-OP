@@ -19,22 +19,51 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     const loadSession = async () => {
-      const { data, error } = await supabase.auth.getSession();
-      if (data?.session) {
-        setUser(data.session.user);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const session = sessionData?.session;
+
+      if (session?.user) {
+        const userId = session.user.id;
+
+        // Cargar perfil
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', userId)
+          .single();
+
+        // Cargar saldos
+        const { data: balanceData, error: balanceError } = await supabase
+          .from('balances')
+          .select('*')
+          .eq('user_id', userId)
+          .single();
+
+        setUser({
+          ...session.user,
+          ...profile,
+          balance: balanceData?.amount ?? 0,
+          demo_balance: balanceData?.demo_amount ?? 0
+        });
+
         setIsAuthenticated(true);
       }
+
       setLoading(false);
     };
 
     loadSession();
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      setIsAuthenticated(!!session?.user);
+      if (session?.user) {
+        loadSession();
+      } else {
+        setUser(null);
+        setIsAuthenticated(false);
+      }
     });
 
-    return () => listener.subscription.unsubscribe();
+    return () => listener?.subscription?.unsubscribe();
   }, []);
 
   const login = async (email, password) => {
@@ -42,8 +71,7 @@ export function AuthProvider({ children }) {
       const { error, data } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
-      setUser(data.user);
-      setIsAuthenticated(true);
+      await loadUserSession(data.user.id); // Cargar datos extendidos
 
       toast({
         title: "¡Bienvenido!",
@@ -67,8 +95,6 @@ export function AuthProvider({ children }) {
       if (error) throw error;
 
       const userId = data.user.id;
-
-      // Crear perfil adicional en tabla `profiles`
       const referralCode = generateReferralCode();
 
       const { error: profileError } = await supabase.from('profiles').insert({
@@ -85,8 +111,8 @@ export function AuthProvider({ children }) {
         description: "Tu cuenta ha sido creada correctamente",
       });
 
-      setUser(data.user);
-      setIsAuthenticated(true);
+      await loadUserSession(userId); // Cargar datos extendidos tras registro
+
       return data.user;
     } catch (error) {
       toast({
@@ -96,6 +122,20 @@ export function AuthProvider({ children }) {
       });
       throw error;
     }
+  };
+
+  const loadUserSession = async (userId) => {
+    const { data: profile } = await supabase.from('profiles').select('*').eq('id', userId).single();
+    const { data: balance } = await supabase.from('balances').select('*').eq('user_id', userId).single();
+
+    setUser(prev => ({
+      ...prev,
+      ...profile,
+      balance: balance?.amount ?? 0,
+      demo_balance: balance?.demo_amount ?? 0
+    }));
+
+    setIsAuthenticated(true);
   };
 
   const logout = async () => {
