@@ -1,6 +1,23 @@
-node_modules
-dist
-.env
-.vscode
-.DS_Store
+# Node
+node_modules/
+dist/
 *.log
+
+# Vite
+.vite/
+assets/
+
+# Vercel / Hosting
+.vercel/
+
+# Entornos
+.env*
+.DS_Store
+
+# IDEs y editores
+.vscode/
+.idea/
+*.sw?
+
+# SO
+Thumbs.db
