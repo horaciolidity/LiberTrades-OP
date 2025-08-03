@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { toast } from '@/components/ui/use-toast';
+import { supabase } from '@/lib/supabaseClient';
 
 const AuthContext = createContext();
 
@@ -17,46 +18,39 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('cryptoinvest_user');
-    if (storedUser) {
-      const userData = JSON.parse(storedUser);
-      setUser(userData);
-      setIsAuthenticated(true);
-    }
-    setLoading(false);
+    const loadSession = async () => {
+      const { data, error } = await supabase.auth.getSession();
+      if (data?.session) {
+        setUser(data.session.user);
+        setIsAuthenticated(true);
+      }
+      setLoading(false);
+    };
+
+    loadSession();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setIsAuthenticated(!!session?.user);
+    });
+
+    return () => listener.subscription.unsubscribe();
   }, []);
 
   const login = async (email, password) => {
     try {
-      // Simular autenticación
-      const users = JSON.parse(localStorage.getItem('cryptoinvest_users') || '[]');
-      const foundUser = users.find(u => u.email === email && u.password === password);
-      
-      if (!foundUser) {
-        throw new Error('Credenciales inválidas');
-      }
+      const { error, data } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
 
-      const userData = {
-        id: foundUser.id,
-        email: foundUser.email,
-        name: foundUser.name,
-        role: foundUser.role || 'user',
-        balance: foundUser.balance || 0,
-        referralCode: foundUser.referralCode,
-        referredBy: foundUser.referredBy,
-        createdAt: foundUser.createdAt
-      };
-
-      setUser(userData);
+      setUser(data.user);
       setIsAuthenticated(true);
-      localStorage.setItem('cryptoinvest_user', JSON.stringify(userData));
-      
+
       toast({
         title: "¡Bienvenido!",
         description: "Has iniciado sesión exitosamente",
       });
 
-      return userData;
+      return data.user;
     } catch (error) {
       toast({
         title: "Error de autenticación",
@@ -67,58 +61,33 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const register = async (userData) => {
+  const register = async ({ email, password, name, referredBy }) => {
     try {
-      const users = JSON.parse(localStorage.getItem('cryptoinvest_users') || '[]');
-      
-      // Verificar si el email ya existe
-      if (users.find(u => u.email === userData.email)) {
-        throw new Error('El email ya está registrado');
-      }
+      const { error, data } = await supabase.auth.signUp({ email, password });
+      if (error) throw error;
 
-      const newUser = {
-        id: Date.now().toString(),
-        ...userData,
-        balance: 0,
-        role: 'user',
-        referralCode: generateReferralCode(),
-        createdAt: new Date().toISOString()
-      };
+      const userId = data.user.id;
 
-      users.push(newUser);
-      localStorage.setItem('cryptoinvest_users', JSON.stringify(users));
+      // Crear perfil adicional en tabla `profiles`
+      const referralCode = generateReferralCode();
 
-      // Procesar referido si existe
-      if (userData.referredBy) {
-        const referrer = users.find(u => u.referralCode === userData.referredBy);
-        if (referrer) {
-          // Agregar bonus de referido
-          referrer.balance += 50; // $50 bonus por referido
-          localStorage.setItem('cryptoinvest_users', JSON.stringify(users));
-        }
-      }
+      const { error: profileError } = await supabase.from('profiles').insert({
+        id: userId,
+        username: name,
+        referred_by: referredBy || null,
+        referral_code: referralCode,
+      });
 
-      const userForAuth = {
-        id: newUser.id,
-        email: newUser.email,
-        name: newUser.name,
-        role: newUser.role,
-        balance: newUser.balance,
-        referralCode: newUser.referralCode,
-        referredBy: newUser.referredBy,
-        createdAt: newUser.createdAt
-      };
-
-      setUser(userForAuth);
-      setIsAuthenticated(true);
-      localStorage.setItem('cryptoinvest_user', JSON.stringify(userForAuth));
+      if (profileError) throw profileError;
 
       toast({
         title: "¡Registro exitoso!",
         description: "Tu cuenta ha sido creada correctamente",
       });
 
-      return userForAuth;
+      setUser(data.user);
+      setIsAuthenticated(true);
+      return data.user;
     } catch (error) {
       toast({
         title: "Error de registro",
@@ -129,28 +98,36 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    await supabase.auth.signOut();
     setUser(null);
     setIsAuthenticated(false);
-    localStorage.removeItem('cryptoinvest_user');
     toast({
       title: "Sesión cerrada",
       description: "Has cerrado sesión exitosamente",
     });
   };
 
-  const updateUser = (updatedData) => {
-    const newUserData = { ...user, ...updatedData };
-    setUser(newUserData);
-    localStorage.setItem('cryptoinvest_user', JSON.stringify(newUserData));
-    
-    // Actualizar en la lista de usuarios también
-    const users = JSON.parse(localStorage.getItem('cryptoinvest_users') || '[]');
-    const userIndex = users.findIndex(u => u.id === user.id);
-    if (userIndex !== -1) {
-      users[userIndex] = { ...users[userIndex], ...updatedData };
-      localStorage.setItem('cryptoinvest_users', JSON.stringify(users));
+  const updateUser = async (updatedData) => {
+    const { error } = await supabase
+      .from('profiles')
+      .update(updatedData)
+      .eq('id', user.id);
+
+    if (error) {
+      toast({
+        title: 'Error al actualizar usuario',
+        description: error.message,
+        variant: 'destructive'
+      });
+      return;
     }
+
+    setUser((prev) => ({ ...prev, ...updatedData }));
+    toast({
+      title: 'Datos actualizados',
+      description: 'Tu perfil ha sido actualizado exitosamente'
+    });
   };
 
   const generateReferralCode = () => {

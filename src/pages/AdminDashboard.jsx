@@ -16,18 +16,28 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { supabase } from '@/lib/supabaseClient';
+
 
 const AdminDashboard = () => {
   const [users, setUsers] = useState([]);
   const [investments, setInvestments] = useState([]);
   const [transactions, setTransactions] = useState([]);
 
-  useEffect(() => {
-    // Cargar datos del localStorage
-    setUsers(JSON.parse(localStorage.getItem('cryptoinvest_users') || '[]'));
-    setInvestments(JSON.parse(localStorage.getItem('cryptoinvest_investments') || '[]'));
-    setTransactions(JSON.parse(localStorage.getItem('cryptoinvest_transactions') || '[]'));
-  }, []);
+ useEffect(() => {
+  const fetchData = async () => {
+    const { data: usersData } = await supabase.from('profiles').select('*');
+    const { data: investmentsData } = await supabase.from('investments').select('*');
+    const { data: transactionsData } = await supabase.from('wallet_transactions').select('*');
+
+    setUsers(usersData || []);
+    setInvestments(investmentsData || []);
+    setTransactions(transactionsData || []);
+  };
+
+  fetchData();
+}, []);
+
 
   const totalUsers = users.length;
   const totalInvestments = investments.reduce((sum, inv) => sum + inv.amount, 0);
@@ -69,20 +79,23 @@ const AdminDashboard = () => {
     }
   ];
 
-  const handleUserStatusChange = (userId, newStatus) => {
+  const handleUserStatusChange = async (userId, newStatus) => {
+
     const updatedUsers = users.map(user => 
       user.id === userId ? { ...user, status: newStatus } : user
     );
     setUsers(updatedUsers);
-    localStorage.setItem('cryptoinvest_users', JSON.stringify(updatedUsers));
+    await supabase.from('profiles').update({ status: newStatus }).eq('id', userId);
+
   };
 
-  const handleBalanceUpdate = (userId, newBalance) => {
+  const handleBalanceUpdate = async (userId, newBalance) => {
     const updatedUsers = users.map(user => 
       user.id === userId ? { ...user, balance: parseFloat(newBalance) } : user
     );
     setUsers(updatedUsers);
-    localStorage.setItem('cryptoinvest_users', JSON.stringify(updatedUsers));
+    await supabase.from('balances').update({ balance: parseFloat(newBalance) }).eq('user_id', userId);
+
   };
 
   return (

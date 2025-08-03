@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabaseClient';
 
 const RegisterPage = () => {
   const [formData, setFormData] = useState({
@@ -16,6 +17,7 @@ const RegisterPage = () => {
     confirmPassword: '',
     referralCode: ''
   });
+
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -24,24 +26,44 @@ const RegisterPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (formData.password !== formData.confirmPassword) {
       alert('Las contraseñas no coinciden');
       return;
     }
 
     setLoading(true);
-    
+
     try {
+      let validReferredId = null;
+
+      if (formData.referralCode) {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('referral_code', formData.referralCode.trim())
+          .single();
+
+        if (error || !data) {
+          alert('Código de referido inválido');
+          setLoading(false);
+          return;
+        }
+
+        validReferredId = data.id;
+      }
+
       await register({
         name: formData.name,
         email: formData.email,
         password: formData.password,
-        referredBy: formData.referralCode || null
+        referredBy: validReferredId
       });
+
       navigate('/dashboard');
     } catch (error) {
       console.error('Register error:', error);
+      alert('Error al crear la cuenta');
     } finally {
       setLoading(false);
     }

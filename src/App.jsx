@@ -19,6 +19,8 @@ import TokenizedProjectsPage from '@/pages/TokenizedProjectsPage';
 import TradingBotsPage from '@/pages/TradingBotsPage';
 import UserStatsPage from '@/pages/UserStatsPage';
 import RewardsPage from '@/pages/RewardsPage';
+import WalletPage from '@/pages/WalletPage';
+
 
 
 function ProtectedRoute({ children, adminOnly = false }) {
@@ -51,6 +53,14 @@ function App() {
                   element={
                     <ProtectedRoute>
                       <Dashboard />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/wallet" 
+                  element={
+                    <ProtectedRoute>
+                      <WalletPage />
                     </ProtectedRoute>
                   } 
                 />

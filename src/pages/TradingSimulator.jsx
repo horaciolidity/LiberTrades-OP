@@ -6,46 +6,49 @@ import TradingPanel from '@/components/trading/TradingPanel';
 import TradingStats from '@/components/trading/TradingStats';
 import TradesHistory from '@/components/trading/TradesHistory';
 import { useTradingLogic } from '@/hooks/useTradingLogic';
+import { useAuth } from '@/contexts/AuthContext';
+import { useSound } from '@/contexts/SoundContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
 import { Send, MessageSquare } from 'lucide-react';
-import { useAuth } from '@/contexts/AuthContext'; // Para obtener datos del usuario actual
-import { useSound } from '@/contexts/SoundContext';
+import { supabase } from '@/lib/supabaseClient';
 
 const countryFlags = {
-  US: '🇺🇸', AR: '🇦🇷', BR: '🇧🇷', CO: '🇨🇴', MX: '🇲🇽', ES: '🇪🇸', DE: '🇩🇪', GB: '🇬🇧', FR: '🇫🇷', JP: '🇯🇵', CN: '🇨🇳',
-  default: '🏳️'
+  US: '🇺🇸', AR: '🇦🇷', BR: '🇧🇷', CO: '🇨🇴', MX: '🇲🇽', ES: '🇪🇸', DE: '🇩🇪', GB: '🇬🇧', FR: '🇫🇷', JP: '🇯🇵', CN: '🇨🇳', default: '🏳️'
 };
 
 const userLevels = {
   newbie: '🌱', beginner: '🥉', intermediate: '🥈', advanced: '🥇', pro: '🏆', legend: '💎'
 };
 
-const getRandomCountry = () => {
-  const countries = Object.keys(countryFlags).filter(c => c !== 'default');
-  return countries[Math.floor(Math.random() * countries.length)];
-}
-
-const getRandomLevel = () => {
-  const levels = Object.keys(userLevels);
-  return levels[Math.floor(Math.random() * levels.length)];
-}
-
-const initialMessages = [
-  { id: 1, user: 'TraderX', text: '¡BTC parece que va a subir!', country: 'US', level: 'pro', time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
-  { id: 2, user: 'CryptoGirl', text: '¿Alguien más está viendo este volumen en ETH?', country: 'BR', level: 'advanced', time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
-  { id: 3, user: 'ElCriptoMaster', text: 'Cuidado con SOL, podría corregir.', country: 'MX', level: 'intermediate', time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
-];
-
-
 const TradingSimulator = () => {
-  const tradingLogic = useTradingLogic();
   const { user } = useAuth();
   const { playSound } = useSound();
-  const [chatMessages, setChatMessages] = useState(initialMessages);
-  const [newMessage, setNewMessage] = useState('');
+  const tradingLogic = useTradingLogic(); // virtual trading hook
   const chatEndRef = useRef(null);
+
+  const [mode, setMode] = useState('demo'); // 'demo' o 'real'
+  const [chatMessages, setChatMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [realTrades, setRealTrades] = useState([]);
+  const [realBalance, setRealBalance] = useState(0);
+
+  const fetchRealData = async () => {
+    if (!user?.id) return;
+    const { data: balanceData } = await supabase.from('balances').select('*').eq('user_id', user.id).single();
+    const { data: tradesData } = await supabase.from('trades').select('*').eq('user_id', user.id).order('timestamp', { ascending: false });
+
+    setRealBalance(balanceData?.balance || 0);
+    setRealTrades(tradesData || []);
+  };
+
+  useEffect(() => {
+    if (mode === 'real') {
+      fetchRealData();
+    }
+  }, [mode]);
 
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -56,94 +59,115 @@ const TradingSimulator = () => {
   const handleSendMessage = () => {
     if (newMessage.trim() === '') return;
     playSound('click');
+
     const message = {
       id: chatMessages.length + 1,
-      user: user?.name || 'UsuarioAnónimo',
+      user: user?.name || 'Anónimo',
       text: newMessage,
-      country: user?.countryCode || getRandomCountry(), 
-      level: user?.tradingLevel || getRandomLevel(),
+      country: user?.countryCode || 'AR',
+      level: user?.tradingLevel || 'beginner',
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
+
     setChatMessages([...chatMessages, message]);
     setNewMessage('');
   };
 
+  const handleTrade = async (tradeData) => {
+    if (mode === 'demo') {
+      tradingLogic.openTrade(tradeData);
+    } else {
+      const { error } = await supabase.from('trades').insert([
+        {
+          user_id: user.id,
+          pair: tradeData.pair,
+          type: tradeData.type,
+          amount: tradeData.amount,
+          price: tradeData.price,
+          status: 'open',
+          timestamp: new Date()
+        }
+      ]);
+      if (!error) fetchRealData();
+    }
+  };
+
+  const handleCloseTrade = async (tradeId, profit) => {
+    if (mode === 'demo') {
+      tradingLogic.closeTrade(tradeId, profit);
+    } else {
+      await supabase.from('trades')
+        .update({ status: 'closed', profit, closeat: Date.now() })
+        .eq('id', tradeId);
+      await fetchRealData();
+    }
+  };
 
   return (
     <Layout>
-      <div className="space-y-8">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
-        >
-          <h1 className="text-3xl font-bold text-white mb-2">
-            Simulador de Trading Avanzado
-          </h1>
-          <p className="text-slate-300">
-            Opera con gráficos en tiempo real, dinero virtual y chatea con otros traders.
-          </p>
-        </motion.div>
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-white mb-1">Simulador de Trading</h1>
+            <p className="text-slate-300">Modo {mode === 'demo' ? 'Demo (saldo virtual)' : 'Real (saldo real)'}</p>
+          </div>
+          <Select value={mode} onValueChange={(val) => setMode(val)}>
+            <SelectTrigger className="w-[130px] bg-slate-800 text-white border-slate-700">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-slate-800 text-white border-slate-700">
+              <SelectItem value="demo">Modo Demo</SelectItem>
+              <SelectItem value="real">Modo Real</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
-        <TradingStats 
-          virtualBalance={tradingLogic.virtualBalance}
-          totalProfit={tradingLogic.totalProfit}
-          openTradesCount={tradingLogic.openTrades.length}
-          totalTradesCount={tradingLogic.trades.length}
+        <TradingStats
+          virtualBalance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
+          totalProfit={mode === 'demo' ? tradingLogic.totalProfit : realTrades.reduce((sum, t) => sum + (t.profit || 0), 0)}
+          openTradesCount={mode === 'demo' ? tradingLogic.openTrades.length : realTrades.filter(t => t.status === 'open').length}
+          totalTradesCount={mode === 'demo' ? tradingLogic.trades.length : realTrades.length}
         />
 
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-          <motion.div
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.8, delay: 0.2 }}
-            className="xl:col-span-9" 
-          >
-            <TradingChart 
-              priceHistory={tradingLogic.priceHistory} 
+          <div className="xl:col-span-9">
+            <TradingChart
+              priceHistory={tradingLogic.priceHistory}
               selectedPair={tradingLogic.selectedPair}
               cryptoPrices={tradingLogic.cryptoPrices}
             />
-          </motion.div>
-          
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.8, delay: 0.3 }}
-            className="xl:col-span-3" 
-          >
+          </div>
+
+          <div className="xl:col-span-3">
             <Card className="crypto-card h-full flex flex-col">
-              <CardHeader className="pb-2">
+              <CardHeader>
                 <CardTitle className="text-white flex items-center text-lg">
                   <MessageSquare className="h-5 w-5 mr-2 text-blue-400" />
                   Chat de Traders
                 </CardTitle>
               </CardHeader>
-              <CardContent className="flex-grow overflow-y-auto p-3 space-y-3 h-[300px] sm:h-[350px] md:h-[400px]">
-                {chatMessages.map((msg) => (
-                  <div key={msg.id} className="flex flex-col items-start">
-                    <div className="flex items-center space-x-1 text-xs mb-0.5">
-                      <span className="font-semibold text-purple-300">{msg.user}</span>
-                      <span title={msg.country}>{countryFlags[msg.country] || countryFlags.default}</span>
-                      <span title={msg.level}>{userLevels[msg.level] || ''}</span>
+              <CardContent className="flex-grow overflow-y-auto space-y-3 h-[350px]">
+                {chatMessages.map(msg => (
+                  <div key={msg.id}>
+                    <div className="flex items-center text-xs space-x-1 text-slate-400 mb-1">
+                      <span className="text-purple-300 font-semibold">{msg.user}</span>
+                      <span>{countryFlags[msg.country]}</span>
+                      <span>{userLevels[msg.level]}</span>
                       <span className="text-slate-500">{msg.time}</span>
                     </div>
-                    <p className="text-sm text-slate-200 bg-slate-700/50 px-3 py-1.5 rounded-lg rounded-tl-none max-w-xs break-words">
-                      {msg.text}
-                    </p>
+                    <p className="text-sm text-slate-200 bg-slate-700 px-3 py-1.5 rounded-md">{msg.text}</p>
                   </div>
                 ))}
                 <div ref={chatEndRef} />
               </CardContent>
-              <CardContent className="pt-2 pb-3 border-t border-slate-700">
+              <CardContent className="pt-2 pb-4">
                 <div className="flex space-x-2">
                   <Input
-                    type="text"
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
-                    placeholder="Escribe un mensaje..."
-                    className="bg-slate-800 border-slate-600 text-white flex-grow"
                     onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                    placeholder="Mensaje..."
+                    className="bg-slate-800 text-white border-slate-600"
                   />
                   <Button onClick={handleSendMessage} size="icon" className="bg-blue-500 hover:bg-blue-600">
                     <Send className="h-4 w-4" />
@@ -151,23 +175,20 @@ const TradingSimulator = () => {
                 </div>
               </CardContent>
             </Card>
-          </motion.div>
+          </div>
         </div>
-        
-        <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.4 }}
-            className="w-full"
-          >
-             <TradingPanel {...tradingLogic} />
-        </motion.div>
 
+        <TradingPanel
+          {...tradingLogic}
+          onTrade={handleTrade}
+          balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
+          mode={mode}
+        />
 
-        <TradesHistory 
-          trades={tradingLogic.trades} 
-          cryptoPrices={tradingLogic.cryptoPrices} 
-          closeTrade={tradingLogic.closeTrade}
+        <TradesHistory
+          trades={mode === 'demo' ? tradingLogic.trades : realTrades}
+          cryptoPrices={tradingLogic.cryptoPrices}
+          closeTrade={handleCloseTrade}
         />
       </div>
     </Layout>

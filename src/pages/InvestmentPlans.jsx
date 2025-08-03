@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  Wallet, 
-  TrendingUp, 
-  Clock, 
+import {
+  Wallet,
+  TrendingUp,
+  Clock,
   DollarSign,
   CheckCircle,
   Star,
@@ -20,15 +20,16 @@ import { useData } from '@/contexts/DataContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from '@/components/ui/use-toast';
 import { useSound } from '@/contexts/SoundContext';
+import { supabase } from '@/lib/supabaseClient';
 
 const InvestmentPlans = () => {
-  const { investmentPlans: defaultPlans, addInvestment, addTransaction, cryptoPrices } = useData();
-  const { user, updateUser } = useAuth();
+  const { investmentPlans: defaultPlans, cryptoPrices } = useData();
+  const { user } = useAuth();
   const { playSound } = useSound();
 
   const investmentPlans = defaultPlans.map(plan => ({
     ...plan,
-    currencies: ['USDT', 'BTC', 'ETH'] 
+    currencies: ['USDT', 'BTC', 'ETH']
   }));
 
   const [selectedPlan, setSelectedPlan] = useState(null);
@@ -54,12 +55,16 @@ const InvestmentPlans = () => {
       const price = cryptoPrices[selectedCurrency]?.price;
       if (!price) {
         playSound('error');
-        toast({ title: "Error de Precio", description: `No se pudo obtener el precio de ${selectedCurrency}.`, variant: "destructive" });
+        toast({
+          title: "Error de Precio",
+          description: `No se pudo obtener el precio de ${selectedCurrency}.`,
+          variant: "destructive"
+        });
         return;
       }
       amountInUSD = amount * price;
     }
-    
+
     if (amountInUSD < selectedPlan.minAmount || amountInUSD > selectedPlan.maxAmount) {
       playSound('error');
       toast({
@@ -70,7 +75,6 @@ const InvestmentPlans = () => {
       return;
     }
 
-    // Para simplificar, el balance del usuario en la app se maneja en USD
     if (amountInUSD > user.balance) {
       playSound('error');
       toast({
@@ -85,27 +89,20 @@ const InvestmentPlans = () => {
     playSound('invest');
 
     try {
-      addInvestment({
-        userId: user.id,
-        planId: selectedPlan.id,
-        planName: selectedPlan.name,
-        amount: amountInUSD, // Guardar siempre en USD para consistencia interna
-        currency: selectedCurrency,
-        originalAmount: amount, // Guardar monto original en la cripto seleccionada
-        dailyReturn: selectedPlan.dailyReturn,
+      // Insertar inversión
+      await supabase.from('investments').insert({
+        user_id: user.id,
+        plan_name: selectedPlan.name,
+        amount: amountInUSD,
+        daily_return: selectedPlan.dailyReturn,
         duration: selectedPlan.duration
       });
 
-      addTransaction({
-        userId: user.id,
-        type: 'investment',
-        amount: amountInUSD,
-        currency: 'USD', // Transacción siempre en USD
-        description: `Inversión en ${selectedPlan.name} (${amount} ${selectedCurrency})`,
-        status: 'completed'
-      });
-
-      updateUser({ balance: user.balance - amountInUSD });
+      // Actualizar balance
+      await supabase
+        .from('balances')
+        .update({ balance: user.balance - amountInUSD, updated_at: new Date() })
+        .eq('user_id', user.id);
 
       toast({
         title: "¡Inversión exitosa!",
@@ -116,6 +113,7 @@ const InvestmentPlans = () => {
       setInvestmentAmount('');
       setSelectedCurrency('USDT');
     } catch (error) {
+      console.error('Error al invertir:', error.message);
       playSound('error');
       toast({
         title: "Error de Inversión",
@@ -146,13 +144,12 @@ const InvestmentPlans = () => {
       default: return 'from-gray-500 to-slate-500';
     }
   };
-  
+
   const calculateEquivalentValue = (amount, currency) => {
     if (!amount || !currency || currency === 'USDT') return parseFloat(amount || 0);
     const price = cryptoPrices[currency]?.price;
     return price ? parseFloat(amount) * price : 0;
   };
-
   return (
     <Layout>
       <div className="space-y-8">
