@@ -4,53 +4,70 @@ import Layout from '@/components/Layout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
-import { BarChartHorizontalBig, TrendingUp, Users, DollarSign, Gift, Star, Activity, CheckCircle } from 'lucide-react';
+import { BarChartHorizontalBig, TrendingUp, Users, DollarSign, Gift, Star, Activity, CheckCircle, PieChart as PieIcon } from 'lucide-react';
 import { ResponsiveContainer, BarChart, XAxis, YAxis, Tooltip, Legend, Bar, PieChart, Pie, Cell } from 'recharts';
 
 const UserStatsPage = () => {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const { getInvestments, getTransactions, getReferrals } = useData();
 
-  const investments = getInvestments().filter(inv => inv.userId === user.id);
-  const transactions = getTransactions().filter(tx => tx.userId === user.id);
-  const referrals = getReferrals(user.id);
+  // Mientras se resuelve la sesión o no hay user todavía, no computar nada
+  if (loading || !user) {
+    return (
+      <Layout>
+        <div className="p-6 text-slate-300">Cargando datos del usuario…</div>
+      </Layout>
+    );
+  }
 
-  const totalInvested = investments.reduce((sum, inv) => sum + inv.amount, 0);
+  // Helpers seguros
+  const safeArr = (val) => (Array.isArray(val) ? val : (val ?? []));
+  const allInvestments = safeArr(getInvestments?.());
+  const allTx          = safeArr(getTransactions?.());
+  const referrals      = safeArr(getReferrals?.(user.id));
+
+  const investments  = allInvestments.filter(inv => inv?.userId === user.id);
+  const transactions = allTx.filter(tx => tx?.userId === user.id);
+
+  const totalInvested = investments.reduce((sum, inv) => sum + Number(inv?.amount ?? 0), 0);
   const totalEarningsFromInvestments = investments.reduce((sum, inv) => {
-    const daysPassed = Math.max(0, Math.floor((Date.now() - new Date(inv.createdAt).getTime()) / (1000 * 60 * 60 * 24)));
-    return sum + (inv.amount * (inv.dailyReturn / 100) * Math.min(daysPassed, inv.duration));
+    const created = new Date(inv?.createdAt ?? Date.now());
+    const daysPassed = Math.max(0, Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)));
+    const daily = Number(inv?.dailyReturn ?? 0) / 100;
+    const dur = Math.min(daysPassed, Number(inv?.duration ?? 0));
+    return sum + (Number(inv?.amount ?? 0) * daily * dur);
   }, 0);
-  
+
   const totalDeposits = transactions
-    .filter(t => t.type === 'deposit' && t.status === 'completed')
-    .reduce((sum, t) => sum + t.amount, 0);
+    .filter(t => t?.type === 'deposit' && t?.status === 'completed')
+    .reduce((sum, t) => sum + Number(t?.amount ?? 0), 0);
 
   const totalWithdrawals = transactions
-    .filter(t => t.type === 'withdrawal' && t.status === 'completed')
-    .reduce((sum, t) => sum + t.amount, 0);
+    .filter(t => t?.type === 'withdrawal' && t?.status === 'completed')
+    .reduce((sum, t) => sum + Number(t?.amount ?? 0), 0);
 
   const portfolioDistributionData = investments.map(inv => ({
-    name: inv.planName,
-    value: inv.amount
+    name: inv?.planName ?? 'Plan',
+    value: Number(inv?.amount ?? 0),
   }));
   const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
 
-  const monthlyActivityData = Array.from({length: 6}, (_, i) => {
+  const monthlyActivityData = Array.from({ length: 6 }, (_, i) => {
     const month = new Date();
     month.setMonth(month.getMonth() - i);
     const monthStr = month.toLocaleString('default', { month: 'short' });
     const txInMonth = transactions.filter(tx => {
-      const d = new Date(tx.createdAt);
+      const d = new Date(tx?.createdAt ?? Date.now());
       return d.getMonth() === month.getMonth() && d.getFullYear() === month.getFullYear();
     });
     return {
       month: monthStr,
-      deposits: txInMonth.filter(t => t.type === 'deposit').reduce((s,t) => s + t.amount,0),
-      withdrawals: txInMonth.filter(t => t.type === 'withdrawal').reduce((s,t) => s + t.amount,0),
-      investments: txInMonth.filter(t => t.type === 'investment').reduce((s,t) => s + t.amount,0)
+      deposits: txInMonth.filter(t => t?.type === 'deposit').reduce((s, t) => s + Number(t?.amount ?? 0), 0),
+      withdrawals: txInMonth.filter(t => t?.type === 'withdrawal').reduce((s, t) => s + Number(t?.amount ?? 0), 0),
+      investments: txInMonth.filter(t => t?.type === 'investment').reduce((s, t) => s + Number(t?.amount ?? 0), 0),
     };
   }).reverse();
-  
+
   const generalStats = [
     { title: 'Balance Actual', value: `$${(user?.balance || 0).toFixed(2)}`, icon: DollarSign, color: 'text-green-400' },
     { title: 'Total Invertido', value: `$${totalInvested.toFixed(2)}`, icon: TrendingUp, color: 'text-blue-400' },
@@ -100,7 +117,7 @@ const UserStatsPage = () => {
             );
           })}
         </div>
-        
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.5, delay: 0.4 }}>
             <Card className="crypto-card">
@@ -137,7 +154,7 @@ const UserStatsPage = () => {
             <Card className="crypto-card">
               <CardHeader>
                 <CardTitle className="text-white flex items-center">
-                  <PieChart className="mr-2 h-5 w-5 text-rose-400"/>
+                  <PieIcon className="mr-2 h-5 w-5 text-rose-400"/>
                   Distribución de Portafolio
                 </CardTitle>
                 <CardDescription className="text-slate-300">
@@ -203,7 +220,7 @@ const UserStatsPage = () => {
                       tx.type === 'deposit' || (tx.type==='investment' && tx.status==='completed' && tx.dailyReturn)
                         ? 'text-green-400' : 'text-red-400'
                     }`}>
-                      {tx.type === 'deposit' ? '+' : '-'}${tx.amount.toFixed(2)}
+                      {tx.type === 'deposit' ? '+' : '-'}${Number(tx.amount ?? 0).toFixed(2)}
                     </p>
                     <p className="text-xs text-slate-500">{new Date(tx.createdAt).toLocaleDateString()}</p>
                   </div>
