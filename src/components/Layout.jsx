@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { 
-  LayoutDashboard, 
-  TrendingUp, 
-  Wallet, 
-  Users, 
-  History, 
-  User, 
+import {
+  LayoutDashboard,
+  TrendingUp,
+  Wallet,
+  Users,
+  History,
+  User,
   LogOut,
   Menu,
   X,
@@ -20,17 +20,25 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
-import { useSound } from '@/contexts/SoundContext';
 import { ethers } from 'ethers';
 import { toast } from '@/components/ui/use-toast';
 
+// 🔒 helper para formatear sin tirar error si viene string/undefined
+const fmt = (n, dec = 2) => {
+  const num = Number(n);
+  if (!isFinite(num)) return '0.00';
+  return num.toFixed(dec);
+};
 
 const Layout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout, updateUser } = useAuth();
-  const { playSound } = useSound();
   const location = useLocation();
   const navigate = useNavigate();
+
+  // 🔇 sonidos anulados
+  const playSound = () => {};
+
   const [web3Account, setWeb3Account] = useState(null);
   const [ethBalance, setEthBalance] = useState('0.00');
   const [usdtBalance, setUsdtBalance] = useState('0.00');
@@ -48,7 +56,6 @@ const Layout = ({ children }) => {
     { name: 'Recompensas', href: '/rewards', icon: Gift },
     { name: 'Perfil', href: '/profile', icon: User },
   ];
-
   if (user?.role === 'admin') {
     navigation.unshift({ name: 'Admin Panel', href: '/admin', icon: Shield });
   }
@@ -67,22 +74,33 @@ const Layout = ({ children }) => {
 
   const connectWallet = async () => {
     playSound('click');
-    if (typeof window.ethereum !== 'undefined') {
+    if (typeof window !== 'undefined' && window.ethereum) {
       try {
         const provider = new ethers.BrowserProvider(window.ethereum);
-        const accounts = await provider.send("eth_requestAccounts", []);
+        await provider.send('eth_requestAccounts', []);
         const signer = await provider.getSigner();
         const address = await signer.getAddress();
         setWeb3Account(address);
-        updateUser({ web3Wallet: address });
-        toast({ title: "Wallet Conectada", description: `Cuenta: ${address.substring(0,6)}...${address.substring(address.length - 4)}` });
+        updateUser?.({ web3Wallet: address });
+        toast({
+          title: 'Wallet Conectada',
+          description: `Cuenta: ${address.slice(0, 6)}...${address.slice(-4)}`
+        });
         fetchBalances(provider, address);
       } catch (error) {
-        console.error("Error conectando wallet:", error);
-        toast({ title: "Error de Wallet", description: "No se pudo conectar la wallet. Intenta de nuevo.", variant: "destructive" });
+        console.error('Error conectando wallet:', error);
+        toast({
+          title: 'Error de Wallet',
+          description: 'No se pudo conectar la wallet. Intenta de nuevo.',
+          variant: 'destructive'
+        });
       }
     } else {
-      toast({ title: "MetaMask no detectado", description: "Por favor instala MetaMask para usar esta función.", variant: "destructive" });
+      toast({
+        title: 'MetaMask no detectado',
+        description: 'Instalá MetaMask para usar esta función.',
+        variant: 'destructive'
+      });
     }
   };
 
@@ -91,37 +109,32 @@ const Layout = ({ children }) => {
       const ethBal = await provider.getBalance(account);
       setEthBalance(ethers.formatEther(ethBal));
 
-      const usdtContractAddress = "0xdAC17F958D2ee523a2206206994597C13D831ec7"; // Mainnet USDT
-      const usdtAbi = [ "function balanceOf(address owner) view returns (uint256)" ];
+      // USDT Mainnet
+      const usdtContractAddress = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+      const usdtAbi = ['function balanceOf(address owner) view returns (uint256)'];
       const usdtContract = new ethers.Contract(usdtContractAddress, usdtAbi, provider);
       const usdtBal = await usdtContract.balanceOf(account);
-      setUsdtBalance(ethers.formatUnits(usdtBal, 6)); // USDT has 6 decimals
-
+      setUsdtBalance(ethers.formatUnits(usdtBal, 6));
     } catch (error) {
-      console.error("Error obteniendo balances:", error);
-      toast({ title: "Error de Balance", description: "No se pudieron obtener los balances de la wallet.", variant: "destructive" });
+      console.error('Error obteniendo balances:', error);
+      toast({
+        title: 'Error de Balance',
+        description: 'No se pudieron obtener los balances de la wallet.',
+        variant: 'destructive'
+      });
     }
   };
 
   useEffect(() => {
-  const fetchData = async () => {
-    try {
-      // tus llamadas await aquí
-      console.log("Cargando datos para layout...");
-      // Ejemplo:
-      // const { data, error } = await supabase.from("profiles").select("*");
-    } catch (error) {
-      console.error("Error al cargar Layout:", error);
-    }
-  };
+    // placeholder seguro (no hace requests ni rompe)
+    console.log('Layout montado');
+  }, []);
 
-  fetchData();
-}, []);
-
-
+  const shortAddr = web3Account ? `${web3Account.slice(0, 6)}...${web3Account.slice(-4)}` : '';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      {/* Sidebar mobile */}
       <motion.div
         initial={false}
         animate={{ x: sidebarOpen ? 0 : '-100%' }}
@@ -131,11 +144,7 @@ const Layout = ({ children }) => {
           <span className="text-xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
             CryptoInvest Pro
           </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => { playSound('click'); setSidebarOpen(false); }}
-          >
+          <Button variant="ghost" size="icon" onClick={() => { playSound('click'); setSidebarOpen(false); }}>
             <X className="h-6 w-6" />
           </Button>
         </div>
@@ -161,6 +170,7 @@ const Layout = ({ children }) => {
         </nav>
       </motion.div>
 
+      {/* Sidebar desktop */}
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
         <div className="flex flex-col flex-grow bg-slate-800/95 backdrop-blur-xl border-r border-slate-700">
           <div className="flex items-center h-16 px-4">
@@ -189,11 +199,7 @@ const Layout = ({ children }) => {
             })}
           </nav>
           <div className="p-4">
-            <Button
-              onClick={handleLogout}
-              variant="outline"
-              className="w-full justify-start"
-            >
+            <Button onClick={handleLogout} variant="outline" className="w-full justify-start">
               <LogOut className="h-4 w-4 mr-2" />
               Cerrar Sesión
             </Button>
@@ -201,12 +207,13 @@ const Layout = ({ children }) => {
         </div>
       </div>
 
+      {/* Topbar + content */}
       <div className="lg:pl-64">
         <div className="sticky top-0 z-40 flex h-20 shrink-0 items-center gap-x-4 border-b border-slate-700 bg-slate-800/95 backdrop-blur-xl px-4 shadow-sm sm:gap-x-6 sm:px-6 lg:px-8">
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => { playSound('click'); setSidebarOpen(true);}}
+            onClick={() => { playSound('click'); setSidebarOpen(true); }}
             className="lg:hidden"
           >
             <Menu className="h-6 w-6" />
@@ -215,15 +222,15 @@ const Layout = ({ children }) => {
           <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
             <div className="flex flex-1 items-center">
               <div className="text-sm text-slate-300">
-                Bienvenido, <span className="font-semibold text-white">{user?.name}</span>
+                Bienvenido, <span className="font-semibold text-white">{user?.name || 'Usuario'}</span>
               </div>
             </div>
             <div className="flex items-center gap-x-4 lg:gap-x-6">
               {web3Account ? (
                 <div className="text-sm text-slate-300">
-                  <p>ETH: <span className="font-semibold text-yellow-400">{parseFloat(ethBalance).toFixed(4)}</span></p>
-                  <p>USDT: <span className="font-semibold text-green-400">{parseFloat(usdtBalance).toFixed(2)}</span></p>
-                  <p className="text-xs text-slate-500">Wallet: {web3Account.substring(0,6)}...{web3Account.substring(web3Account.length - 4)}</p>
+                  <p>ETH: <span className="font-semibold text-yellow-400">{fmt(ethBalance, 4)}</span></p>
+                  <p>USDT: <span className="font-semibold text-green-400">{fmt(usdtBalance, 2)}</span></p>
+                  <p className="text-xs text-slate-500">Wallet: {shortAddr}</p>
                 </div>
               ) : (
                 <Button onClick={connectWallet} size="sm" className="bg-blue-500 hover:bg-blue-600">
@@ -231,7 +238,7 @@ const Layout = ({ children }) => {
                 </Button>
               )}
               <div className="text-sm text-slate-300">
-                Saldo App: <span className="font-semibold text-green-400">${user?.balance?.toFixed(2) || '0.00'}</span>
+                Saldo App: <span className="font-semibold text-green-400">${fmt(user?.balance, 2)}</span>
               </div>
             </div>
           </div>
@@ -247,7 +254,7 @@ const Layout = ({ children }) => {
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/50 lg:hidden"
-          onClick={() => { playSound('click'); setSidebarOpen(false);}}
+          onClick={() => { playSound('click'); setSidebarOpen(false); }}
         />
       )}
     </div>
