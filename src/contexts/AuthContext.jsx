@@ -11,13 +11,13 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);           // objeto de auth de Supabase (tokens, email, etc.)
-  const [profile, setProfile] = useState(null);     // fila de public.profiles (username, referred_by, referral_code)
-  const [balances, setBalances] = useState(null);   // fila de public.balances
+  const [user, setUser] = useState(null);         // objeto auth de Supabase
+  const [profile, setProfile] = useState(null);   // fila en public.profiles
+  const [balances, setBalances] = useState(null); // fila en public.balances
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // ------- helpers -------
+  // -------- helpers --------
   async function fetchProfile(userId) {
     const { data, error } = await supabase
       .from('profiles')
@@ -33,28 +33,15 @@ export function AuthProvider({ children }) {
     return data;
   }
 
+  // Crea si no existe y devuelve una sola fila (evita races/duplicados)
   async function fetchOrCreateBalances(userId) {
-    // leer
-    let { data: bal, error } = await supabase
+    const { data: bal, error } = await supabase
       .from('balances')
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle();
+      .upsert({ user_id: userId, usdc: 0, eth: 0 }, { onConflict: 'user_id' })
+      .select()
+      .single();
 
-    // crear si no existe
-    if (!bal) {
-      const { data: ins, error: insErr } = await supabase
-        .from('balances')
-        .insert({ user_id: userId, usdc: 0, eth: 0 })
-        .select()
-        .single();
-
-      if (!insErr) bal = ins;
-      else console.warn('Crear balance:', insErr.message);
-    } else if (error) {
-      console.warn('Balance:', error.message);
-    }
-
+    if (error) console.warn('Balance:', error.message);
     setBalances(bal);
     return bal;
   }
@@ -64,7 +51,7 @@ export function AuthProvider({ children }) {
     setIsAuthenticated(true);
   }
 
-  // ------- bootstrap + listener -------
+  // -------- bootstrap + listener --------
   useEffect(() => {
     let mounted = true;
 
@@ -75,6 +62,7 @@ export function AuthProvider({ children }) {
 
         const session = data?.session ?? null;
         if (!mounted) return;
+
         setUser(session?.user ?? null);
         setIsAuthenticated(!!session?.user);
 
@@ -99,35 +87,37 @@ export function AuthProvider({ children }) {
 
     init();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const u = session?.user ?? null;
-      setUser(u);
-      setIsAuthenticated(!!u);
-      if (u) {
-        await loadAll(u.id);
-      } else {
-        setProfile(null);
-        setBalances(null);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        const u = session?.user ?? null;
+        setUser(u);
+        setIsAuthenticated(!!u);
+        if (u) {
+          await loadAll(u.id);
+        } else {
+          setProfile(null);
+          setBalances(null);
+        }
       }
-    });
+    );
 
     return () => {
       mounted = false;
-      sub?.subscription?.unsubscribe?.();
+      subscription.unsubscribe();
     };
   }, []);
 
-  // ------- actions -------
+  // -------- actions --------
   const generateReferralCode = () =>
     Math.random().toString(36).substring(2, 8).toUpperCase();
 
   const login = async (email, password) => {
+    setLoading(true);
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
-      const userId = data?.user?.id;
-      if (userId) await loadAll(userId);
+      if (data?.user?.id) await loadAll(data.user.id);
 
       toast({ title: '¡Bienvenido!', description: 'Has iniciado sesión exitosamente' });
       return data.user ?? null;
@@ -138,24 +128,27 @@ export function AuthProvider({ children }) {
         variant: 'destructive',
       });
       throw error;
+    } finally {
+      setLoading(false);
     }
   };
 
+  // Opción B (Confirm email OFF): sesión inmediata + inserts en client
   const register = async ({ email, password, name, referredBy }) => {
+    setLoading(true);
     try {
-      // 1) crear cuenta
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
-        options: { data: { full_name: name || null } }, // guarda también en metadata (opcional)
+        options: { data: { full_name: name || null } },
       });
       if (error) throw error;
 
       const userId = data?.user?.id;
       const referralCode = generateReferralCode();
 
-      // 2) perfil + balance
       if (userId) {
+        // Perfil
         const { error: profileError } = await supabase.from('profiles').insert({
           id: userId,
           username: name || email.split('@')[0],
@@ -164,25 +157,21 @@ export function AuthProvider({ children }) {
         });
         if (profileError) throw profileError;
 
+        // Balance (idempotente)
         await fetchOrCreateBalances(userId);
-        await fetchProfile(userId); // para que “Bienvenido, {username}” salga al toque
+
+        // Cargar datos para UI
+        await fetchProfile(userId);
+        setIsAuthenticated(true);
       }
 
-      toast({
-        title: '¡Registro exitoso!',
-        description: userId
-          ? 'Tu cuenta ha sido creada correctamente.'
-          : 'Revisa tu correo para confirmar la cuenta.',
-      });
-
+      toast({ title: '¡Registro exitoso!', description: 'Tu cuenta ha sido creada correctamente.' });
       return data.user ?? null;
-    } catch (error) {
-      toast({
-        title: 'Error de registro',
-        description: error.message,
-        variant: 'destructive',
-      });
-      throw error;
+    } catch (err) {
+      toast({ title: 'Error de registro', description: err.message, variant: 'destructive' });
+      throw err;
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -213,22 +202,21 @@ export function AuthProvider({ children }) {
       });
       return;
     }
-    // refrescar perfil en contexto
-    await fetchProfile(user.id);
+    await fetchProfile(user.id); // refresca en contexto
     toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado exitosamente' });
   };
 
-  // nombre listo para UI
+  // Nombre para UI
   const displayName =
     profile?.username ??
     user?.user_metadata?.full_name ??
     (user?.email ? user.email.split('@')[0] : 'Usuario');
 
   const value = {
-    user,               // auth user
-    profile,            // fila de profiles
-    balances,           // fila de balances
-    displayName,        // “Bienvenido, {displayName}”
+    user,
+    profile,
+    balances,
+    displayName,     // “Bienvenido, {displayName}”
     isAuthenticated,
     loading,
     login,
