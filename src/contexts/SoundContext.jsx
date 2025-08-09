@@ -1,38 +1,37 @@
-import React, { createContext, useContext, useCallback } from 'react';
-import { Howl } from 'howler';
+import React, { createContext, useContext, useMemo, useRef } from 'react';
 
-const SoundContext = createContext();
-
-export const useSound = () => {
-  return useContext(SoundContext);
-};
-
-const sounds = {
-  click: '/sounds/click.mp3',
-  success: '/sounds/success.mp3',
-  error: '/sounds/error.mp3',
+const SoundContext = createContext(null);
   navigation: '/sounds/navigation.mp3',
-  login: '/sounds/login.mp3',
   logout: '/sounds/logout.mp3',
-  invest: '/sounds/invest.mp3',
-  trade: '/sounds/trade.mp3',
-  notification: '/sounds/notification.mp3'
 };
 
-export const SoundProvider = ({ children }) => {
-  const playSound = useCallback((soundName) => {
-    if (sounds[soundName]) {
-      const sound = new Howl({
-        src: [sounds[soundName]],
-        volume: 0.3, 
-      });
-      sound.play();
+export function SoundProvider({ children }) {
+  const playersRef = useRef({});
+
+  const playSound = (name) => {
+    try {
+      const src = SOUND_MAP[name];
+      if (!src) return;
+      if (!playersRef.current[name]) {
+        const audio = new Audio(src);
+        audio.preload = 'auto';
+        playersRef.current[name] = audio;
+      }
+      const a = playersRef.current[name];
+      a.currentTime = 0;
+      a.play().catch(() => {});
+    } catch {
+      // nunca rompas la UI por audio
     }
-  }, []);
+  };
 
-  return (
-    <SoundContext.Provider value={{ playSound }}>
-      {children}
-    </SoundContext.Provider>
-  );
-};
+  const value = useMemo(() => ({ playSound }), []);
+  return <SoundContext.Provider value={value}>{children}</SoundContext.Provider>;
+}
+
+// ✅ Hook SEGURO: si no hay provider, devolvé un NO-OP en vez de undefined
+export function useSound() {
+  const ctx = useContext(SoundContext);
+  if (!ctx) return { playSound: () => {} };
+  return ctx;
+}
