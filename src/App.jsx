@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from 'react-
 import { Toaster } from '@/components/ui/toaster';
 import { useAuth } from '@/contexts/AuthContext';
 import { DataProvider } from '@/contexts/DataContext';
-// import { SoundProvider } from '@/contexts/SoundContext';
 import Layout from '@/components/Layout';
 
 import LandingPage from '@/pages/LandingPage';
@@ -29,34 +28,25 @@ function ProtectedRoute({ adminOnly = false }) {
   if (loading) return <div className="text-white p-6">Cargando sesión...</div>;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (adminOnly && user?.role !== 'admin') return <Navigate to="/dashboard" replace />;
-  return <Outlet />; // deja pasar a los hijos
-}
 
-// Un wrapper que mete el Layout alrededor de las rutas protegidas
-function ProtectedShell() {
-  return (
-    <Layout>
-      <Outlet />
-    </Layout>
-  );
+  return <Outlet />;
 }
 
 export default function App() {
   return (
     <Router>
       <DataProvider>
-        {/* <SoundProvider> */}
         <Toaster />
 
         <Routes>
-          {/* Rutas públicas SIN Layout */}
+          {/* Rutas públicas */}
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
 
-          {/* Rutas protegidas: primero chequeo, luego Layout */}
+          {/* Rutas protegidas con Layout */}
           <Route element={<ProtectedRoute />}>
-            <Route element={<ProtectedShell />}>
+            <Route element={<Layout />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/simulator" element={<TradingSimulator />} />
               <Route path="/plans" element={<InvestmentPlans />} />
@@ -72,9 +62,9 @@ export default function App() {
             </Route>
           </Route>
 
-          {/* Ruta admin con guard y Layout */}
+          {/* Ruta admin con Layout */}
           <Route element={<ProtectedRoute adminOnly />}>
-            <Route element={<ProtectedShell />}>
+            <Route element={<Layout />}>
               <Route path="/admin" element={<AdminDashboard />} />
             </Route>
           </Route>
@@ -82,8 +72,6 @@ export default function App() {
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-
-        {/* </SoundProvider> */}
       </DataProvider>
     </Router>
   );

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   LayoutDashboard,
@@ -30,7 +30,7 @@ const fmt = (n, dec = 2) => {
   return num.toFixed(dec);
 };
 
-const Layout = ({ children }) => {
+const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout, updateUser } = useAuth();
   const location = useLocation();
@@ -126,7 +126,6 @@ const Layout = ({ children }) => {
   };
 
   useEffect(() => {
-    // placeholder seguro (no hace requests ni rompe)
     console.log('Layout montado');
   }, []);
 
@@ -244,9 +243,10 @@ const Layout = ({ children }) => {
           </div>
         </div>
 
+        {/* Aquí usamos Outlet en vez de children */}
         <main className="py-10">
           <div className="px-4 sm:px-6 lg:px-8">
-            {children}
+            <Outlet />
           </div>
         </main>
       </div>
