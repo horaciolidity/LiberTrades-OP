@@ -1,6 +1,10 @@
 import React, { createContext, useContext, useMemo, useRef } from 'react';
 
 const SoundContext = createContext(null);
+
+// Mapea los sonidos a archivos en /public/sounds (pueden no existir, no rompe)
+const SOUND_MAP = {
+  click: '/sounds/click.mp3',
   navigation: '/sounds/navigation.mp3',
   logout: '/sounds/logout.mp3',
 };
