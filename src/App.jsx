@@ -1,11 +1,9 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { Toaster } from '@/components/ui/toaster';
 import { useAuth } from '@/contexts/AuthContext';
 import { DataProvider } from '@/contexts/DataContext';
-// Si querés silencio total, podés quitar SoundProvider o dejarlo comentado.
 // import { SoundProvider } from '@/contexts/SoundContext';
-
 import Layout from '@/components/Layout';
 
 import LandingPage from '@/pages/LandingPage';
@@ -25,14 +23,22 @@ import UserStatsPage from '@/pages/UserStatsPage';
 import RewardsPage from '@/pages/RewardsPage';
 import WalletPage from '@/pages/WalletPage';
 
-function ProtectedRoute({ children, adminOnly = false }) {
+function ProtectedRoute({ adminOnly = false }) {
   const { user, isAuthenticated, loading } = useAuth();
 
   if (loading) return <div className="text-white p-6">Cargando sesión...</div>;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (adminOnly && user?.role !== 'admin') return <Navigate to="/dashboard" replace />;
+  return <Outlet />; // deja pasar a los hijos
+}
 
-  return children;
+// Un wrapper que mete el Layout alrededor de las rutas protegidas
+function ProtectedShell() {
+  return (
+    <Layout>
+      <Outlet />
+    </Layout>
+  );
 }
 
 export default function App() {
@@ -40,33 +46,43 @@ export default function App() {
     <Router>
       <DataProvider>
         {/* <SoundProvider> */}
-        <Layout>
-          <Toaster />
-          <Routes>
-            {/* públicas */}
-            <Route path="/" element={<LandingPage />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/register" element={<RegisterPage />} />
+        <Toaster />
 
-            {/* privadas */}
-            <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-            <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
-            <Route path="/simulator" element={<ProtectedRoute><TradingSimulator /></ProtectedRoute>} />
-            <Route path="/plans" element={<ProtectedRoute><InvestmentPlans /></ProtectedRoute>} />
-            <Route path="/referrals" element={<ProtectedRoute><ReferralSystem /></ProtectedRoute>} />
-            <Route path="/history" element={<ProtectedRoute><TransactionHistory /></ProtectedRoute>} />
-            <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
-            <Route path="/deposit" element={<ProtectedRoute><DepositPage /></ProtectedRoute>} />
-            <Route path="/tokenized-projects" element={<ProtectedRoute><TokenizedProjectsPage /></ProtectedRoute>} />
-            <Route path="/trading-bots" element={<ProtectedRoute><TradingBotsPage /></ProtectedRoute>} />
-            <Route path="/stats" element={<ProtectedRoute><UserStatsPage /></ProtectedRoute>} />
-            <Route path="/rewards" element={<ProtectedRoute><RewardsPage /></ProtectedRoute>} />
-            <Route path="/wallet" element={<ProtectedRoute><WalletPage /></ProtectedRoute>} />
+        <Routes>
+          {/* Rutas públicas SIN Layout */}
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
 
-            {/* fallback */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Layout>
+          {/* Rutas protegidas: primero chequeo, luego Layout */}
+          <Route element={<ProtectedRoute />}>
+            <Route element={<ProtectedShell />}>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/simulator" element={<TradingSimulator />} />
+              <Route path="/plans" element={<InvestmentPlans />} />
+              <Route path="/referrals" element={<ReferralSystem />} />
+              <Route path="/history" element={<TransactionHistory />} />
+              <Route path="/profile" element={<Profile />} />
+              <Route path="/deposit" element={<DepositPage />} />
+              <Route path="/tokenized-projects" element={<TokenizedProjectsPage />} />
+              <Route path="/trading-bots" element={<TradingBotsPage />} />
+              <Route path="/stats" element={<UserStatsPage />} />
+              <Route path="/rewards" element={<RewardsPage />} />
+              <Route path="/wallet" element={<WalletPage />} />
+            </Route>
+          </Route>
+
+          {/* Ruta admin con guard y Layout */}
+          <Route element={<ProtectedRoute adminOnly />}>
+            <Route element={<ProtectedShell />}>
+              <Route path="/admin" element={<AdminDashboard />} />
+            </Route>
+          </Route>
+
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+
         {/* </SoundProvider> */}
       </DataProvider>
     </Router>
