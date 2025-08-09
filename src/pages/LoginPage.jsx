@@ -9,34 +9,32 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useAuth } from '@/contexts/AuthContext';
 
 const LoginPage = () => {
-  const [formData, setFormData] = useState({
-    email: '',
-    password: ''
-  });
-  const [showPassword, setShowPassword] = useState(false);
-  const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    
-    try {
-      await login(formData.email, formData.password);
-      navigate('/dashboard');
-    } catch (error) {
-      console.error('Login error:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [formData, setFormData] = useState({ email: '', password: '' });
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    });
+    const { name, value } = e.target;
+    setFormData((s) => ({ ...s, [name]: value }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (submitting) return;          // evita dobles envíos
+    setSubmitting(true);
+    try {
+      const email = formData.email.trim().toLowerCase();
+      const password = formData.password; // no trim si admitís espacios
+      const u = await login(email, password); // el toast de error lo maneja AuthContext
+      if (u?.id) navigate('/dashboard', { replace: true });
+    } catch {
+      /* ya hay toast en login() */
+    } finally {
+      setSubmitting(false);          // siempre vuelve el botón a normal
+    }
   };
 
   return (
@@ -57,13 +55,14 @@ const LoginPage = () => {
         <Card className="crypto-card">
           <CardHeader className="text-center">
             <div className="mx-auto w-16 h-16 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4">
-              <img  alt="CryptoInvest Pro logo" src="https://images.unsplash.com/photo-1639916909400-40d53a2edd72" />
+              <img alt="CryptoInvest Pro logo" src="https://images.unsplash.com/photo-1639916909400-40d53a2edd72" />
             </div>
             <CardTitle className="text-2xl text-white">Iniciar Sesión</CardTitle>
             <CardDescription className="text-slate-300">
               Accede a tu cuenta de CryptoInvest Pro
             </CardDescription>
           </CardHeader>
+
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="space-y-2">
@@ -75,6 +74,7 @@ const LoginPage = () => {
                   value={formData.email}
                   onChange={handleChange}
                   placeholder="tu@email.com"
+                  autoComplete="email"
                   required
                   className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
                 />
@@ -90,13 +90,15 @@ const LoginPage = () => {
                     value={formData.password}
                     onChange={handleChange}
                     placeholder="••••••••"
+                    autoComplete="current-password"
                     required
                     className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 pr-10"
                   />
                   <button
                     type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-white"
+                    onClick={() => setShowPassword((s) => !s)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                    aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -105,10 +107,10 @@ const LoginPage = () => {
 
               <Button
                 type="submit"
-                disabled={loading}
+                disabled={submitting}
                 className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-white"
               >
-                {loading ? 'Iniciando sesión...' : 'Iniciar Sesión'}
+                {submitting ? 'Iniciando sesión…' : 'Iniciar Sesión'}
               </Button>
             </form>
 
