@@ -1,3 +1,4 @@
+// src/pages/InvestmentPlans.jsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -28,7 +29,7 @@ const fmt = (n, dec = 2) => {
 
 export default function InvestmentPlans() {
   const { investmentPlans: defaultPlans, cryptoPrices } = useData();
-  const { user, balances } = useAuth();
+  const { user, balances, refreshBalances } = useAuth();
   const { playSound } = useSound();
 
   // agrego lista de monedas aceptadas por plan
@@ -115,24 +116,38 @@ export default function InvestmentPlans() {
     playSound('invest');
 
     try {
-      // 1) Insertar inversión (ajusta columnas si tu tabla difiere)
+      // 1) Insertar inversión (usar nombres reales de tu tabla)
       const { error: invErr } = await supabase.from('investments').insert({
         user_id: user.id,
         plan_name: selectedPlan.name,
         amount: amountInUSD,
         daily_return: selectedPlan.dailyReturn,
         duration: selectedPlan.duration,
-        currency_input: selectedCurrency, // opcional: guarda en qué moneda invirtió
+        status: 'active',
+        // ⚠️ No enviar currency_input (no existe). Si tienes columna 'currency', descomenta:
+        // currency: selectedCurrency,
       });
       if (invErr) throw invErr;
 
-      // 2) Actualizar balance USDC
+      // 2) Debitar balance USDC
       const newUsdc = Math.max(0, currentUsdc - amountInUSD);
       const { error: balErr } = await supabase
         .from('balances')
         .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
         .eq('user_id', user.id);
       if (balErr) throw balErr;
+
+      // 3) Registrar transacción (opcional pero útil)
+      await supabase.from('wallet_transactions').insert({
+        user_id: user.id,
+        type: 'investment',
+        amount: amountInUSD,
+        status: 'completed',
+        description: `Compra plan ${selectedPlan.name}`,
+      });
+
+      // 4) Refrescar saldo en UI inmediatamente
+      refreshBalances?.();
 
       toast({
         title: '¡Inversión exitosa!',
