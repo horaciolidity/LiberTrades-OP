@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import Layout from '@/components/Layout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -41,6 +40,7 @@ const TokenizedProjectsPage = () => {
   };
 
   const handleInvest = () => {
+    if (!selectedProject) return;
     playSound('invest');
     toast({
       title: "Función Próximamente",
@@ -49,7 +49,7 @@ const TokenizedProjectsPage = () => {
   };
 
   return (
-    <Layout>
+    <>
       <div className="space-y-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -69,50 +69,55 @@ const TokenizedProjectsPage = () => {
           {upcomingProjects.map((project, index) => {
             const Icon = project.icon;
             return (
-            <motion.div
-              key={project.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: index * 0.1 }}
-            >
-              <Card className="crypto-card h-full flex flex-col">
-                <CardHeader>
-                  <div className="flex items-center space-x-3 mb-3">
-                    <div className="w-12 h-12 bg-gradient-to-br from-slate-700 to-slate-600 rounded-lg flex items-center justify-center">
-                       <img  
-                          className="w-8 h-8 object-contain filter invert brightness-0 saturate-100 hue-rotate-[120deg]" 
+              <motion.div
+                key={project.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: index * 0.1 }}
+              >
+                <Card className="crypto-card h-full flex flex-col">
+                  <CardHeader>
+                    <div className="flex items-center space-x-3 mb-3">
+                      <div className="w-12 h-12 bg-gradient-to-br from-slate-700 to-slate-600 rounded-lg flex items-center justify-center">
+                        <img
+                          className="w-8 h-8 object-contain filter invert brightness-0 saturate-100 hue-rotate-[120deg]"
                           alt={`${project.name} logo`}
-                         src="https://images.unsplash.com/photo-1658204212985-e0126040f88f" />
+                          src="https://images.unsplash.com/photo-1658204212985-e0126040f88f"
+                        />
+                      </div>
+                      <div>
+                        <CardTitle className="text-xl text-white">{project.name} ({project.symbol})</CardTitle>
+                        <CardDescription className="text-blue-400">{project.category}</CardDescription>
+                      </div>
                     </div>
-                    <div>
-                      <CardTitle className="text-xl text-white">{project.name} ({project.symbol})</CardTitle>
-                      <CardDescription className="text-blue-400">{project.category}</CardDescription>
+                    <p className="text-slate-300 text-sm h-16 overflow-hidden">{project.description}</p>
+                  </CardHeader>
+                  <CardContent className="space-y-3 flex-grow">
+                    <div className="flex items-center text-sm text-slate-400">
+                      <Calendar className="h-4 w-4 mr-2 text-purple-400" />
+                      Lanzamiento: {new Date(project.launchDate).toLocaleDateString()}
                     </div>
-                  </div>
-                  <p className="text-slate-300 text-sm h-16 overflow-hidden">{project.description}</p>
-                </CardHeader>
-                <CardContent className="space-y-3 flex-grow">
-                  <div className="flex items-center text-sm text-slate-400">
-                    <Calendar className="h-4 w-4 mr-2 text-purple-400" />
-                    Lanzamiento: {new Date(project.launchDate).toLocaleDateString()}
-                  </div>
-                  <div className="flex items-center text-sm text-slate-400">
-                    <DollarSign className="h-4 w-4 mr-2 text-green-400" />
-                    Objetivo: ${project.targetRaise.toLocaleString()}
-                  </div>
-                  <div className="flex items-center text-sm text-slate-400">
-                    <Users className="h-4 w-4 mr-2 text-orange-400" />
-                    Inversión Mín.: ${project.minInvestment}
-                  </div>
-                </CardContent>
-                <CardContent className="pt-0">
-                   <Button onClick={() => handleViewDetails(project)} className="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700">
-                    <Eye className="h-4 w-4 mr-2" /> Ver Detalles
-                  </Button>
-                </CardContent>
-              </Card>
-            </motion.div>
-          )})}
+                    <div className="flex items-center text-sm text-slate-400">
+                      <DollarSign className="h-4 w-4 mr-2 text-green-400" />
+                      Objetivo: ${project.targetRaise.toLocaleString()}
+                    </div>
+                    <div className="flex items-center text-sm text-slate-400">
+                      <Users className="h-4 w-4 mr-2 text-orange-400" />
+                      Inversión Mín.: ${project.minInvestment}
+                    </div>
+                  </CardContent>
+                  <CardContent className="pt-0">
+                    <Button
+                      onClick={() => handleViewDetails(project)}
+                      className="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700"
+                    >
+                      <Eye className="h-4 w-4 mr-2" /> Ver Detalles
+                    </Button>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            );
+          })}
         </div>
 
         {selectedProject && (
@@ -123,48 +128,63 @@ const TokenizedProjectsPage = () => {
             className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
             onClick={() => setSelectedProject(null)}
           >
-            <Card className="crypto-card w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <Card
+              className="crypto-card w-full max-w-lg max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
               <CardHeader>
-                 <div className="flex items-center space-x-4 mb-4">
-                    <div className="w-16 h-16 bg-gradient-to-br from-slate-700 to-slate-600 rounded-lg flex items-center justify-center">
-                        <img  
-                            className="w-10 h-10 object-contain filter invert brightness-0 saturate-100 hue-rotate-[120deg]" 
-                            alt={`${selectedProject.name} logo`}
-                         src="https://images.unsplash.com/photo-1572177812156-58036aae439c" />
-                    </div>
-                    <div>
-                        <CardTitle className="text-2xl text-white">{selectedProject.name} ({selectedProject.symbol})</CardTitle>
-                        <CardDescription className="text-blue-400">{selectedProject.category}</CardDescription>
-                    </div>
+                <div className="flex items-center space-x-4 mb-4">
+                  <div className="w-16 h-16 bg-gradient-to-br from-slate-700 to-slate-600 rounded-lg flex items-center justify-center">
+                    <img
+                      className="w-10 h-10 object-contain filter invert brightness-0 saturate-100 hue-rotate-[120deg]"
+                      alt={`${selectedProject.name} logo`}
+                      src="https://images.unsplash.com/photo-1572177812156-58036aae439c"
+                    />
+                  </div>
+                  <div>
+                    <CardTitle className="text-2xl text-white">
+                      {selectedProject.name} ({selectedProject.symbol})
+                    </CardTitle>
+                    <CardDescription className="text-blue-400">{selectedProject.category}</CardDescription>
+                  </div>
                 </div>
-                <img  
-                    className="w-full h-48 object-cover rounded-lg mb-4" 
-                    alt={`Imagen de ${selectedProject.name}`}
-                 src="https://images.unsplash.com/photo-1572177812156-58036aae439c" />
+                <img
+                  className="w-full h-48 object-cover rounded-lg mb-4"
+                  alt={`Imagen de ${selectedProject.name}`}
+                  src="https://images.unsplash.com/photo-1572177812156-58036aae439c"
+                />
                 <p className="text-slate-300">{selectedProject.details}</p>
               </CardHeader>
+
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
                     <p className="text-slate-400">Fecha de Lanzamiento:</p>
-                    <p className="text-white font-semibold">{new Date(selectedProject.launchDate).toLocaleDateString()}</p>
+                    <p className="text-white font-semibold">
+                      {new Date(selectedProject.launchDate).toLocaleDateString()}
+                    </p>
                   </div>
                   <div>
                     <p className="text-slate-400">Objetivo de Recaudación:</p>
-                    <p className="text-white font-semibold">${selectedProject.targetRaise.toLocaleString()}</p>
+                    <p className="text-white font-semibold">
+                      ${selectedProject.targetRaise.toLocaleString()}
+                    </p>
                   </div>
                   <div>
                     <p className="text-slate-400">Inversión Mínima:</p>
                     <p className="text-white font-semibold">${selectedProject.minInvestment}</p>
                   </div>
-                   <div>
+                  <div>
                     <p className="text-slate-400">Tokens Disponibles:</p>
-                    <p className="text-white font-semibold">{(selectedProject.targetRaise / (selectedProject.minInvestment * 0.1)).toLocaleString()} (Estimado)</p>
+                    <p className="text-white font-semibold">
+                      {(selectedProject.targetRaise / (selectedProject.minInvestment * 0.1)).toLocaleString()} (Estimado)
+                    </p>
                   </div>
                 </div>
+
                 <div className="space-y-2">
                   <Label className="text-white">Monto a Invertir (USD)</Label>
-                  <Input 
+                  <Input
                     type="number"
                     value={investmentAmount}
                     onChange={(e) => setInvestmentAmount(e.target.value)}
@@ -172,17 +192,22 @@ const TokenizedProjectsPage = () => {
                     className="bg-slate-800 border-slate-600 text-white"
                   />
                 </div>
-                <Button onClick={handleInvest} className="w-full bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600">
+
+                <Button
+                  onClick={handleInvest}
+                  className="w-full bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600"
+                >
                   Invertir en {selectedProject.symbol} (Próximamente)
                 </Button>
-                <Button variant="outline" onClick={() => setSelectedProject(null)} className="w-full">Cerrar</Button>
+                <Button variant="outline" onClick={() => setSelectedProject(null)} className="w-full">
+                  Cerrar
+                </Button>
               </CardContent>
             </Card>
           </motion.div>
         )}
-
       </div>
-    </Layout>
+    </>
   );
 };
 

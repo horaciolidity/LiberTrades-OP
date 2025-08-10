@@ -1,16 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  Users, 
-  Copy, 
-  DollarSign, 
+import {
+  Users,
+  Copy,
+  DollarSign,
   TrendingUp,
   Share2,
   Gift,
   Crown,
   Star
 } from 'lucide-react';
-import Layout from '@/components/Layout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,33 +18,45 @@ import { useData } from '@/contexts/DataContext';
 import { toast } from '@/components/ui/use-toast';
 
 const ReferralSystem = () => {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const { getReferrals } = useData();
+
   const [referrals, setReferrals] = useState([]);
   const [referralLink, setReferralLink] = useState('');
 
+  const referralCode = profile?.referral_code || user?.referralCode || '';
+
   useEffect(() => {
-    if (user) {
-      setReferrals(getReferrals(user.id));
-      setReferralLink(`${window.location.origin}/register?ref=${user.referralCode}`);
+    if (!user) return;
+
+    // getReferrals por código (coincide con el schema profiles.referral_code)
+    try {
+      const list = getReferrals?.(referralCode) || [];
+      setReferrals(list);
+    } catch {
+      setReferrals([]);
     }
-  }, [user, getReferrals]);
+
+    setReferralLink(`${window.location.origin}/register?ref=${referralCode}`);
+  }, [user, referralCode, getReferrals]);
 
   const copyReferralLink = () => {
+    if (!referralLink) return;
     navigator.clipboard.writeText(referralLink);
     toast({
-      title: "¡Enlace copiado!",
-      description: "El enlace de referido ha sido copiado al portapapeles",
+      title: '¡Enlace copiado!',
+      description: 'El enlace de referido ha sido copiado al portapapeles',
     });
   };
 
   const shareReferralLink = () => {
+    if (!referralLink) return;
     if (navigator.share) {
       navigator.share({
-        title: 'CryptoInvest Pro - Únete y gana dinero',
-        text: '¡Únete a CryptoInvest Pro y comienza a invertir en criptomonedas!',
+        title: 'Liber Trades - Únete y gana',
+        text: '¡Únete a Liber Trades y comienza a invertir en criptomonedas!',
         url: referralLink,
-      });
+      }).catch(() => {});
     } else {
       copyReferralLink();
     }
@@ -60,81 +71,31 @@ const ReferralSystem = () => {
 
   const getReferralLevel = (count) => {
     if (count >= 100) return { name: 'Diamante', icon: Crown, color: 'text-purple-400', bg: 'bg-purple-500/10' };
-    if (count >= 50) return { name: 'Oro', icon: Star, color: 'text-yellow-400', bg: 'bg-yellow-500/10' };
-    if (count >= 20) return { name: 'Plata', icon: TrendingUp, color: 'text-gray-400', bg: 'bg-gray-500/10' };
-    if (count >= 5) return { name: 'Bronce', icon: Gift, color: 'text-orange-400', bg: 'bg-orange-500/10' };
+    if (count >= 50)  return { name: 'Oro',      icon: Star,  color: 'text-yellow-400', bg: 'bg-yellow-500/10' };
+    if (count >= 20)  return { name: 'Plata',    icon: TrendingUp, color: 'text-gray-400',  bg: 'bg-gray-500/10' };
+    if (count >= 5)   return { name: 'Bronce',   icon: Gift,  color: 'text-orange-400', bg: 'bg-orange-500/10' };
     return { name: 'Principiante', icon: Users, color: 'text-blue-400', bg: 'bg-blue-500/10' };
   };
 
   const currentLevel = getReferralLevel(referrals.length);
-  const nextLevel = getReferralLevel(referrals.length + 1);
 
   const stats = [
-    {
-      title: 'Total Referidos',
-      value: referrals.length.toString(),
-      icon: Users,
-      color: 'text-blue-400',
-      bgColor: 'bg-blue-500/10'
-    },
-    {
-      title: 'Referidos Activos',
-      value: activeReferrals.toString(),
-      icon: TrendingUp,
-      color: 'text-green-400',
-      bgColor: 'bg-green-500/10'
-    },
-    {
-      title: 'Ganancias Totales',
-      value: `$${totalEarnings.toFixed(2)}`,
-      icon: DollarSign,
-      color: 'text-purple-400',
-      bgColor: 'bg-purple-500/10'
-    },
-    {
-      title: 'Nivel Actual',
-      value: currentLevel.name,
-      icon: currentLevel.icon,
-      color: currentLevel.color,
-      bgColor: currentLevel.bg
-    }
+    { title: 'Total Referidos',   value: referrals.length.toString(), icon: Users,      color: 'text-blue-400',   bgColor: 'bg-blue-500/10' },
+    { title: 'Referidos Activos', value: activeReferrals.toString(),  icon: TrendingUp, color: 'text-green-400',  bgColor: 'bg-green-500/10' },
+    { title: 'Ganancias Totales', value: `$${totalEarnings.toFixed(2)}`, icon: DollarSign, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
+    { title: 'Nivel Actual',      value: currentLevel.name,           icon: currentLevel.icon, color: currentLevel.color, bgColor: currentLevel.bg },
   ];
 
   const referralBenefits = [
-    {
-      level: 'Principiante',
-      referrals: '1-4 referidos',
-      commission: '$50 por referido',
-      bonus: 'Bono de bienvenida'
-    },
-    {
-      level: 'Bronce',
-      referrals: '5-19 referidos',
-      commission: '$75 por referido',
-      bonus: 'Acceso a webinars exclusivos'
-    },
-    {
-      level: 'Plata',
-      referrals: '20-49 referidos',
-      commission: '$100 por referido',
-      bonus: 'Asesoría personalizada'
-    },
-    {
-      level: 'Oro',
-      referrals: '50-99 referidos',
-      commission: '$150 por referido',
-      bonus: 'Acceso VIP + Señales premium'
-    },
-    {
-      level: 'Diamante',
-      referrals: '100+ referidos',
-      commission: '$200 por referido',
-      bonus: 'Todos los beneficios + Participación en ganancias'
-    }
+    { level: 'Principiante', referrals: '1-4 referidos',  commission: '$50 por referido',  bonus: 'Bono de bienvenida' },
+    { level: 'Bronce',       referrals: '5-19 referidos', commission: '$75 por referido',  bonus: 'Acceso a webinars exclusivos' },
+    { level: 'Plata',        referrals: '20-49 referidos', commission: '$100 por referido', bonus: 'Asesoría personalizada' },
+    { level: 'Oro',          referrals: '50-99 referidos', commission: '$150 por referido', bonus: 'Acceso VIP + Señales premium' },
+    { level: 'Diamante',     referrals: '100+ referidos', commission: '$200 por referido', bonus: 'Todos los beneficios + Participación en ganancias' },
   ];
 
   return (
-    <Layout>
+    <>
       <div className="space-y-8">
         {/* Header */}
         <motion.div
@@ -142,12 +103,8 @@ const ReferralSystem = () => {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8 }}
         >
-          <h1 className="text-3xl font-bold text-white mb-2">
-            Sistema de Referidos
-          </h1>
-          <p className="text-slate-300">
-            Invita amigos y gana comisiones por cada referido activo
-          </p>
+          <h1 className="text-3xl font-bold text-white mb-2">Sistema de Referidos</h1>
+          <p className="text-slate-300">Invita amigos y gana comisiones por cada referido activo</p>
         </motion.div>
 
         {/* Stats Grid */}
@@ -208,7 +165,7 @@ const ReferralSystem = () => {
                       <Copy className="h-4 w-4" />
                     </Button>
                   </div>
-                  
+
                   <div className="grid grid-cols-2 gap-4">
                     <Button
                       onClick={copyReferralLink}
@@ -231,14 +188,15 @@ const ReferralSystem = () => {
                 <div className="bg-slate-800/50 p-4 rounded-lg">
                   <h4 className="text-white font-semibold mb-2">Tu Código de Referido</h4>
                   <div className="flex items-center justify-between">
-                    <span className="text-2xl font-bold text-green-400">{user?.referralCode}</span>
+                    <span className="text-2xl font-bold text-green-400">{referralCode}</span>
                     <Button
                       size="sm"
                       onClick={() => {
-                        navigator.clipboard.writeText(user?.referralCode);
+                        if (!referralCode) return;
+                        navigator.clipboard.writeText(referralCode);
                         toast({
-                          title: "¡Código copiado!",
-                          description: "El código de referido ha sido copiado",
+                          title: '¡Código copiado!',
+                          description: 'El código de referido ha sido copiado',
                         });
                       }}
                     >
@@ -291,7 +249,7 @@ const ReferralSystem = () => {
                       </span>
                     </div>
                     <div className="w-full bg-slate-700 rounded-full h-2">
-                      <div 
+                      <div
                         className="bg-gradient-to-r from-green-500 to-blue-500 h-2 rounded-full transition-all duration-300"
                         style={{
                           width: `${Math.min(100, (referrals.length / (
@@ -347,8 +305,8 @@ const ReferralSystem = () => {
                   </thead>
                   <tbody>
                     {referralBenefits.map((benefit, index) => (
-                      <tr 
-                        key={index} 
+                      <tr
+                        key={index}
                         className={`border-b border-slate-700/50 ${
                           benefit.level === currentLevel.name ? 'bg-green-500/10' : ''
                         }`}
@@ -388,7 +346,7 @@ const ReferralSystem = () => {
             <CardContent>
               {referrals.length > 0 ? (
                 <div className="space-y-4">
-                  {referrals.map((referral, index) => (
+                  {referrals.map((referral) => (
                     <div key={referral.id} className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg">
                       <div>
                         <p className="text-white font-medium">{referral.name}</p>
@@ -414,7 +372,7 @@ const ReferralSystem = () => {
           </Card>
         </motion.div>
       </div>
-    </Layout>
+    </>
   );
 };
 

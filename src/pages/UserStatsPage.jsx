@@ -1,23 +1,18 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import Layout from '@/components/Layout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
-import { BarChartHorizontalBig, TrendingUp, Users, DollarSign, Gift, Star, Activity, CheckCircle, PieChart as PieIcon } from 'lucide-react';
+import { BarChartHorizontalBig, TrendingUp, Users, DollarSign, Star, Activity, CheckCircle, PieChart as PieIcon } from 'lucide-react';
 import { ResponsiveContainer, BarChart, XAxis, YAxis, Tooltip, Legend, Bar, PieChart, Pie, Cell } from 'recharts';
 
 const UserStatsPage = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, balances } = useAuth();
   const { getInvestments, getTransactions, getReferrals } = useData();
 
-  // Mientras se resuelve la sesión o no hay user todavía, no computar nada
+  // Estado de carga simple (sin Layout)
   if (loading || !user) {
-    return (
-      <Layout>
-        <div className="p-6 text-slate-300">Cargando datos del usuario…</div>
-      </Layout>
-    );
+    return <div className="p-6 text-slate-300">Cargando datos del usuario…</div>;
   }
 
   // Helpers seguros
@@ -26,28 +21,31 @@ const UserStatsPage = () => {
   const allTx          = safeArr(getTransactions?.());
   const referrals      = safeArr(getReferrals?.(user.id));
 
-  const investments  = allInvestments.filter(inv => inv?.userId === user.id);
-  const transactions = allTx.filter(tx => tx?.userId === user.id);
+  // Acepta user_id o userId
+  const investments  = allInvestments.filter(inv => (inv?.user_id ?? inv?.userId) === user.id);
+  const transactions = allTx.filter(tx => (tx?.user_id ?? tx?.userId) === user.id);
 
+  // Campos tolerantes: amount/daily_return/dailyReturn/duration/created_at/createdAt
   const totalInvested = investments.reduce((sum, inv) => sum + Number(inv?.amount ?? 0), 0);
+
   const totalEarningsFromInvestments = investments.reduce((sum, inv) => {
-    const created = new Date(inv?.createdAt ?? Date.now());
+    const created = new Date(inv?.created_at ?? inv?.createdAt ?? Date.now());
     const daysPassed = Math.max(0, Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)));
-    const daily = Number(inv?.dailyReturn ?? 0) / 100;
+    const daily = Number(inv?.daily_return ?? inv?.dailyReturn ?? 0) / 100;
     const dur = Math.min(daysPassed, Number(inv?.duration ?? 0));
     return sum + (Number(inv?.amount ?? 0) * daily * dur);
   }, 0);
 
   const totalDeposits = transactions
-    .filter(t => t?.type === 'deposit' && t?.status === 'completed')
+    .filter(t => (t?.type ?? '').toLowerCase() === 'deposit' && (t?.status ?? '').toLowerCase() === 'completed')
     .reduce((sum, t) => sum + Number(t?.amount ?? 0), 0);
 
   const totalWithdrawals = transactions
-    .filter(t => t?.type === 'withdrawal' && t?.status === 'completed')
+    .filter(t => (t?.type ?? '').toLowerCase() === 'withdrawal' && (t?.status ?? '').toLowerCase() === 'completed')
     .reduce((sum, t) => sum + Number(t?.amount ?? 0), 0);
 
   const portfolioDistributionData = investments.map(inv => ({
-    name: inv?.planName ?? 'Plan',
+    name: inv?.plan_name ?? inv?.planName ?? 'Plan',
     value: Number(inv?.amount ?? 0),
   }));
   const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
@@ -57,26 +55,32 @@ const UserStatsPage = () => {
     month.setMonth(month.getMonth() - i);
     const monthStr = month.toLocaleString('default', { month: 'short' });
     const txInMonth = transactions.filter(tx => {
-      const d = new Date(tx?.createdAt ?? Date.now());
+      const d = new Date(tx?.created_at ?? tx?.createdAt ?? Date.now());
       return d.getMonth() === month.getMonth() && d.getFullYear() === month.getFullYear();
     });
     return {
       month: monthStr,
-      deposits: txInMonth.filter(t => t?.type === 'deposit').reduce((s, t) => s + Number(t?.amount ?? 0), 0),
-      withdrawals: txInMonth.filter(t => t?.type === 'withdrawal').reduce((s, t) => s + Number(t?.amount ?? 0), 0),
-      investments: txInMonth.filter(t => t?.type === 'investment').reduce((s, t) => s + Number(t?.amount ?? 0), 0),
+      deposits: txInMonth
+        .filter(t => (t?.type ?? '').toLowerCase() === 'deposit')
+        .reduce((s, t) => s + Number(t?.amount ?? 0), 0),
+      withdrawals: txInMonth
+        .filter(t => (t?.type ?? '').toLowerCase() === 'withdrawal')
+        .reduce((s, t) => s + Number(t?.amount ?? 0), 0),
+      investments: txInMonth
+        .filter(t => (t?.type ?? '').toLowerCase() === 'investment')
+        .reduce((s, t) => s + Number(t?.amount ?? 0), 0),
     };
   }).reverse();
 
   const generalStats = [
-    { title: 'Balance Actual', value: `$${(user?.balance || 0).toFixed(2)}`, icon: DollarSign, color: 'text-green-400' },
+    { title: 'Balance Actual', value: `$${Number(balances?.usdc ?? 0).toFixed(2)}`, icon: DollarSign, color: 'text-green-400' },
     { title: 'Total Invertido', value: `$${totalInvested.toFixed(2)}`, icon: TrendingUp, color: 'text-blue-400' },
     { title: 'Ganancias de Inversión', value: `$${totalEarningsFromInvestments.toFixed(2)}`, icon: Star, color: 'text-yellow-400' },
     { title: 'Total Referidos', value: referrals.length, icon: Users, color: 'text-purple-400' },
   ];
 
   return (
-    <Layout>
+    <>
       <div className="space-y-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -135,12 +139,12 @@ const UserStatsPage = () => {
                   <BarChart data={monthlyActivityData}>
                     <XAxis dataKey="month" stroke="#94a3b8" fontSize={12} />
                     <YAxis stroke="#94a3b8" fontSize={12} tickFormatter={(value) => `$${value/1000}k`} />
-                    <Tooltip 
+                    <Tooltip
                       cursor={{fill: 'rgba(100, 116, 139, 0.1)'}}
                       contentStyle={{ backgroundColor: 'rgba(30, 41, 59, 0.9)', border: 'none', borderRadius: '0.5rem' }}
                       labelStyle={{ color: '#cbd5e1' }}
                     />
-                    <Legend wrapperStyle={{fontSize: "12px"}}/>
+                    <Legend wrapperStyle={{fontSize: '12px'}} />
                     <Bar dataKey="deposits" fill="#22c55e" name="Depósitos" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="withdrawals" fill="#ef4444" name="Retiros" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="investments" fill="#3b82f6" name="Inversiones" radius={[4, 4, 0, 0]} />
@@ -180,7 +184,7 @@ const UserStatsPage = () => {
                           <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                         ))}
                       </Pie>
-                      <Tooltip 
+                      <Tooltip
                         contentStyle={{ backgroundColor: 'rgba(30, 41, 59, 0.9)', border: 'none', borderRadius: '0.5rem' }}
                         labelStyle={{ color: '#cbd5e1' }}
                       />
@@ -207,25 +211,29 @@ const UserStatsPage = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {transactions.slice(0, 5).map(tx => (
-                <div key={tx.id} className="flex justify-between items-center p-3 mb-2 bg-slate-800/50 rounded-md">
-                  <div>
-                    <p className="text-white capitalize">
-                      {tx.type === 'deposit' ? 'Depósito' : tx.type === 'withdrawal' ? 'Retiro' : 'Inversión'}
-                    </p>
-                    <p className="text-xs text-slate-400">{tx.description || tx.planName}</p>
+              {transactions.slice(0, 5).map(tx => {
+                const date = tx?.created_at ?? tx?.createdAt ?? Date.now();
+                const type = (tx?.type ?? '').toLowerCase();
+                const desc = tx?.description ?? tx?.plan_name ?? tx?.planName ?? '';
+                const amount = Number(tx?.amount ?? 0);
+                const isPositive = type === 'deposit' || (type === 'investment' && (tx?.status ?? '').toLowerCase() === 'completed' && (tx?.daily_return ?? tx?.dailyReturn));
+                return (
+                  <div key={tx.id} className="flex justify-between items-center p-3 mb-2 bg-slate-800/50 rounded-md">
+                    <div>
+                      <p className="text-white capitalize">
+                        {type === 'deposit' ? 'Depósito' : type === 'withdrawal' ? 'Retiro' : 'Inversión'}
+                      </p>
+                      <p className="text-xs text-slate-400">{desc}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`font-semibold ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
+                        {type === 'deposit' ? '+' : '-'}${amount.toFixed(2)}
+                      </p>
+                      <p className="text-xs text-slate-500">{new Date(date).toLocaleDateString()}</p>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <p className={`font-semibold ${
-                      tx.type === 'deposit' || (tx.type==='investment' && tx.status==='completed' && tx.dailyReturn)
-                        ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {tx.type === 'deposit' ? '+' : '-'}${Number(tx.amount ?? 0).toFixed(2)}
-                    </p>
-                    <p className="text-xs text-slate-500">{new Date(tx.createdAt).toLocaleDateString()}</p>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               {transactions.length === 0 && (
                 <p className="text-slate-400 text-center py-4">No hay transacciones recientes.</p>
               )}
@@ -233,7 +241,7 @@ const UserStatsPage = () => {
           </Card>
         </motion.div>
       </div>
-    </Layout>
+    </>
   );
 };
 

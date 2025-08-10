@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import Layout from '@/components/Layout';
 import TransactionStats from '@/components/transactions/TransactionStats';
 import TransactionFilters from '@/components/transactions/TransactionFilters';
 import TransactionTabs from '@/components/transactions/TransactionTabs';
@@ -10,53 +9,66 @@ import { useData } from '@/contexts/DataContext';
 const TransactionHistory = () => {
   const { user } = useAuth();
   const { getTransactions, getInvestments } = useData();
+
   const [transactions, setTransactions] = useState([]);
   const [investments, setInvestments] = useState([]);
   const [filteredTransactions, setFilteredTransactions] = useState([]);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
 
   useEffect(() => {
-    if (user) {
-      const userTransactions = getTransactions().filter(t => t.userId === user.id);
-      const userInvestments = getInvestments().filter(i => i.userId === user.id);
-      
-      setTransactions(userTransactions);
-      setInvestments(userInvestments);
-      setFilteredTransactions(userTransactions);
-    }
+    if (!user) return;
+
+    const allTx = (getTransactions?.() || []);
+    const allInv = (getInvestments?.() || []);
+
+    // Acepta user_id o userId
+    const uid = user.id;
+    const userTransactions = allTx.filter(t => (t.user_id ?? t.userId) === uid);
+    const userInvestments  = allInv.filter(i => (i.user_id ?? i.userId) === uid);
+
+    setTransactions(userTransactions);
+    setInvestments(userInvestments);
+    setFilteredTransactions(userTransactions);
   }, [user, getTransactions, getInvestments]);
 
   useEffect(() => {
-    let filtered = transactions;
+    let filtered = [...transactions];
 
     if (filterType !== 'all') {
-      filtered = filtered.filter(t => t.type === filterType);
+      filtered = filtered.filter(t => (t.type || '').toLowerCase() === filterType.toLowerCase());
     }
     if (filterStatus !== 'all') {
-      filtered = filtered.filter(t => t.status === filterStatus);
+      filtered = filtered.filter(t => (t.status || '').toLowerCase() === filterStatus.toLowerCase());
     }
     if (searchTerm) {
-      filtered = filtered.filter(t => 
-        t.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        t.type.toLowerCase().includes(searchTerm.toLowerCase())
+      const q = searchTerm.toLowerCase();
+      filtered = filtered.filter(t =>
+        (t.description || '').toLowerCase().includes(q) ||
+        (t.type || '').toLowerCase().includes(q)
       );
     }
     setFilteredTransactions(filtered);
   }, [transactions, filterType, filterStatus, searchTerm]);
 
   const exportTransactions = () => {
-    const csvContent = [
+    const rows = [
       ['Fecha', 'Tipo', 'Descripción', 'Monto', 'Estado'],
-      ...filteredTransactions.map(t => [
-        new Date(t.createdAt).toLocaleDateString(),
-        t.type,
-        t.description || '',
-        t.amount.toFixed(2),
-        t.status
-      ])
-    ].map(row => row.join(',')).join('\n');
+      ...filteredTransactions.map(t => {
+        const date = t.created_at || t.createdAt || t.date || new Date().toISOString();
+        const amt = Number(t.amount);
+        return [
+          new Date(date).toLocaleDateString(),
+          t.type || '',
+          t.description || '',
+          Number.isFinite(amt) ? amt.toFixed(2) : '0.00',
+          t.status || ''
+        ];
+      })
+    ];
+    const csvContent = rows.map(r => r.map(String).join(',')).join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -68,7 +80,7 @@ const TransactionHistory = () => {
   };
 
   return (
-    <Layout>
+    <>
       <div className="space-y-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -100,7 +112,7 @@ const TransactionHistory = () => {
           investments={investments}
         />
       </div>
-    </Layout>
+    </>
   );
 };
 

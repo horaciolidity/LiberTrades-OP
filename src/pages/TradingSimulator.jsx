@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import Layout from '@/components/Layout';
 import TradingChart from '@/components/trading/TradingChart';
 import TradingPanel from '@/components/trading/TradingPanel';
 import TradingStats from '@/components/trading/TradingStats';
@@ -16,7 +15,8 @@ import { Send, MessageSquare } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 
 const countryFlags = {
-  US: '🇺🇸', AR: '🇦🇷', BR: '🇧🇷', CO: '🇨🇴', MX: '🇲🇽', ES: '🇪🇸', DE: '🇩🇪', GB: '🇬🇧', FR: '🇫🇷', JP: '🇯🇵', CN: '🇨🇳', default: '🏳️'
+  US: '🇺🇸', AR: '🇦🇷', BR: '🇧🇷', CO: '🇨🇴', MX: '🇲🇽', ES: '🇪🇸',
+  DE: '🇩🇪', GB: '🇬🇧', FR: '🇫🇷', JP: '🇯🇵', CN: '🇨🇳', default: '🏳️'
 };
 
 const userLevels = {
@@ -37,10 +37,21 @@ const TradingSimulator = () => {
 
   const fetchRealData = async () => {
     if (!user?.id) return;
-    const { data: balanceData } = await supabase.from('balances').select('*').eq('user_id', user.id).single();
-    const { data: tradesData } = await supabase.from('trades').select('*').eq('user_id', user.id).order('timestamp', { ascending: false });
 
-    setRealBalance(balanceData?.balance || 0);
+    // balances: usar id del usuario y columna usdc (no user_id / balance)
+    const { data: balanceData } = await supabase
+      .from('balances')
+      .select('usdc')
+      .eq('id', user.id)
+      .single();
+
+    const { data: tradesData } = await supabase
+      .from('trades')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('timestamp', { ascending: false });
+
+    setRealBalance(balanceData?.usdc || 0);
     setRealTrades(tradesData || []);
   };
 
@@ -51,7 +62,7 @@ const TradingSimulator = () => {
   }, [mode]);
 
   const scrollToBottom = () => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
   useEffect(scrollToBottom, [chatMessages]);
@@ -96,7 +107,8 @@ const TradingSimulator = () => {
     if (mode === 'demo') {
       tradingLogic.closeTrade(tradeId, profit);
     } else {
-      await supabase.from('trades')
+      await supabase
+        .from('trades')
         .update({ status: 'closed', profit, closeat: Date.now() })
         .eq('id', tradeId);
       await fetchRealData();
@@ -104,7 +116,7 @@ const TradingSimulator = () => {
   };
 
   return (
-    <Layout>
+    <>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -124,9 +136,19 @@ const TradingSimulator = () => {
 
         <TradingStats
           virtualBalance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
-          totalProfit={mode === 'demo' ? tradingLogic.totalProfit : realTrades.reduce((sum, t) => sum + (t.profit || 0), 0)}
-          openTradesCount={mode === 'demo' ? tradingLogic.openTrades.length : realTrades.filter(t => t.status === 'open').length}
-          totalTradesCount={mode === 'demo' ? tradingLogic.trades.length : realTrades.length}
+          totalProfit={
+            mode === 'demo'
+              ? tradingLogic.totalProfit
+              : realTrades.reduce((sum, t) => sum + (t.profit || 0), 0)
+          }
+          openTradesCount={
+            mode === 'demo'
+              ? tradingLogic.openTrades.length
+              : realTrades.filter(t => t.status === 'open').length
+          }
+          totalTradesCount={
+            mode === 'demo' ? tradingLogic.trades.length : realTrades.length
+          }
         />
 
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
@@ -151,8 +173,8 @@ const TradingSimulator = () => {
                   <div key={msg.id}>
                     <div className="flex items-center text-xs space-x-1 text-slate-400 mb-1">
                       <span className="text-purple-300 font-semibold">{msg.user}</span>
-                      <span>{countryFlags[msg.country]}</span>
-                      <span>{userLevels[msg.level]}</span>
+                      <span>{countryFlags[msg.country] || countryFlags.default}</span>
+                      <span>{userLevels[msg.level] || userLevels.beginner}</span>
                       <span className="text-slate-500">{msg.time}</span>
                     </div>
                     <p className="text-sm text-slate-200 bg-slate-700 px-3 py-1.5 rounded-md">{msg.text}</p>
@@ -191,7 +213,7 @@ const TradingSimulator = () => {
           closeTrade={handleCloseTrade}
         />
       </div>
-    </Layout>
+    </>
   );
 };
 
