@@ -1,7 +1,6 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from '@/components/ui/toaster';
-import { useAuth } from '@/contexts/AuthContext';
 import { DataProvider } from '@/contexts/DataContext';
 import Layout from '@/components/Layout';
 
@@ -22,41 +21,7 @@ import UserStatsPage from '@/pages/UserStatsPage';
 import RewardsPage from '@/pages/RewardsPage';
 import WalletPage from '@/pages/WalletPage';
 
-function FullScreenLoader() {
-  return (
-    <div className="min-h-screen grid place-items-center bg-slate-900">
-      <div className="text-slate-200">Cargando…</div>
-    </div>
-  );
-}
-
-function ProtectedRoute({ adminOnly = false }) {
-  const { user, profile, isAuthenticated, loading } = useAuth();
-
-  // Mostrar loader sólo en rutas PRIVADAS
-  if (loading) return <FullScreenLoader />;
-
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
-
-  if (adminOnly) {
-    const isAdmin =
-      profile?.role === 'admin' ||
-      user?.user_metadata?.role === 'admin' ||
-      user?.email === 'admin@test.com';
-    if (!isAdmin) return <Navigate to="/dashboard" replace />;
-  }
-  return <Outlet />;
-}
-
-/** IMPORTANTE:
- * En /login y /register NO bloqueamos por "loading".
- * Si ya estás autenticado, redirigimos.
- * Si no, mostramos el formulario aunque loading sea true.
- */
-function RedirectIfAuth({ children }) {
-  const { isAuthenticated } = useAuth();
-  return isAuthenticated ? <Navigate to="/dashboard" replace /> : children;
-}
+import ProtectedRoute, { GuestRoute } from '@/routes/ProtectedRoute';
 
 export default function App() {
   return (
@@ -67,10 +32,10 @@ export default function App() {
         <Routes>
           {/* públicas */}
           <Route path="/" element={<LandingPage />} />
-          <Route path="/login" element={<RedirectIfAuth><LoginPage /></RedirectIfAuth>} />
-          <Route path="/register" element={<RedirectIfAuth><RegisterPage /></RedirectIfAuth>} />
+          <Route path="/login" element={<GuestRoute><LoginPage /></GuestRoute>} />
+          <Route path="/register" element={<GuestRoute><RegisterPage /></GuestRoute>} />
 
-          {/* privadas */}
+          {/* privadas con layout */}
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/dashboard" element={<Dashboard />} />
@@ -96,7 +61,7 @@ export default function App() {
           </Route>
 
           {/* fallback */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </DataProvider>
     </Router>
