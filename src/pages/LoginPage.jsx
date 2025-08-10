@@ -64,11 +64,11 @@ export default function LoginPage() {
         <Card className="crypto-card">
           <CardHeader className="text-center">
             <div className="mx-auto w-16 h-16 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4">
-              <img alt="CryptoInvest Pro logo" src="https://images.unsplash.com/photo-1639916909400-40d53a2edd72" />
+              <img alt="LiberTrades logo" src="https://images.unsplash.com/photo-1639916909400-40d53a2edd72" />
             </div>
             <CardTitle className="text-2xl text-white">Iniciar Sesión</CardTitle>
             <CardDescription className="text-slate-300">
-              Accede a tu cuenta de CryptoInvest Pro
+              Accede a tu cuenta de LiberTrades
             </CardDescription>
           </CardHeader>
 

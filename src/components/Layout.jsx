@@ -139,7 +139,7 @@ const Layout = () => {
       >
         <div className="flex items-center justify-between p-4">
           <span className="text-xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-            CryptoInvest Pro
+            LiberTrades
           </span>
           <Button variant="ghost" size="icon" onClick={() => { playSound('click'); setSidebarOpen(false); }}>
             <X className="h-6 w-6" />
@@ -172,7 +172,7 @@ const Layout = () => {
         <div className="flex flex-col flex-grow bg-slate-800/95 backdrop-blur-xl border-r border-slate-700">
           <div className="flex items-center h-16 px-4">
             <span className="text-xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-              CryptoInvest Pro
+              LiberTrades
             </span>
           </div>
           <nav className="mt-8 flex-1 px-4">

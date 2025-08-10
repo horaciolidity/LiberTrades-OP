@@ -81,7 +81,7 @@ const LandingPage = () => {
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center">
               <span className="text-2xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-                CryptoInvest Pro
+                LiberTrades
               </span>
             </div>
             <div className="flex items-center space-x-4">
@@ -270,7 +270,7 @@ const LandingPage = () => {
               ¿Listo para comenzar tu viaje de inversión?
             </h2>
             <p className="text-xl text-white/90 mb-8">
-              Únete a miles de inversores que ya están generando ganancias con CryptoInvest Pro
+              Únete a miles de inversores que ya están generando ganancias con LiberTrades
             </p>
             <Link to="/register">
               <Button size="lg" className="bg-white text-blue-600 hover:bg-slate-100 text-lg px-8 py-4">
@@ -286,7 +286,7 @@ const LandingPage = () => {
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-8">
             <span className="text-2xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-              CryptoInvest Pro
+              LiberTrades
             </span>
           </div>
           <div className="flex justify-center space-x-6 mb-8">
@@ -308,7 +308,7 @@ const LandingPage = () => {
             <span>Soporte: support@cryptoinvestpro.com</span>
           </div>
           <p className="text-center text-slate-500">
-            © {new Date().getFullYear()} CryptoInvest Pro. Todos los derechos reservados.
+            © {new Date().getFullYear()} LiberTrades. Todos los derechos reservados.
           </p>
         </div>
       </footer>

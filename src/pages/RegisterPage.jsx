@@ -98,7 +98,7 @@ const RegisterPage = () => {
             </div>
             <CardTitle className="text-2xl text-white">Crear Cuenta</CardTitle>
             <CardDescription className="text-slate-300">
-              Únete a CryptoInvest Pro y comienza a invertir
+              Únete a LiberTrades y comienza a invertir
             </CardDescription>
           </CardHeader>
           <CardContent>
