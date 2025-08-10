@@ -2,132 +2,167 @@
 @import 'tailwindcss/components';
 @import 'tailwindcss/utilities';
 
-/* ====== Dark Gold Diamond tokens (shadcn/ui friendly) ====== */
-:root {
-  /* base */
-  --background: 240 25% 5%;      /* #0b0b10 aprox */
-  --foreground: 48 38% 94%;      /* marfil cálido */
+/* ===========================
+   Super Saiyan 5 – Design Tokens
+   =========================== */
+:root{
+  /* base cósmica */
+  --background: 248 60% 6%;      /* indigo muy oscuro */
+  --foreground: 220 27% 96%;     /* casi blanco */
 
   /* superficies */
-  --card: 240 25% 8%;
-  --card-foreground: 48 38% 94%;
-  --popover: 240 25% 7%;
-  --popover-foreground: 48 38% 94%;
+  --card: 248 53% 10%;
+  --card-foreground: 220 27% 96%;
+  --popover: 248 53% 8%;
+  --popover-foreground: 220 27% 96%;
 
-  /* marca */
-  --primary: 46 65% 52%;         /* gold */
-  --primary-foreground: 240 20% 6%;
-  --secondary: 215 28% 14%;      /* azul noche */
-  --secondary-foreground: 48 38% 94%;
-  --accent: 188 64% 72%;         /* “diamond” icy */
-  --accent-foreground: 240 20% 6%;
+  /* marca SSJ5 */
+  --primary: 199 100% 56%;       /* cian eléctrico (CTA) */
+  --primary-foreground: 230 33% 9%;
+  --secondary: 302 93% 63%;      /* magenta divino */
+  --secondary-foreground: 230 33% 9%;
+  --accent: 48 100% 58%;         /* oro ki */
+  --accent-foreground: 230 33% 9%;
 
-  /* estados */
-  --destructive: 0 62% 40%;
-  --destructive-foreground: 210 40% 98%;
-
-  /* líneas/inputs/anillos */
-  --muted: 215 16% 18%;
-  --muted-foreground: 215 20% 70%;
-  --border: 215 16% 22%;
-  --input: 215 16% 22%;
-  --ring: 46 65% 52%;
+  /* ui */
+  --muted: 248 28% 18%;
+  --muted-foreground: 216 21% 72%;
+  --border: 248 28% 20%;
+  --input: 248 28% 20%;
+  --ring: 199 100% 56%;
 
   --radius: 0.5rem;
 }
 
-* {
-  border-color: hsl(var(--border));
-}
+/* bordes por defecto usando el token */
+* { border-color: hsl(var(--border)); }
 
-body {
-  /* fondo profundo con leve violeta/azul */
-  background: radial-gradient(1200px 800px at 10% -10%, #12121a 0%, transparent 60%),
-              radial-gradient(1000px 700px at 110% -20%, #141728 0%, transparent 60%),
-              linear-gradient(135deg, #0b0b10 0%, #12141e 50%, #0f1420 100%);
+/* ===========================
+   Base
+   =========================== */
+html, body {
+  min-height: 100%;
+}
+body{
+  background-color: hsl(var(--background));
   color: hsl(var(--foreground));
   font-feature-settings: "rlig" 1, "calt" 1;
   min-height: 100vh;
 }
 
-/* ====== Helpers de marca ====== */
-@layer utilities {
-  .bg-brand-gradient {
-    @apply bg-gradient-to-r;
-    background-image: linear-gradient(90deg, hsl(var(--primary)) 0%, color-mix(in oklab, hsl(var(--primary)) 75%, #f5d26a) 100%);
-  }
-  .bg-brand-gradient-hover:hover {
-    background-image: linear-gradient(90deg, color-mix(in oklab, hsl(var(--primary)) 85%, #b88f2a) 0%, #f0cc5a 100%);
-  }
-  .text-brand-gold {
-    color: hsl(var(--primary));
-  }
-  .bg-primary-soft {
-    background-color: hsl(var(--primary) / 0.08);
-  }
-  .ring-brand {
-    --tw-ring-color: hsl(var(--primary));
-  }
+/* ===========================
+   Fondo cósmico SSJ5 (usar en el contenedor raíz del Layout)
+   =========================== */
+.app-bg-saiyan{
+  position:relative; min-height:100vh;
+  color:hsl(var(--foreground));
+  background:
+    radial-gradient(1200px 700px at -10% -10%, #1b0b2a 0%, transparent 55%),
+    radial-gradient(1100px 700px at 110% 0%, #061f2b 0%, transparent 55%),
+    conic-gradient(from 210deg at 50% 120%, #0a0b12 0deg, #1a1230 120deg, #0a1524 240deg, #0a0b12 360deg);
+}
+.app-bg-saiyan::before{
+  content:""; position:fixed; inset:0; pointer-events:none; opacity:.08;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/feTurbulence%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode:soft-light;
+}
+.app-bg-saiyan::after{
+  content:""; position:fixed; inset:-25vmax; pointer-events:none;
+  background: radial-gradient(1000px 600px at 50% 115%, rgba(0,0,0,.45), transparent 50%);
 }
 
-/* Gradientes temáticos */
-.crypto-gradient { /* “diamond” icy */
-  background: linear-gradient(135deg, rgba(167, 243, 240, 0.18) 0%, rgba(125, 211, 252, 0.18) 100%);
+/* ===========================
+   Utilidades de gradiente “legacy” (por si las usabas)
+   =========================== */
+.crypto-gradient {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 }
-
 .gold-gradient {
-  background: linear-gradient(135deg, #c9a227 0%, #f5d26a 100%);
+  background: linear-gradient(135deg, #f7971e 0%, #ffd200 100%);
 }
-
-.green-gradient { /* por compat: lo dejamos pero con tono oro */
-  background: linear-gradient(135deg, hsl(var(--primary)) 0%, #f5d26a 100%);
+.green-gradient {
+  background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
 }
-
 .red-gradient {
   background: linear-gradient(135deg, #fc466b 0%, #3f5efb 100%);
 }
 
-/* Vidrio / glassmorphism */
+/* ===========================
+   Botones / badges / auras SSJ5
+   =========================== */
+@keyframes auraPulse{
+  0%,100%{ box-shadow:0 0 0 rgba(255,255,255,0) }
+  50%{ box-shadow:0 0 40px hsl(var(--primary)/.55), 0 0 70px hsl(var(--secondary)/.35) }
+}
+
+.btn-ss5{
+  background-image: linear-gradient(90deg, hsl(var(--primary)) 0%, hsl(var(--secondary)) 100%);
+  color: hsl(var(--primary-foreground));
+  box-shadow: 0 8px 28px hsl(var(--primary)/.35);
+}
+.btn-ss5:hover{ filter:saturate(1.1) brightness(1.05) }
+
+.badge-ki{
+  background-color: hsl(var(--accent) / .12);
+  color: hsl(var(--accent));
+}
+
+.aura-ss5{ animation: auraPulse 2.2s ease-in-out infinite; }
+
+/* ===========================
+   Cards con borde “diamond”
+   =========================== */
+.crypto-card{
+  position:relative;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03)),
+    hsl(var(--card));
+  backdrop-filter: blur(16px);
+  border: 1px solid hsl(var(--border));
+  box-shadow: 0 12px 36px rgba(0,0,0,.45);
+  border-radius: var(--radius);
+}
+.crypto-card::after{
+  content:""; position:absolute; inset:0; border-radius:inherit; padding:1px;
+  background: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--secondary)) 60%, hsl(var(--accent)) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor; mask-composite:exclude;
+  opacity:.20; pointer-events:none;
+}
+
+/* ===========================
+   Título/brand con brillo (NO cambia el texto)
+   =========================== */
+.brand-title{
+  background: linear-gradient(90deg, #f7f7fb, #cfe6ff 50%, #ffffff);
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+  text-shadow: 0 0 22px rgba(255,255,255,.35);
+}
+
+/* ===========================
+   Otros helpers que ya usabas
+   =========================== */
 .glass-effect {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(12px);
-  border: 1px solid hsl(var(--primary) / 0.18);
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
-
-/* Área de gráfico con toque gold/diamond */
 .trading-chart {
-  background: linear-gradient(135deg,
-    hsl(var(--primary) / 0.08) 0%,
-    rgba(167, 243, 240, 0.10) 100%);
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.08) 0%, rgba(59, 130, 246, 0.08) 100%);
 }
-
-/* Animaciones */
-.animate-pulse-slow { animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-.animate-bounce-slow { animation: bounce 2s infinite; }
-
+.animate-pulse-slow {
+  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.animate-bounce-slow {
+  animation: bounce 2s infinite;
+}
 @keyframes float {
   0%, 100% { transform: translateY(0px); }
   50% { transform: translateY(-10px); }
 }
 .animate-float { animation: float 3s ease-in-out infinite; }
 
-/* Scrollbars ocultos */
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 
-/* Glow dorado */
-.neon-glow {
-  box-shadow: 0 0 24px hsl(var(--primary) / 0.45);
-}
-
-/* Tarjetas coherentes con el tema */
-.crypto-card {
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.03) 100%),
-    linear-gradient(0deg, hsl(var(--card)) 0%, hsl(var(--card)) 100%);
-  backdrop-filter: blur(16px);
-  border: 1px solid hsl(var(--border));
-  box-shadow:
-    0 1px 0 hsl(var(--primary) / 0.12) inset,
-    0 8px 24px rgba(0,0,0,0.35);
-}
+.neon-glow { box-shadow: 0 0 20px hsl(var(--primary) / .5); }
