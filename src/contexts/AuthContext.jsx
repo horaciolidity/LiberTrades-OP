@@ -32,16 +32,38 @@ export function AuthProvider({ children }) {
   }
 
   // Crea si no existe y devuelve la fila (idempotente)
-  async function fetchOrCreateBalances(userId) {
-    const { data, error } = await supabase
-      .from('balances')
-      .upsert({ user_id: userId, usdc: 0, eth: 0 }, { onConflict: 'user_id' })
-      .select()
-      .single();
-    if (error) console.warn('Balance:', error.message);
-    setBalances(data || null);
-    return data || null;
+ async function fetchOrCreateBalances(userId) {
+  // 1) Intentar leer
+  const { data: existing, error: selErr } = await supabase
+    .from('balances')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (selErr) {
+    console.warn('Balance (select):', selErr.message);
   }
+
+  // 2) Si existe, usarlo tal cual
+  if (existing) {
+    setBalances(existing);
+    return existing;
+  }
+
+  // 3) Si NO existe, crear con 0s (solo una vez)
+  const { data: inserted, error: insErr } = await supabase
+    .from('balances')
+    .insert({ user_id: userId, usdc: 0, eth: 0 })
+    .select()
+    .single();
+
+  if (insErr) {
+    console.warn('Balance (insert):', insErr.message);
+  }
+
+  setBalances(inserted || null);
+  return inserted || null;
+}
 
   // Refresca solo balances (útil post-ajuste admin)
   const refreshBalances = async () => {
