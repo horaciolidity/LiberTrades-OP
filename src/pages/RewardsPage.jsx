@@ -16,22 +16,35 @@ const initialTasks = [
   { id: 6, title: 'Lealtad Mensual', description: 'Mantén una inversión activa por 30 días consecutivos.', reward: '2% Bonus sobre Ganancias', icon: Star, completed: false, category: 'Lealtad' },
 ];
 
+// Rehidrata íconos perdidos al venir de localStorage (donde las funciones no se guardan)
+const restoreIcons = (arr = []) =>
+  arr.map(t => {
+    const fallback = initialTasks.find(x => x.id === t.id)?.icon || Gift;
+    return { ...t, icon: t.icon || fallback };
+  });
+
+const safeParse = (raw, fallback) => {
+  try { return JSON.parse(raw); } catch { return fallback; }
+};
+
 const RewardsPage = () => {
   const { user } = useAuth();
   const { playSound } = useSound();
 
   const [tasks, setTasks] = useState(() => {
-    const savedTasks = localStorage.getItem(`crypto_rewards_tasks_${user?.id}`);
-    return savedTasks ? JSON.parse(savedTasks) : initialTasks;
+    const raw = localStorage.getItem(`crypto_rewards_tasks_${user?.id}`);
+    const base = raw ? safeParse(raw, initialTasks) : initialTasks;
+    return restoreIcons(base);
   });
 
   const [claimedRewards, setClaimedRewards] = useState(() => {
-    const savedClaimed = localStorage.getItem(`crypto_claimed_rewards_${user?.id}`);
-    return savedClaimed ? JSON.parse(savedClaimed) : [];
+    const raw = localStorage.getItem(`crypto_claimed_rewards_${user?.id}`);
+    return raw ? safeParse(raw, []) : [];
   });
 
   React.useEffect(() => {
     if (user) {
+      // Al guardar, se pierde icon (función). No pasa nada porque luego rehidratamos.
       localStorage.setItem(`crypto_rewards_tasks_${user.id}`, JSON.stringify(tasks));
       localStorage.setItem(`crypto_claimed_rewards_${user.id}`, JSON.stringify(claimedRewards));
     }
@@ -42,10 +55,10 @@ const RewardsPage = () => {
     const task = tasks.find(t => t.id === taskId);
     if (task && !task.completed) {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: true } : t));
-      setClaimedRewards(prev => [...prev, { ...task, claimedAt: new Date().toISOString() }]);
+      setClaimedRewards(prev => [...prev, { id: task.id, title: task.title, reward: task.reward, claimedAt: new Date().toISOString() }]);
       toast({ title: '¡Recompensa Reclamada!', description: `Has reclamado "${task.reward}" por completar "${task.title}".` });
     } else {
-      toast({ title: 'Tarea ya completada', description: `Ya has reclamado la recompensa por "${task.title}".`, variant: 'destructive' });
+      toast({ title: 'Tarea ya completada', description: `Ya has reclamado la recompensa por "${task?.title || ''}".`, variant: 'destructive' });
     }
   };
 
@@ -72,7 +85,7 @@ const RewardsPage = () => {
             <h2 className="text-2xl font-semibold text-purple-300 mb-4 mt-6">{category}</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {tasks.filter(task => task.category === category).map((task) => {
-                const Icon = task.icon;
+                const Icon = task.icon || Gift; // <- fallback seguro
                 return (
                   <Card key={task.id} className={`crypto-card h-full flex flex-col ${task.completed ? 'opacity-60 border-green-500' : 'border-purple-500'}`}>
                     <CardHeader>
