@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { toast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -11,51 +11,50 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);         // objeto auth de Supabase
-  const [profile, setProfile] = useState(null);   // fila en public.profiles
-  const [balances, setBalances] = useState(null); // fila en public.balances
+  const [user, setUser] = useState(null);         // auth user
+  const [profile, setProfile] = useState(null);   // public.profiles
+  const [balances, setBalances] = useState(null); // public.balances
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // -------- helpers --------
+  const SAFE_TIMEOUT = 2500; // ms: nunca quedarse colgado más de ~2.5s
+
+  // ------- helpers -------
   async function fetchProfile(userId) {
     const { data, error } = await supabase
       .from('profiles')
       .select('id, username, referred_by, referral_code')
       .eq('id', userId)
       .maybeSingle();
-
-    if (error) {
-      console.warn('Perfil:', error.message);
-      return null;
-    }
-    setProfile(data);
-    return data;
+    if (error) console.warn('Perfil:', error.message);
+    setProfile(data || null);
+    return data || null;
   }
 
-  // Crea si no existe y devuelve una sola fila (evita races/duplicados)
+  // crea si no existe y devuelve una sola fila (idempotente)
   async function fetchOrCreateBalances(userId) {
-    const { data: bal, error } = await supabase
+    const { data, error } = await supabase
       .from('balances')
       .upsert({ user_id: userId, usdc: 0, eth: 0 }, { onConflict: 'user_id' })
       .select()
       .single();
-
     if (error) console.warn('Balance:', error.message);
-    setBalances(bal);
-    return bal;
+    setBalances(data || null);
+    return data || null;
   }
 
-  async function loadAll(userId) {
-    await Promise.all([fetchProfile(userId), fetchOrCreateBalances(userId)]);
+  // carga en segundo plano — NO bloquea el loader
+  function loadAllBG(userId) {
+    Promise.allSettled([fetchProfile(userId), fetchOrCreateBalances(userId)]).catch(() => {});
     setIsAuthenticated(true);
   }
 
-  // -------- bootstrap + listener --------
+  // ------- bootstrap + listener -------
   useEffect(() => {
     let mounted = true;
+    const killer = setTimeout(() => mounted && setLoading(false), SAFE_TIMEOUT);
 
-    const init = async () => {
+    (async () => {
       try {
         const { data, error } = await supabase.auth.getSession();
         if (error) console.warn('getSession error:', error.message);
@@ -67,7 +66,7 @@ export function AuthProvider({ children }) {
         setIsAuthenticated(!!session?.user);
 
         if (session?.user) {
-          await loadAll(session.user.id);
+          loadAllBG(session.user.id); // en BG
         } else {
           setProfile(null);
           setBalances(null);
@@ -81,33 +80,31 @@ export function AuthProvider({ children }) {
           setIsAuthenticated(false);
         }
       } finally {
-        if (mounted) setLoading(false);
+        if (mounted) setLoading(false); // soltar loader ya
       }
-    };
+    })();
 
-    init();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        const u = session?.user ?? null;
-        setUser(u);
-        setIsAuthenticated(!!u);
-        if (u) {
-          await loadAll(u.id);
-        } else {
-          setProfile(null);
-          setBalances(null);
-        }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_ev, session) => {
+      const u = session?.user ?? null;
+      setUser(u);
+      setIsAuthenticated(!!u);
+      if (u) {
+        loadAllBG(u.id); // en BG
+      } else {
+        setProfile(null);
+        setBalances(null);
       }
-    );
+      setLoading(false); // nunca quedarse colgado
+    });
 
     return () => {
       mounted = false;
+      clearTimeout(killer);
       subscription.unsubscribe();
     };
   }, []);
 
-  // -------- actions --------
+  // ------- actions -------
   const generateReferralCode = () =>
     Math.random().toString(36).substring(2, 8).toUpperCase();
 
@@ -116,24 +113,18 @@ export function AuthProvider({ children }) {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-
-      if (data?.user?.id) await loadAll(data.user.id);
-
+      if (data?.user?.id) loadAllBG(data.user.id);
       toast({ title: '¡Bienvenido!', description: 'Has iniciado sesión exitosamente' });
       return data.user ?? null;
     } catch (error) {
-      toast({
-        title: 'Error de autenticación',
-        description: error.message,
-        variant: 'destructive',
-      });
+      toast({ title: 'Error de autenticación', description: error.message, variant: 'destructive' });
       throw error;
     } finally {
       setLoading(false);
     }
   };
 
-  // Opción B (Confirm email OFF): sesión inmediata + inserts en client
+  // Opción B (Confirm email OFF)
   const register = async ({ email, password, name, referredBy }) => {
     setLoading(true);
     try {
@@ -148,21 +139,15 @@ export function AuthProvider({ children }) {
       const referralCode = generateReferralCode();
 
       if (userId) {
-        // Perfil
-        const { error: profileError } = await supabase.from('profiles').insert({
+        const { error: pErr } = await supabase.from('profiles').insert({
           id: userId,
           username: name || email.split('@')[0],
           referred_by: referredBy || null,
           referral_code: referralCode,
         });
-        if (profileError) throw profileError;
+        if (pErr) throw pErr;
 
-        // Balance (idempotente)
-        await fetchOrCreateBalances(userId);
-
-        // Cargar datos para UI
-        await fetchProfile(userId);
-        setIsAuthenticated(true);
+        loadAllBG(userId); // en BG
       }
 
       toast({ title: '¡Registro exitoso!', description: 'Tu cuenta ha sido creada correctamente.' });
@@ -186,44 +171,39 @@ export function AuthProvider({ children }) {
 
   const updateUser = async (updatedData) => {
     if (!user?.id) {
-      toast({
-        title: 'Sin sesión',
-        description: 'No hay usuario para actualizar',
-        variant: 'destructive',
-      });
+      toast({ title: 'Sin sesión', description: 'No hay usuario para actualizar', variant: 'destructive' });
       return;
     }
     const { error } = await supabase.from('profiles').update(updatedData).eq('id', user.id);
     if (error) {
-      toast({
-        title: 'Error al actualizar usuario',
-        description: error.message,
-        variant: 'destructive',
-      });
+      toast({ title: 'Error al actualizar usuario', description: error.message, variant: 'destructive' });
       return;
     }
-    await fetchProfile(user.id); // refresca en contexto
+    fetchProfile(user.id); // refresh en BG
     toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado exitosamente' });
   };
 
-  // Nombre para UI
   const displayName =
     profile?.username ??
     user?.user_metadata?.full_name ??
     (user?.email ? user.email.split('@')[0] : 'Usuario');
 
-  const value = {
-    user,
-    profile,
-    balances,
-    displayName,     // “Bienvenido, {displayName}”
-    isAuthenticated,
-    loading,
-    login,
-    register,
-    logout,
-    updateUser,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        profile,
+        balances,
+        displayName,
+        isAuthenticated,
+        loading,
+        login,
+        register,
+        logout,
+        updateUser,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }
