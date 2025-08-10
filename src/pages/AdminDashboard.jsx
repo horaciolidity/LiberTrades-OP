@@ -1,384 +1,422 @@
-import React, { useState, useEffect } from 'react';
+// src/pages/AdminDashboard.jsx
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  Users, 
-  DollarSign, 
-  TrendingUp, 
-  Activity,
-  UserCheck,
-  Wallet,
-  Settings,
-  AlertTriangle
-} from 'lucide-react';
-import Layout from '@/components/Layout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { toast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
+import {
+  Users as UsersIcon,
+  DollarSign,
+  Download,
+  Upload,
+  RefreshCw,
+  Search,
+  Check,
+  X as XIcon,
+} from 'lucide-react';
 
-
-const AdminDashboard = () => {
-  const [users, setUsers] = useState([]);
-  const [investments, setInvestments] = useState([]);
-  const [transactions, setTransactions] = useState([]);
-
- useEffect(() => {
-  const fetchData = async () => {
-    const { data: usersData } = await supabase.from('profiles').select('*');
-    const { data: investmentsData } = await supabase.from('investments').select('*');
-    const { data: transactionsData } = await supabase.from('wallet_transactions').select('*');
-
-    setUsers(usersData || []);
-    setInvestments(investmentsData || []);
-    setTransactions(transactionsData || []);
-  };
-
-  fetchData();
-}, []);
-
-
-  const totalUsers = users.length;
-  const totalInvestments = investments.reduce((sum, inv) => sum + inv.amount, 0);
-  const totalTransactions = transactions.length;
-  const activeUsers = users.filter(user => {
-    const lastActivity = new Date(user.createdAt);
-    const daysSinceActivity = (Date.now() - lastActivity.getTime()) / (1000 * 60 * 60 * 24);
-    return daysSinceActivity <= 30;
-  }).length;
-
-  const adminStats = [
-    {
-      title: 'Total Usuarios',
-      value: totalUsers.toString(),
-      icon: Users,
-      color: 'text-blue-400',
-      bgColor: 'bg-blue-500/10'
-    },
-    {
-      title: 'Usuarios Activos',
-      value: activeUsers.toString(),
-      icon: UserCheck,
-      color: 'text-green-400',
-      bgColor: 'bg-green-500/10'
-    },
-    {
-      title: 'Total Invertido',
-      value: `${totalInvestments.toFixed(2)}`,
-      icon: DollarSign,
-      color: 'text-purple-400',
-      bgColor: 'bg-purple-500/10'
-    },
-    {
-      title: 'Transacciones',
-      value: totalTransactions.toString(),
-      icon: Activity,
-      color: 'text-orange-400',
-      bgColor: 'bg-orange-500/10'
-    }
-  ];
-
-  const handleUserStatusChange = async (userId, newStatus) => {
-
-    const updatedUsers = users.map(user => 
-      user.id === userId ? { ...user, status: newStatus } : user
-    );
-    setUsers(updatedUsers);
-    await supabase.from('profiles').update({ status: newStatus }).eq('id', userId);
-
-  };
-
-  const handleBalanceUpdate = async (userId, newBalance) => {
-    const updatedUsers = users.map(user => 
-      user.id === userId ? { ...user, balance: parseFloat(newBalance) } : user
-    );
-    setUsers(updatedUsers);
-    await supabase.from('balances').update({ balance: parseFloat(newBalance) }).eq('user_id', userId);
-
-  };
-
-  return (
-    <Layout>
-      <div className="space-y-8">
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
-        >
-          <h1 className="text-3xl font-bold text-white mb-2">
-            Panel de Administración
-          </h1>
-          <p className="text-slate-300">
-            Gestiona usuarios, inversiones y configuraciones del sistema
-          </p>
-        </motion.div>
-
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {adminStats.map((stat, index) => {
-            const Icon = stat.icon;
-            return (
-              <motion.div
-                key={index}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: index * 0.1 }}
-              >
-                <Card className="crypto-card">
-                  <CardContent className="p-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-slate-400 text-sm font-medium">{stat.title}</p>
-                        <p className="text-2xl font-bold text-white mt-1">{stat.value}</p>
-                      </div>
-                      <div className={`p-3 rounded-lg ${stat.bgColor}`}>
-                        <Icon className={`h-6 w-6 ${stat.color}`} />
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            );
-          })}
-        </div>
-
-        {/* Admin Tabs */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.4 }}
-        >
-          <Tabs defaultValue="users" className="space-y-6">
-            <TabsList className="grid w-full grid-cols-4 bg-slate-800">
-              <TabsTrigger value="users" className="text-white">Usuarios</TabsTrigger>
-              <TabsTrigger value="investments" className="text-white">Inversiones</TabsTrigger>
-              <TabsTrigger value="transactions" className="text-white">Transacciones</TabsTrigger>
-              <TabsTrigger value="settings" className="text-white">Configuración</TabsTrigger>
-            </TabsList>
-
-            {/* Users Tab */}
-            <TabsContent value="users">
-              <Card className="crypto-card">
-                <CardHeader>
-                  <CardTitle className="text-white">Gestión de Usuarios</CardTitle>
-                  <CardDescription className="text-slate-300">
-                    Administra todos los usuarios registrados
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    {users.map((user) => (
-                      <div key={user.id} className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg">
-                        <div className="flex-1">
-                          <div className="flex items-center space-x-4">
-                            <div>
-                              <p className="text-white font-medium">{user.name}</p>
-                              <p className="text-slate-400 text-sm">{user.email}</p>
-                            </div>
-                            <div className="text-sm">
-                              <span className={`px-2 py-1 rounded-full text-xs ${
-                                user.role === 'admin' 
-                                  ? 'bg-red-500/20 text-red-400' 
-                                  : 'bg-blue-500/20 text-blue-400'
-                              }`}>
-                                {user.role || 'user'}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center space-x-4">
-                          <div className="text-right">
-                            <p className="text-white font-medium">${(user.balance || 0).toFixed(2)}</p>
-                            <p className="text-slate-400 text-sm">Saldo</p>
-                          </div>
-                          <div className="flex space-x-2">
-                            <Input
-                              type="number"
-                              placeholder="Nuevo saldo"
-                              className="w-32 bg-slate-700 border-slate-600 text-white"
-                              onKeyPress={(e) => {
-                                if (e.key === 'Enter') {
-                                  handleBalanceUpdate(user.id, e.target.value);
-                                  e.target.value = '';
-                                }
-                              }}
-                            />
-                            <Button
-                              size="sm"
-                              variant={user.status === 'blocked' ? 'destructive' : 'outline'}
-                              onClick={() => handleUserStatusChange(
-                                user.id, 
-                                user.status === 'blocked' ? 'active' : 'blocked'
-                              )}
-                            >
-                              {user.status === 'blocked' ? 'Desbloquear' : 'Bloquear'}
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* Investments Tab */}
-            <TabsContent value="investments">
-              <Card className="crypto-card">
-                <CardHeader>
-                  <CardTitle className="text-white">Inversiones Activas</CardTitle>
-                  <CardDescription className="text-slate-300">
-                    Monitorea todas las inversiones del sistema
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    {investments.map((investment) => {
-                      const user = users.find(u => u.id === investment.userId);
-                      return (
-                        <div key={investment.id} className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg">
-                          <div>
-                            <p className="text-white font-medium">{user?.name || 'Usuario desconocido'}</p>
-                            <p className="text-slate-400 text-sm">{investment.planName}</p>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-white font-medium">${investment.amount.toFixed(2)}</p>
-                            <p className="text-green-400 text-sm">{investment.dailyReturn}% diario</p>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-slate-300 text-sm">
-                              {new Date(investment.createdAt).toLocaleDateString()}
-                            </p>
-                            <span className={`px-2 py-1 rounded-full text-xs ${
-                              investment.status === 'active' 
-                                ? 'bg-green-500/20 text-green-400' 
-                                : 'bg-gray-500/20 text-gray-400'
-                            }`}>
-                              {investment.status}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* Transactions Tab */}
-            <TabsContent value="transactions">
-              <Card className="crypto-card">
-                <CardHeader>
-                  <CardTitle className="text-white">Historial de Transacciones</CardTitle>
-                  <CardDescription className="text-slate-300">
-                    Todas las transacciones del sistema
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    {transactions.map((transaction) => {
-                      const user = users.find(u => u.id === transaction.userId);
-                      return (
-                        <div key={transaction.id} className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg">
-                          <div>
-                            <p className="text-white font-medium">{user?.name || 'Usuario desconocido'}</p>
-                            <p className="text-slate-400 text-sm">{transaction.type}</p>
-                          </div>
-                          <div className="text-right">
-                            <p className={`font-medium ${
-                              transaction.type === 'deposit' ? 'text-green-400' : 'text-red-400'
-                            }`}>
-                              {transaction.type === 'deposit' ? '+' : '-'}${transaction.amount.toFixed(2)}
-                            </p>
-                            <p className="text-slate-400 text-sm">
-                              {new Date(transaction.createdAt).toLocaleDateString()}
-                            </p>
-                          </div>
-                          <span className={`px-2 py-1 rounded-full text-xs ${
-                            transaction.status === 'completed' 
-                              ? 'bg-green-500/20 text-green-400' 
-                              : transaction.status === 'pending'
-                              ? 'bg-yellow-500/20 text-yellow-400'
-                              : 'bg-red-500/20 text-red-400'
-                          }`}>
-                            {transaction.status}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* Settings Tab */}
-            <TabsContent value="settings">
-              <Card className="crypto-card">
-                <CardHeader>
-                  <CardTitle className="text-white">Configuración del Sistema</CardTitle>
-                  <CardDescription className="text-slate-300">
-                    Ajustes generales de la plataforma
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-4">
-                      <div>
-                        <Label className="text-white">Comisión de Referidos (%)</Label>
-                        <Input 
-                          type="number" 
-                          defaultValue="10"
-                          className="bg-slate-800 border-slate-600 text-white"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-white">Mínimo Retiro ($)</Label>
-                        <Input 
-                          type="number" 
-                          defaultValue="50"
-                          className="bg-slate-800 border-slate-600 text-white"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-white">Máximo Retiro Diario ($)</Label>
-                        <Input 
-                          type="number" 
-                          defaultValue="10000"
-                          className="bg-slate-800 border-slate-600 text-white"
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-4">
-                      <div>
-                        <Label className="text-white">Tiempo de Procesamiento (horas)</Label>
-                        <Input 
-                          type="number" 
-                          defaultValue="24"
-                          className="bg-slate-800 border-slate-600 text-white"
-                        />
-                      </div>
-                      <div>
-                        <Label className="text-white">Mantenimiento del Sistema</Label>
-                        <select className="w-full p-2 bg-slate-800 border border-slate-600 rounded-md text-white">
-                          <option value="active">Activo</option>
-                          <option value="maintenance">Mantenimiento</option>
-                        </select>
-                      </div>
-                      <Button className="w-full bg-gradient-to-r from-green-500 to-blue-500">
-                        Guardar Configuración
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
-        </motion.div>
-      </div>
-    </Layout>
-  );
+const fmt = (n, dec = 2) => {
+  const num = Number(n);
+  return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
 };
 
-export default AdminDashboard;
+export default function AdminDashboard() {
+  const [loading, setLoading] = useState(true);
+
+  // data
+  const [users, setUsers] = useState([]);           // {id, username, email, role, balance, demo_balance, created_at}
+  const [pendingDeposits, setPendingDeposits] = useState([]);
+  const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
+
+  // ui
+  const [search, setSearch] = useState('');
+  const [adjustValues, setAdjustValues] = useState({}); // { user_id: "+100" }
+
+  // métricas
+  const [metrics, setMetrics] = useState({
+    totalUsers: 0,
+    pendingDeposits: 0,
+    pendingWithdrawals: 0,
+    volume30d: 0,
+    activeUsers30d: 0,
+  });
+
+  // ------- fetchers -------
+  const fetchUsers = async () => {
+    // perfiles
+    const { data: profs, error: pErr } = await supabase
+      .from('profiles')
+      .select('id, username, email, role, created_at')
+      .order('created_at', { ascending: false });
+    if (pErr) throw pErr;
+
+    // balances
+    const { data: bals, error: bErr } = await supabase
+      .from('balances')
+      .select('user_id, usdc, demo_balance');
+    if (bErr) throw bErr;
+
+    const balMap = Object.fromEntries((bals || []).map(b => [b.user_id, b]));
+    const merged = (profs || []).map(p => ({
+      ...p,
+      balance: Number(balMap[p.id]?.usdc ?? 0),
+      demo_balance: Number(balMap[p.id]?.demo_balance ?? 0),
+    }));
+    setUsers(merged);
+  };
+
+  const fetchPending = async () => {
+    const { data: dep, error: dErr } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('type', 'deposit')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
+    if (dErr) throw dErr;
+
+    const { data: wit, error: wErr } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('type', 'withdrawal')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
+    if (wErr) throw wErr;
+
+    setPendingDeposits(dep || []);
+    setPendingWithdrawals(wit || []);
+  };
+
+  const fetchMetrics = async (usersList, depList, witList) => {
+    const fromISO = new Date(Date.now() - 30 * 864e5).toISOString();
+    const { data: tx30, error } = await supabase
+      .from('transactions')
+      .select('amount,type,status,created_at,user_id')
+      .gte('created_at', fromISO)
+      .eq('status', 'completed');
+    if (error) throw error;
+
+    const volume30d = (tx30 || []).reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    const activeUserIds = new Set((tx30 || []).map(t => t.user_id));
+    const activeUsers30d = usersList.filter(u => activeUserIds.has(u.id)).length;
+
+    setMetrics({
+      totalUsers: usersList.length,
+      pendingDeposits: depList.length,
+      pendingWithdrawals: witList.length,
+      volume30d,
+      activeUsers30d,
+    });
+  };
+
+  const reloadAll = async () => {
+    setLoading(true);
+    try {
+      await Promise.all([fetchUsers(), fetchPending()]);
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'Error cargando datos', description: e.message, variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { reloadAll(); }, []);
+  useEffect(() => { fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {}); },
+    [users, pendingDeposits, pendingWithdrawals]);
+
+  // ------- acciones admin -------
+  const adjustBalance = async (userId, deltaStr) => {
+    const delta = Number(deltaStr);
+    if (!deltaStr || !Number.isFinite(delta)) {
+      toast({ title: 'Monto inválido', description: 'Ingresa un número (ej: +100 o -50).', variant: 'destructive' });
+      return;
+    }
+    try {
+      const { data: row, error: gErr } = await supabase
+        .from('balances')
+        .select('usdc')
+        .eq('user_id', userId)
+        .single();
+      if (gErr) throw gErr;
+
+      const newUsdc = Number(row?.usdc || 0) + delta;
+      const { error: uErr } = await supabase
+        .from('balances')
+        .update({ usdc: newUsdc })
+        .eq('user_id', userId);
+      if (uErr) throw uErr;
+
+      await supabase.from('transactions').insert({
+        user_id: userId,
+        type: delta >= 0 ? 'admin_credit' : 'admin_debit',
+        amount: Math.abs(delta),
+        status: 'completed',
+        description: 'Ajuste manual admin',
+      });
+
+      toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(newUsdc)}` });
+      await reloadAll();
+      setAdjustValues(v => ({ ...v, [userId]: '' }));
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'Error ajustando balance', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const approveDeposit = async (tx) => {
+    try {
+      const { data: balRow, error: gErr } = await supabase
+        .from('balances')
+        .select('usdc')
+        .eq('user_id', tx.user_id)
+        .single();
+      if (gErr) throw gErr;
+
+      const newUsdc = Number(balRow?.usdc || 0) + Number(tx.amount || 0);
+      const { error: bErr } = await supabase
+        .from('balances')
+        .update({ usdc: newUsdc })
+        .eq('user_id', tx.user_id);
+      if (bErr) throw bErr;
+
+      const { error: tErr } = await supabase
+        .from('transactions')
+        .update({ status: 'completed' })
+        .eq('id', tx.id);
+      if (tErr) throw tErr;
+
+      toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
+      await reloadAll();
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'Error aprobando depósito', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const approveWithdrawal = async (tx) => {
+    try {
+      const { data: balRow, error: gErr } = await supabase
+        .from('balances')
+        .select('usdc')
+        .eq('user_id', tx.user_id)
+        .single();
+      if (gErr) throw gErr;
+
+      const current = Number(balRow?.usdc || 0);
+      const amt = Number(tx.amount || 0);
+      if (current < amt) {
+        toast({ title: 'Saldo insuficiente', description: 'No alcanza para aprobar', variant: 'destructive' });
+        return;
+      }
+
+      const { error: bErr } = await supabase
+        .from('balances')
+        .update({ usdc: current - amt })
+        .eq('user_id', tx.user_id);
+      if (bErr) throw bErr;
+
+      const { error: tErr } = await supabase
+        .from('transactions')
+        .update({ status: 'completed' })
+        .eq('id', tx.id);
+      if (tErr) throw tErr;
+
+      toast({ title: 'Retiro aprobado', description: `Debitado $${fmt(tx.amount)}` });
+      await reloadAll();
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'Error aprobando retiro', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const rejectTx = async (tx) => {
+    try {
+      const { error } = await supabase
+        .from('transactions')
+        .update({ status: 'rejected' })
+        .eq('id', tx.id);
+      if (error) throw error;
+      toast({ title: 'Solicitud rechazada' });
+      await reloadAll();
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'Error', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  // ------- filtros -------
+  const filteredUsers = useMemo(() => {
+    if (!search) return users;
+    const q = search.toLowerCase();
+    return users.filter(
+      u =>
+        (u.email || '').toLowerCase().includes(q) ||
+        (u.username || '').toLowerCase().includes(q) ||
+        (u.id || '').toLowerCase().includes(q)
+    );
+  }, [users, search]);
+
+  return (
+    <div className="space-y-8">
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
+        <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
+          <RefreshCw className="h-8 w-8 mr-3 text-cyan-400" />
+          Panel de Administración
+        </h1>
+        <p className="text-slate-300">Métricas, usuarios y aprobaciones de depósitos/retiros.</p>
+      </motion.div>
+
+      {/* Métricas */}
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+        {[
+          { t: 'Usuarios', v: metrics.totalUsers, icon: UsersIcon, color: 'text-purple-400', bg: 'bg-purple-500/10' },
+          { t: 'Activos (30d)', v: metrics.activeUsers30d, icon: UsersIcon, color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
+          { t: 'Depósitos Pend.', v: metrics.pendingDeposits, icon: Download, color: 'text-green-400', bg: 'bg-green-500/10' },
+          { t: 'Retiros Pend.', v: metrics.pendingWithdrawals, icon: Upload, color: 'text-yellow-400', bg: 'bg-yellow-500/10' },
+          { t: 'Volumen 30d', v: `$${fmt(metrics.volume30d)}`, icon: DollarSign, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+        ].map((m) => {
+          const I = m.icon;
+          return (
+            <Card key={m.t} className="crypto-card">
+              <CardContent className="p-6 flex items-center justify-between">
+                <div>
+                  <p className="text-slate-400 text-sm">{m.t}</p>
+                  <p className="text-2xl font-bold text-white mt-1">{m.v}</p>
+                </div>
+                <div className={`p-3 rounded-lg ${m.bg}`}>
+                  <I className={`h-6 w-6 ${m.color}`} />
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* Usuarios */}
+      <Card className="crypto-card">
+        <CardHeader>
+          <CardTitle className="text-white">Usuarios</CardTitle>
+          <CardDescription className="text-slate-300">Buscar, ver saldo y ajustar.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Search className="h-4 w-4 text-slate-400" />
+            <Input
+              placeholder="Buscar por email, usuario o id…"
+              className="bg-slate-800 border-slate-600 text-white"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-700 text-slate-300">
+                  <th className="text-left py-2">Usuario</th>
+                  <th className="text-left py-2">Email</th>
+                  <th className="text-left py-2">Rol</th>
+                  <th className="text-right py-2">Saldo</th>
+                  <th className="text-right py-2">Ajustar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredUsers.map(u => (
+                  <tr key={u.id} className="border-b border-slate-800/60">
+                    <td className="py-2 text-white">{u.username || '—'}</td>
+                    <td className="py-2 text-slate-300">{u.email || '—'}</td>
+                    <td className="py-2">
+                      <span className={`px-2 py-1 rounded text-xs ${u.role === 'admin' ? 'bg-purple-500/20 text-purple-300' : 'bg-slate-700 text-slate-300'}`}>
+                        {u.role || 'user'}
+                      </span>
+                    </td>
+                    <td className="py-2 text-right text-green-400 font-semibold">${fmt(u.balance)}</td>
+                    <td className="py-2">
+                      <div className="flex justify-end items-center gap-2">
+                        <Input
+                          placeholder="+100 o -50"
+                          value={adjustValues[u.id] ?? ''}
+                          onChange={(e) => setAdjustValues(v => ({ ...v, [u.id]: e.target.value }))}
+                          className="w-28 bg-slate-800 border-slate-600 text-white"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() => adjustBalance(u.id, adjustValues[u.id])}
+                          className="bg-gradient-to-r from-green-500 to-teal-500 hover:opacity-90"
+                        >
+                          Aplicar
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {filteredUsers.length === 0 && (
+                  <tr><td colSpan="5" className="py-6 text-center text-slate-400">Sin resultados.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Depósitos pendientes */}
+      <Card className="crypto-card">
+        <CardHeader>
+          <CardTitle className="text-white flex items-center"><Download className="h-5 w-5 mr-2 text-green-400" /> Depósitos pendientes</CardTitle>
+          <CardDescription className="text-slate-300">Aprueba o rechaza las solicitudes.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {pendingDeposits.map(tx => (
+              <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
+                <div className="text-sm">
+                  <p className="text-white font-medium">Usuario: {tx.user_id}</p>
+                  <p className="text-slate-400">Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span></p>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => approveDeposit(tx)} className="bg-green-600 hover:bg-green-700">
+                    <Check className="h-4 w-4 mr-1" /> Aprobar
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => rejectTx(tx)}>
+                    <XIcon className="h-4 w-4 mr-1" /> Rechazar
+                  </Button>
+                </div>
+              </div>
+            ))}
+            {pendingDeposits.length === 0 && <p className="text-slate-400">No hay depósitos pendientes.</p>}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Retiros pendientes */}
+      <Card className="crypto-card">
+        <CardHeader>
+          <CardTitle className="text-white flex items-center"><Upload className="h-5 w-5 mr-2 text-yellow-400" /> Retiros pendientes</CardTitle>
+          <CardDescription className="text-slate-300">Aprueba o rechaza las solicitudes.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {pendingWithdrawals.map(tx => (
+              <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
+                <div className="text-sm">
+                  <p className="text-white font-medium">Usuario: {tx.user_id}</p>
+                  <p className="text-slate-400">Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span></p>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => approveWithdrawal(tx)} className="bg-blue-600 hover:bg-blue-700">
+                    <Check className="h-4 w-4 mr-1" /> Aprobar
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => rejectTx(tx)}>
+                    <XIcon className="h-4 w-4 mr-1" /> Rechazar
+                  </Button>
+                </div>
+              </div>
+            ))}
+            {pendingWithdrawals.length === 0 && <p className="text-slate-400">No hay retiros pendientes.</p>}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

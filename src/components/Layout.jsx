@@ -33,7 +33,7 @@ const fmt = (n, dec = 2) => {
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // 👇 IMPORTANTE: ahora traemos profile desde el AuthContext
-  const { user, profile, balances, logout, updateUser } = useAuth();
+  const { user, profile, balances, displayName, logout, updateUser } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -223,8 +223,7 @@ const Layout = () => {
           <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
             <div className="flex flex-1 items-center">
               <div className="text-sm text-slate-300">
-                Bienvenido, <span className="font-semibold text-white">{user?.name || 'Usuario'}</span>
-              </div>
+Bienvenido,       <span className="font-semibold text-white">{displayName}</span>              </div>
             </div>
             <div className="flex items-center gap-x-4 lg:gap-x-6">
               {web3Account ? (
