@@ -23,7 +23,7 @@ export function AuthProvider({ children }) {
   async function fetchProfile(userId) {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, username, referred_by, referral_code, role, full_name, email')
+      .select('id, username, referred_by, referral_code, role')
       .eq('id', userId)
       .maybeSingle();
     if (error) console.warn('Perfil:', error.message);
