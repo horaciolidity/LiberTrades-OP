@@ -32,7 +32,10 @@ function FullScreenLoader() {
 
 function ProtectedRoute({ adminOnly = false }) {
   const { user, profile, isAuthenticated, loading } = useAuth();
+
+  // Mostrar loader sólo en rutas PRIVADAS
   if (loading) return <FullScreenLoader />;
+
   if (!isAuthenticated) return <Navigate to="/login" replace />;
 
   if (adminOnly) {
@@ -45,9 +48,13 @@ function ProtectedRoute({ adminOnly = false }) {
   return <Outlet />;
 }
 
+/** IMPORTANTE:
+ * En /login y /register NO bloqueamos por "loading".
+ * Si ya estás autenticado, redirigimos.
+ * Si no, mostramos el formulario aunque loading sea true.
+ */
 function RedirectIfAuth({ children }) {
-  const { isAuthenticated, loading } = useAuth();
-  if (loading) return <FullScreenLoader />;
+  const { isAuthenticated } = useAuth();
   return isAuthenticated ? <Navigate to="/dashboard" replace /> : children;
 }
 
@@ -58,10 +65,12 @@ export default function App() {
         <Toaster />
 
         <Routes>
+          {/* públicas */}
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<RedirectIfAuth><LoginPage /></RedirectIfAuth>} />
           <Route path="/register" element={<RedirectIfAuth><RegisterPage /></RedirectIfAuth>} />
 
+          {/* privadas */}
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/dashboard" element={<Dashboard />} />
@@ -79,12 +88,14 @@ export default function App() {
             </Route>
           </Route>
 
+          {/* admin */}
           <Route element={<ProtectedRoute adminOnly />}>
             <Route element={<Layout />}>
               <Route path="/admin" element={<AdminDashboard />} />
             </Route>
           </Route>
 
+          {/* fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </DataProvider>
