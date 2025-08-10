@@ -33,7 +33,6 @@ function FullScreenLoader() {
 function ProtectedRoute({ adminOnly = false }) {
   const { user, profile, isAuthenticated, loading } = useAuth();
   if (loading) return <FullScreenLoader />;
-
   if (!isAuthenticated) return <Navigate to="/login" replace />;
 
   if (adminOnly) {
@@ -43,8 +42,13 @@ function ProtectedRoute({ adminOnly = false }) {
       user?.email === 'admin@test.com';
     if (!isAdmin) return <Navigate to="/dashboard" replace />;
   }
-
   return <Outlet />;
+}
+
+function RedirectIfAuth({ children }) {
+  const { isAuthenticated, loading } = useAuth();
+  if (loading) return <FullScreenLoader />;
+  return isAuthenticated ? <Navigate to="/dashboard" replace /> : children;
 }
 
 export default function App() {
@@ -55,8 +59,8 @@ export default function App() {
 
         <Routes>
           <Route path="/" element={<LandingPage />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/login" element={<RedirectIfAuth><LoginPage /></RedirectIfAuth>} />
+          <Route path="/register" element={<RedirectIfAuth><RegisterPage /></RedirectIfAuth>} />
 
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>

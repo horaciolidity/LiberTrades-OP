@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff, ArrowLeft } from 'lucide-react';
@@ -9,12 +9,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useAuth } from '@/contexts/AuthContext';
 
 const LoginPage = () => {
-  const { login } = useAuth();
+  const { login, isAuthenticated } = useAuth();
   const navigate = useNavigate();
 
   const [formData, setFormData] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // Redirige automáticamente cuando el contexto confirme sesión
+  useEffect(() => {
+    if (isAuthenticated) navigate('/dashboard', { replace: true });
+  }, [isAuthenticated, navigate]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -27,11 +32,11 @@ const LoginPage = () => {
     setSubmitting(true);
     try {
       const email = formData.email.trim().toLowerCase();
-      const password = formData.password; // no trim si admitís espacios
-      const u = await login(email, password); // el toast de error lo maneja AuthContext
-      if (u?.id) navigate('/dashboard', { replace: true });
+      const password = formData.password; // no trim si permitís espacios
+      await login(email, password);       // el toast de error lo maneja AuthContext
+      // NO navegamos acá: dejamos que el useEffect redirija cuando isAuthenticated=true
     } catch {
-      /* ya hay toast en login() */
+      /* sin-op, el toast ya salió desde login() */
     } finally {
       setSubmitting(false);          // siempre vuelve el botón a normal
     }
