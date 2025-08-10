@@ -32,8 +32,22 @@ export default function App() {
         <Routes>
           {/* públicas */}
           <Route path="/" element={<LandingPage />} />
-          <Route path="/login" element={<GuestRoute><LoginPage /></GuestRoute>} />
-          <Route path="/register" element={<GuestRoute><RegisterPage /></GuestRoute>} />
+          <Route
+            path="/login"
+            element={
+              <GuestRoute>
+                <LoginPage />
+              </GuestRoute>
+            }
+          />
+          <Route
+            path="/register"
+            element={
+              <GuestRoute>
+                <RegisterPage />
+              </GuestRoute>
+            }
+          />
 
           {/* privadas con layout */}
           <Route element={<ProtectedRoute />}>
@@ -50,6 +64,8 @@ export default function App() {
               <Route path="/stats" element={<UserStatsPage />} />
               <Route path="/rewards" element={<RewardsPage />} />
               <Route path="/wallet" element={<WalletPage />} />
+              {/* fallback privado (si estás logueado y la ruta no existe) */}
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Route>
           </Route>
 
@@ -60,7 +76,7 @@ export default function App() {
             </Route>
           </Route>
 
-          {/* fallback */}
+          {/* fallback público (no logueado) */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </DataProvider>

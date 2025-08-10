@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -8,9 +8,13 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 
-const LoginPage = () => {
+export default function LoginPage() {
   const { login, isAuthenticated } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // si ProtectedRoute te mandó a /login, trae el destino original
+  const from = location.state?.from || '/dashboard';
 
   const [formData, setFormData] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
@@ -18,8 +22,8 @@ const LoginPage = () => {
 
   // Redirige automáticamente cuando el contexto confirme sesión
   useEffect(() => {
-    if (isAuthenticated) navigate('/dashboard', { replace: true });
-  }, [isAuthenticated, navigate]);
+    if (isAuthenticated) navigate(from, { replace: true });
+  }, [isAuthenticated, from, navigate]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -28,17 +32,17 @@ const LoginPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (submitting) return;          // evita dobles envíos
+    if (submitting) return;
     setSubmitting(true);
     try {
       const email = formData.email.trim().toLowerCase();
       const password = formData.password; // no trim si permitís espacios
-      await login(email, password);       // el toast de error lo maneja AuthContext
-      // NO navegamos acá: dejamos que el useEffect redirija cuando isAuthenticated=true
+      await login(email, password); // el toast de error lo maneja AuthContext
+      // NO navegamos acá; el useEffect hace la redirección usando "from"
     } catch {
-      /* sin-op, el toast ya salió desde login() */
+      /* ya hay toast en login() */
     } finally {
-      setSubmitting(false);          // siempre vuelve el botón a normal
+      setSubmitting(false);
     }
   };
 
@@ -140,6 +144,4 @@ const LoginPage = () => {
       </motion.div>
     </div>
   );
-};
-
-export default LoginPage;
+}
