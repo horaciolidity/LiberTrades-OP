@@ -31,17 +31,19 @@ export function AuthProvider({ children }) {
     return data || null;
   }
 
-  // crea si no existe y devuelve una sola fila (idempotente)
+  // Crea si no existe y devuelve la fila (idempotente)
   async function fetchOrCreateBalances(userId) {
     const { data, error } = await supabase
       .from('balances')
       .upsert({ user_id: userId, usdc: 0, eth: 0 }, { onConflict: 'user_id' })
       .select()
-      .single();
+      .single(); // <- importante: una sola fila
+
     if (error) console.warn('Balance:', error.message);
     setBalances(data || null);
     return data || null;
   }
+
 
   // carga en segundo plano — NO bloquea el loader
   function loadAllBG(userId) {
