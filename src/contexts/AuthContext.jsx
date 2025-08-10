@@ -17,7 +17,7 @@ export function AuthProvider({ children }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const SAFE_TIMEOUT = 2500; // ms: nunca quedarse colgado más de ~2.5s
+  const SAFE_TIMEOUT = 2500; // ms: evita loaders eternos
 
   // ------- helpers -------
   async function fetchProfile(userId) {
@@ -37,13 +37,23 @@ export function AuthProvider({ children }) {
       .from('balances')
       .upsert({ user_id: userId, usdc: 0, eth: 0 }, { onConflict: 'user_id' })
       .select()
-      .single(); // <- importante: una sola fila
-
+      .single();
     if (error) console.warn('Balance:', error.message);
     setBalances(data || null);
     return data || null;
   }
 
+  // Refresca solo balances (útil post-ajuste admin)
+  const refreshBalances = async () => {
+    if (!user?.id) return null;
+    const { data, error } = await supabase
+      .from('balances')
+      .select('*')
+      .eq('user_id', user.id)
+      .single();
+    if (!error) setBalances(data || null);
+    return data || null;
+  };
 
   // carga en segundo plano — NO bloquea el loader
   function loadAllBG(userId) {
@@ -51,7 +61,7 @@ export function AuthProvider({ children }) {
     setIsAuthenticated(true);
   }
 
-  // ------- bootstrap + listener -------
+  // ------- bootstrap + listener de auth -------
   useEffect(() => {
     let mounted = true;
     const killer = setTimeout(() => mounted && setLoading(false), SAFE_TIMEOUT);
@@ -96,7 +106,7 @@ export function AuthProvider({ children }) {
         setProfile(null);
         setBalances(null);
       }
-      setLoading(false); // nunca quedarse colgado
+      setLoading(false);
     });
 
     return () => {
@@ -105,6 +115,40 @@ export function AuthProvider({ children }) {
       subscription.unsubscribe();
     };
   }, []);
+
+  // ------- listeners Realtime (balances + profiles) -------
+  useEffect(() => {
+    if (!user?.id) return;
+
+    // balances del usuario logueado
+    const chBalances = supabase
+      .channel('rt-balances')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'balances', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          if (payload?.new) setBalances(payload.new);
+        }
+      )
+      .subscribe();
+
+    // opcional: cambios de perfil (nombre/role)
+    const chProfile = supabase
+      .channel('rt-profiles')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
+        (payload) => {
+          if (payload?.new) setProfile(payload.new);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(chBalances);
+      supabase.removeChannel(chProfile);
+    };
+  }, [user?.id]);
 
   // ------- actions -------
   const generateReferralCode = () =>
@@ -126,7 +170,6 @@ export function AuthProvider({ children }) {
     }
   };
 
-  // Opción B (Confirm email OFF)
   const register = async ({ email, password, name, referredBy }) => {
     setLoading(true);
     try {
@@ -203,6 +246,7 @@ export function AuthProvider({ children }) {
         register,
         logout,
         updateUser,
+        refreshBalances, // <- expuesto
       }}
     >
       {children}

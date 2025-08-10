@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
+import { useAuth } from '@/contexts/AuthContext';
+
 import {
   Users as UsersIcon,
   DollarSign,
@@ -25,10 +27,11 @@ const fmt = (n, dec = 2) => {
 };
 
 export default function AdminDashboard() {
+  const { user: authUser, refreshBalances } = useAuth(); // 👈 para reflejar saldo al instante
   const [loading, setLoading] = useState(true);
 
   // data
-  const [users, setUsers] = useState([]);           // {id, username, role, balance, demo_balance, created_at, email?}
+  const [users, setUsers] = useState([]); // {id, username, role, balance, demo_balance, created_at}
   const [pendingDeposits, setPendingDeposits] = useState([]);
   const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
 
@@ -47,14 +50,12 @@ export default function AdminDashboard() {
 
   // ------- fetchers -------
   const fetchUsers = async () => {
-    // perfiles (sin email porque tu tabla no lo tiene)
     const { data: profs, error: pErr } = await supabase
       .from('profiles')
       .select('id, username, role, created_at')
       .order('created_at', { ascending: false });
     if (pErr) throw pErr;
 
-    // balances
     const { data: bals, error: bErr } = await supabase
       .from('balances')
       .select('user_id, usdc, demo_balance');
@@ -63,7 +64,7 @@ export default function AdminDashboard() {
     const balMap = Object.fromEntries((bals || []).map(b => [b.user_id, b]));
     const merged = (profs || []).map(p => ({
       ...p,
-      email: '', // opcional: quedará vacío hasta que agregues esa columna si querés mostrarla
+      email: '', // no existe columna email en profiles
       balance: Number(balMap[p.id]?.usdc ?? 0),
       demo_balance: Number(balMap[p.id]?.demo_balance ?? 0),
     }));
@@ -131,6 +132,12 @@ export default function AdminDashboard() {
   }, [users, pendingDeposits, pendingWithdrawals]);
 
   // ------- acciones admin -------
+  const maybeRefreshSelf = async (affectedUserId) => {
+    if (authUser?.id && authUser.id === affectedUserId && typeof refreshBalances === 'function') {
+      await refreshBalances();
+    }
+  };
+
   const adjustBalance = async (userId, deltaStr) => {
     const delta = Number(deltaStr);
     if (!deltaStr || !Number.isFinite(delta)) {
@@ -160,6 +167,8 @@ export default function AdminDashboard() {
       });
 
       toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(newUsdc)}` });
+
+      await maybeRefreshSelf(userId); // 👈 refresco inmediato si tocaste tu propio saldo
       await reloadAll();
       setAdjustValues(v => ({ ...v, [userId]: '' }));
     } catch (e) {
@@ -191,6 +200,8 @@ export default function AdminDashboard() {
       if (tErr) throw tErr;
 
       toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
+
+      await maybeRefreshSelf(tx.user_id); // 👈 si es tuyo, actualiza saldo del contexto
       await reloadAll();
     } catch (e) {
       console.error(e);
@@ -227,6 +238,8 @@ export default function AdminDashboard() {
       if (tErr) throw tErr;
 
       toast({ title: 'Retiro aprobado', description: `Debitado $${fmt(tx.amount)}` });
+
+      await maybeRefreshSelf(tx.user_id); // 👈 idem
       await reloadAll();
     } catch (e) {
       console.error(e);
