@@ -23,7 +23,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { ethers } from 'ethers';
 import { toast } from '@/components/ui/use-toast';
 
-// 🔒 helper para formatear sin tirar error si viene string/undefined
+// helper numérico seguro
 const fmt = (n, dec = 2) => {
   const num = Number(n);
   if (!isFinite(num)) return '0.00';
@@ -32,7 +32,8 @@ const fmt = (n, dec = 2) => {
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { user, balances, logout, updateUser } = useAuth(); // <-- balances desde AuthContext
+  // 👇 IMPORTANTE: ahora traemos profile desde el AuthContext
+  const { user, profile, balances, logout, updateUser } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -46,7 +47,7 @@ const Layout = () => {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Estadísticas', href: '/stats', icon: BarChartHorizontalBig },
     { name: 'Depositar', href: '/deposit', icon: DollarSign },
-    { name: 'Trading', href: '/simulator', icon: TrendingUp }, // <-- aquí
+    { name: 'Trading', href: '/simulator', icon: TrendingUp },
     { name: 'Bots de Trading', href: '/trading-bots', icon: Bot },
     { name: 'Planes de Inversión', href: '/plans', icon: Wallet },
     { name: 'Proyectos Tokenizados', href: '/tokenized-projects', icon: Coins },
@@ -55,7 +56,9 @@ const Layout = () => {
     { name: 'Recompensas', href: '/rewards', icon: Gift },
     { name: 'Perfil', href: '/profile', icon: User },
   ];
-  if (user?.role === 'admin') {
+
+  // 👇 CLAVE: usar profile.role (no user.role)
+  if (profile?.role === 'admin') {
     navigation.unshift({ name: 'Admin Panel', href: '/admin', icon: Shield });
   }
 
@@ -129,8 +132,9 @@ const Layout = () => {
 
   const shortAddr = web3Account ? `${web3Account.slice(0, 6)}...${web3Account.slice(-4)}` : '';
 
+  // (opcional) Si ya pegaste el index.css SSJ5, cambiá el bg contenedor a app-bg-saiyan
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+    <div className="min-h-screen app-bg-saiyan">
       {/* Sidebar mobile */}
       <motion.div
         initial={false}
@@ -138,7 +142,7 @@ const Layout = () => {
         className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-800/95 backdrop-blur-xl border-r border-slate-700 lg:hidden"
       >
         <div className="flex items-center justify-between p-4">
-          <span className="text-xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+          <span className="text-xl font-bold brand-title">
             LiberTrades
           </span>
           <Button variant="ghost" size="icon" onClick={() => { playSound('click'); setSidebarOpen(false); }}>
@@ -148,14 +152,14 @@ const Layout = () => {
         <nav className="mt-8 px-4">
           {navigation.map((item) => {
             const Icon = item.icon;
-            const isActive = location.pathname === item.href;
+            const isActive = location.pathname.startsWith(item.href);
             return (
               <button
                 key={item.name}
                 onClick={() => handleLinkClick(item.href)}
                 className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
                   isActive
-                    ? 'bg-gradient-to-r from-green-500 to-blue-500 text-white'
+                    ? 'btn-ss5 text-white'
                     : 'text-slate-300 hover:bg-slate-700 hover:text-white'
                 }`}
               >
@@ -171,21 +175,21 @@ const Layout = () => {
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
         <div className="flex flex-col flex-grow bg-slate-800/95 backdrop-blur-xl border-r border-slate-700">
           <div className="flex items-center h-16 px-4">
-            <span className="text-xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+            <span className="text-xl font-bold brand-title">
               LiberTrades
             </span>
           </div>
           <nav className="mt-8 flex-1 px-4">
             {navigation.map((item) => {
               const Icon = item.icon;
-              const isActive = location.pathname === item.href;
+              const isActive = location.pathname.startsWith(item.href);
               return (
                 <button
                   key={item.name}
                   onClick={() => handleLinkClick(item.href)}
                   className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
                     isActive
-                      ? 'bg-gradient-to-r from-green-500 to-blue-500 text-white'
+                      ? 'btn-ss5 text-white'
                       : 'text-slate-300 hover:bg-slate-700 hover:text-white'
                   }`}
                 >
