@@ -32,11 +32,10 @@ const fmt = (n, dec = 2) => {
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { user, logout, updateUser } = useAuth();
+  const { user, balances, logout, updateUser } = useAuth(); // <-- balances desde AuthContext
   const location = useLocation();
   const navigate = useNavigate();
 
-  // 🔇 sonidos anulados
   const playSound = () => {};
 
   const [web3Account, setWeb3Account] = useState(null);
@@ -47,7 +46,7 @@ const Layout = () => {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Estadísticas', href: '/stats', icon: BarChartHorizontalBig },
     { name: 'Depositar', href: '/deposit', icon: DollarSign },
-    { name: 'Trading', href: '/trading', icon: TrendingUp },
+    { name: 'Trading', href: '/simulator', icon: TrendingUp }, // <-- aquí
     { name: 'Bots de Trading', href: '/trading-bots', icon: Bot },
     { name: 'Planes de Inversión', href: '/plans', icon: Wallet },
     { name: 'Proyectos Tokenizados', href: '/tokenized-projects', icon: Coins },
@@ -109,7 +108,6 @@ const Layout = () => {
       const ethBal = await provider.getBalance(account);
       setEthBalance(ethers.formatEther(ethBal));
 
-      // USDT Mainnet
       const usdtContractAddress = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
       const usdtAbi = ['function balanceOf(address owner) view returns (uint256)'];
       const usdtContract = new ethers.Contract(usdtContractAddress, usdtAbi, provider);
@@ -237,13 +235,12 @@ const Layout = () => {
                 </Button>
               )}
               <div className="text-sm text-slate-300">
-                Saldo App: <span className="font-semibold text-green-400">${fmt(user?.balance, 2)}</span>
+                Saldo App: <span className="font-semibold text-green-400">${fmt(balances?.usdc, 2)}</span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Aquí usamos Outlet en vez de children */}
         <main className="py-10">
           <div className="px-4 sm:px-6 lg:px-8">
             <Outlet />
