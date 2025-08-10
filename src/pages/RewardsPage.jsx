@@ -16,11 +16,12 @@ const initialTasks = [
   { id: 6, title: 'Lealtad Mensual', description: 'Mantén una inversión activa por 30 días consecutivos.', reward: '2% Bonus sobre Ganancias', icon: Star, completed: false, category: 'Lealtad' },
 ];
 
-// Rehidrata íconos perdidos al venir de localStorage (donde las funciones no se guardan)
+// rehidrata íconos solo si son funciones válidas
 const restoreIcons = (arr = []) =>
   arr.map(t => {
     const fallback = initialTasks.find(x => x.id === t.id)?.icon || Gift;
-    return { ...t, icon: t.icon || fallback };
+    const validIcon = typeof t.icon === 'function' ? t.icon : fallback;
+    return { ...t, icon: validIcon };
   });
 
 const safeParse = (raw, fallback) => {
@@ -31,24 +32,31 @@ const RewardsPage = () => {
   const { user } = useAuth();
   const { playSound } = useSound();
 
+  const keyTasks = user?.id ? `crypto_rewards_tasks_${user.id}` : null;
+  const keyClaim = user?.id ? `crypto_claimed_rewards_${user.id}` : null;
+
   const [tasks, setTasks] = useState(() => {
-    const raw = localStorage.getItem(`crypto_rewards_tasks_${user?.id}`);
+    const raw = keyTasks ? localStorage.getItem(keyTasks) : null;
     const base = raw ? safeParse(raw, initialTasks) : initialTasks;
     return restoreIcons(base);
   });
 
   const [claimedRewards, setClaimedRewards] = useState(() => {
-    const raw = localStorage.getItem(`crypto_claimed_rewards_${user?.id}`);
+    const raw = keyClaim ? localStorage.getItem(keyClaim) : null;
     return raw ? safeParse(raw, []) : [];
   });
 
   React.useEffect(() => {
-    if (user) {
-      // Al guardar, se pierde icon (función). No pasa nada porque luego rehidratamos.
-      localStorage.setItem(`crypto_rewards_tasks_${user.id}`, JSON.stringify(tasks));
-      localStorage.setItem(`crypto_claimed_rewards_${user.id}`, JSON.stringify(claimedRewards));
-    }
-  }, [tasks, claimedRewards, user]);
+    if (!keyTasks) return;
+    // guardamos sin la función para evitar corrupción
+    const toSave = tasks.map(({ icon, ...rest }) => rest);
+    localStorage.setItem(keyTasks, JSON.stringify(toSave));
+  }, [tasks, keyTasks]);
+
+  React.useEffect(() => {
+    if (!keyClaim) return;
+    localStorage.setItem(keyClaim, JSON.stringify(claimedRewards));
+  }, [claimedRewards, keyClaim]);
 
   const handleClaimReward = (taskId) => {
     playSound('success');
@@ -85,7 +93,7 @@ const RewardsPage = () => {
             <h2 className="text-2xl font-semibold text-purple-300 mb-4 mt-6">{category}</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {tasks.filter(task => task.category === category).map((task) => {
-                const Icon = task.icon || Gift; // <- fallback seguro
+                const Icon = typeof task.icon === 'function' ? task.icon : Gift; // <- blindado
                 return (
                   <Card key={task.id} className={`crypto-card h-full flex flex-col ${task.completed ? 'opacity-60 border-green-500' : 'border-purple-500'}`}>
                     <CardHeader>
