@@ -17,6 +17,8 @@ import {
   X as XIcon,
 } from 'lucide-react';
 
+const TX_TABLE = 'wallet_transactions';
+
 const fmt = (n, dec = 2) => {
   const num = Number(n);
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
@@ -26,7 +28,7 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
 
   // data
-  const [users, setUsers] = useState([]);           // {id, username, email, role, balance, demo_balance, created_at}
+  const [users, setUsers] = useState([]);           // {id, username, role, balance, demo_balance, created_at, email?}
   const [pendingDeposits, setPendingDeposits] = useState([]);
   const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
 
@@ -45,10 +47,10 @@ export default function AdminDashboard() {
 
   // ------- fetchers -------
   const fetchUsers = async () => {
-    // perfiles
+    // perfiles (sin email porque tu tabla no lo tiene)
     const { data: profs, error: pErr } = await supabase
       .from('profiles')
-      .select('id, username, email, role, created_at')
+      .select('id, username, role, created_at')
       .order('created_at', { ascending: false });
     if (pErr) throw pErr;
 
@@ -61,6 +63,7 @@ export default function AdminDashboard() {
     const balMap = Object.fromEntries((bals || []).map(b => [b.user_id, b]));
     const merged = (profs || []).map(p => ({
       ...p,
+      email: '', // opcional: quedará vacío hasta que agregues esa columna si querés mostrarla
       balance: Number(balMap[p.id]?.usdc ?? 0),
       demo_balance: Number(balMap[p.id]?.demo_balance ?? 0),
     }));
@@ -69,16 +72,16 @@ export default function AdminDashboard() {
 
   const fetchPending = async () => {
     const { data: dep, error: dErr } = await supabase
-      .from('transactions')
-      .select('*')
+      .from(TX_TABLE)
+      .select('id, user_id, amount, type, status, created_at')
       .eq('type', 'deposit')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
     if (dErr) throw dErr;
 
     const { data: wit, error: wErr } = await supabase
-      .from('transactions')
-      .select('*')
+      .from(TX_TABLE)
+      .select('id, user_id, amount, type, status, created_at')
       .eq('type', 'withdrawal')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -91,8 +94,8 @@ export default function AdminDashboard() {
   const fetchMetrics = async (usersList, depList, witList) => {
     const fromISO = new Date(Date.now() - 30 * 864e5).toISOString();
     const { data: tx30, error } = await supabase
-      .from('transactions')
-      .select('amount,type,status,created_at,user_id')
+      .from(TX_TABLE)
+      .select('amount, type, status, created_at, user_id')
       .gte('created_at', fromISO)
       .eq('status', 'completed');
     if (error) throw error;
@@ -123,8 +126,9 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => { reloadAll(); }, []);
-  useEffect(() => { fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {}); },
-    [users, pendingDeposits, pendingWithdrawals]);
+  useEffect(() => {
+    fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {});
+  }, [users, pendingDeposits, pendingWithdrawals]);
 
   // ------- acciones admin -------
   const adjustBalance = async (userId, deltaStr) => {
@@ -148,12 +152,11 @@ export default function AdminDashboard() {
         .eq('user_id', userId);
       if (uErr) throw uErr;
 
-      await supabase.from('transactions').insert({
+      await supabase.from(TX_TABLE).insert({
         user_id: userId,
         type: delta >= 0 ? 'admin_credit' : 'admin_debit',
         amount: Math.abs(delta),
         status: 'completed',
-        description: 'Ajuste manual admin',
       });
 
       toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(newUsdc)}` });
@@ -182,7 +185,7 @@ export default function AdminDashboard() {
       if (bErr) throw bErr;
 
       const { error: tErr } = await supabase
-        .from('transactions')
+        .from(TX_TABLE)
         .update({ status: 'completed' })
         .eq('id', tx.id);
       if (tErr) throw tErr;
@@ -218,7 +221,7 @@ export default function AdminDashboard() {
       if (bErr) throw bErr;
 
       const { error: tErr } = await supabase
-        .from('transactions')
+        .from(TX_TABLE)
         .update({ status: 'completed' })
         .eq('id', tx.id);
       if (tErr) throw tErr;
@@ -234,7 +237,7 @@ export default function AdminDashboard() {
   const rejectTx = async (tx) => {
     try {
       const { error } = await supabase
-        .from('transactions')
+        .from(TX_TABLE)
         .update({ status: 'rejected' })
         .eq('id', tx.id);
       if (error) throw error;
