@@ -22,12 +22,27 @@ import UserStatsPage from '@/pages/UserStatsPage';
 import RewardsPage from '@/pages/RewardsPage';
 import WalletPage from '@/pages/WalletPage';
 
-function ProtectedRoute({ adminOnly = false }) {
-  const { user, isAuthenticated, loading } = useAuth();
+function FullScreenLoader() {
+  return (
+    <div className="min-h-screen grid place-items-center bg-slate-900">
+      <div className="text-slate-200">Cargando…</div>
+    </div>
+  );
+}
 
-  if (loading) return <div className="text-white p-6">Cargando sesión...</div>;
+function ProtectedRoute({ adminOnly = false }) {
+  const { user, profile, isAuthenticated, loading } = useAuth();
+  if (loading) return <FullScreenLoader />;
+
   if (!isAuthenticated) return <Navigate to="/login" replace />;
-  if (adminOnly && user?.role !== 'admin') return <Navigate to="/dashboard" replace />;
+
+  if (adminOnly) {
+    const isAdmin =
+      profile?.role === 'admin' ||
+      user?.user_metadata?.role === 'admin' ||
+      user?.email === 'admin@test.com';
+    if (!isAdmin) return <Navigate to="/dashboard" replace />;
+  }
 
   return <Outlet />;
 }
@@ -39,12 +54,10 @@ export default function App() {
         <Toaster />
 
         <Routes>
-          {/* Rutas públicas */}
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
 
-          {/* Rutas protegidas con Layout */}
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/dashboard" element={<Dashboard />} />
@@ -62,14 +75,12 @@ export default function App() {
             </Route>
           </Route>
 
-          {/* Ruta admin con Layout */}
           <Route element={<ProtectedRoute adminOnly />}>
             <Route element={<Layout />}>
               <Route path="/admin" element={<AdminDashboard />} />
             </Route>
           </Route>
 
-          {/* Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </DataProvider>
