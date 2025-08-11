@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+// src/pages/Dashboard.jsx
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -14,41 +15,107 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
+import { supabase } from '@/lib/supabaseClient';
 
 const fmt = (n, dec = 2) => {
   const num = Number(n);
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
 };
 
+// Normaliza una inversión venga de Supabase o de localStorage
+function normalizeInvestment(inv, source = 'local') {
+  const id = inv?.id ?? `${source}-${Math.random().toString(36).slice(2)}`;
+  const userId = inv?.user_id ?? inv?.userId ?? null;
+  const planName = inv?.plan_name ?? inv?.planName ?? 'Plan';
+  const amount = Number(inv?.amount ?? 0);
+  const dailyReturn = Number(inv?.daily_return ?? inv?.dailyReturn ?? 0);
+  const duration = Number(inv?.duration ?? 0);
+  const createdAt =
+    inv?.created_at ??
+    inv?.createdAt ??
+    new Date().toISOString();
+
+  return { id: String(id), userId, planName, amount, dailyReturn, duration, createdAt, __src: source };
+}
+
 export default function Dashboard() {
   const { user, displayName, balances, loading } = useAuth();
   const { cryptoPrices = {}, getInvestments, getReferrals } = useData();
+
   const [investments, setInvestments] = useState([]);
   const [referrals, setReferrals] = useState([]);
   const [error, setError] = useState(null);
+  const [hydrating, setHydrating] = useState(true);
 
+  // Carga híbrida: localStorage + Supabase (si hay sesión)
   useEffect(() => {
     const fetchData = async () => {
-      if (!user?.id) return;
+      if (!user?.id) {
+        setInvestments([]);
+        setReferrals([]);
+        setHydrating(false);
+        return;
+      }
+      setError(null);
+      setHydrating(true);
       try {
-        const invs = await getInvestments?.();
-        const refs = await getReferrals?.(user.id);
-        setInvestments(invs?.filter(inv => inv?.userId === user.id) || []);
-        setReferrals(refs || []);
+        // 1) Local
+        const localInvsRaw = (typeof getInvestments === 'function' ? getInvestments() : []) || [];
+        const localInvs = localInvsRaw
+          .filter(Boolean)
+          .filter(inv => (inv?.user_id ?? inv?.userId) === user.id)
+          .map(inv => normalizeInvestment(inv, 'local'));
+
+        // 2) Supabase (opcional)
+        let supaInvs = [];
+        const { data: invRows, error: invErr } = await supabase
+          .from('investments')
+          .select('id, user_id, plan_name, amount, daily_return, duration, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false });
+
+        if (!invErr && Array.isArray(invRows)) {
+          supaInvs = invRows.map(r => normalizeInvestment(r, 'supa'));
+        }
+
+        // 3) Merge + dedupe (por userId|planName|amount|createdAt[seg])
+        const key = (x) => {
+          const ts = x.createdAt ? new Date(x.createdAt).toISOString().slice(0, 19) : '';
+          return `${x.userId}|${x.planName}|${fmt(x.amount, 2)}|${ts}`;
+        };
+        const mergedMap = new Map();
+        [...supaInvs, ...localInvs].forEach(item => {
+          const k = key(item);
+          if (!mergedMap.has(k)) mergedMap.set(k, item);
+        });
+        const merged = Array.from(mergedMap.values())
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        setInvestments(merged);
+
+        // 4) Referidos (local)
+        const refs = typeof getReferrals === 'function' ? (getReferrals(user.id) || []) : [];
+        setReferrals(refs);
       } catch (err) {
         console.error('Error cargando datos del dashboard:', err);
         setError('No se pudieron cargar los datos.');
+      } finally {
+        setHydrating(false);
       }
     };
-    fetchData();
-  }, [user?.id, getInvestments, getReferrals]);
 
-  if (loading) return <div className="p-8 text-white">Cargando...</div>;
+    fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  if (loading || hydrating) return <div className="p-8 text-white">Cargando...</div>;
   if (error) return <div className="p-8 text-red-500">{error}</div>;
   if (!user) return <div className="p-8 text-white">Iniciá sesión para ver el dashboard.</div>;
 
+  // Métricas
   const totalInvested = (investments || []).reduce(
-    (sum, inv) => sum + Number(inv?.amount || 0), 0
+    (sum, inv) => sum + Number(inv?.amount || 0),
+    0
   );
 
   const totalEarnings = (investments || []).reduce((sum, inv) => {
@@ -183,20 +250,20 @@ export default function Dashboard() {
             <CardContent>
               {(investments?.length || 0) > 0 ? (
                 <div className="space-y-4">
-                  {investments.slice(0, 5).map((investment) => (
-                    <div key={investment?.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
+                  {investments.slice(0, 5).map((inv) => (
+                    <div key={`${inv.id}-${inv.createdAt}`} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
                       <div>
-                        <div className="text-white font-medium">{investment?.planName || 'Plan'}</div>
+                        <div className="text-white font-medium">{inv?.planName || 'Plan'}</div>
                         <div className="text-slate-400 text-sm">
-                          {investment?.createdAt ? new Date(investment.createdAt).toLocaleDateString() : '--/--/----'}
+                          {inv?.createdAt ? new Date(inv.createdAt).toLocaleDateString() : '--/--/----'}
                         </div>
                       </div>
                       <div className="text-right">
                         <div className="text-white font-semibold">
-                          ${fmt(investment?.amount, 2)}
+                          ${fmt(inv?.amount, 2)}
                         </div>
                         <div className="text-green-400 text-sm">
-                          {fmt(investment?.dailyReturn, 2)}% diario
+                          {fmt(inv?.dailyReturn, 2)}% diario
                         </div>
                       </div>
                     </div>

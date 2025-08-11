@@ -1,18 +1,11 @@
+// src/contexts/DataContext.jsx
 import React, { createContext, useContext, useMemo, useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabaseClient';
 
 const DataContext = createContext(null);
 
 // --- helpers ---
-function safeParse(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const val = JSON.parse(raw);
-    return Array.isArray(val) ? val : (val ?? fallback);
-  } catch {
-    return fallback;
-  }
-}
+const fmtNum = (n) => (Number.isFinite(Number(n)) ? Number(n) : 0);
 
 // ========================
 // Provider
@@ -33,7 +26,7 @@ export function DataProvider({ children }) {
     { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000, dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
   ]);
 
-  // Simula histórico y actualizaciones de precios
+  // Simulador de precios (igual que antes)
   useEffect(() => {
     const initialHistoryLength = 60;
     const next = JSON.parse(JSON.stringify(cryptoPrices));
@@ -67,60 +60,129 @@ export function DataProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ------ API segura (siempre arrays) ------
-  const getInvestments = () => safeParse('cryptoinvest_investments', []);
-  const addInvestment = (investment) => {
-    const arr = getInvestments();
-    const item = {
-      id: Date.now().toString(),
-      ...investment,
-      createdAt: new Date().toISOString(),
+  // ------ API con Supabase ------
+  // Inversiones (para dashboard/estadísticas)
+  const getInvestments = async (userId = null) => {
+    let q = supabase
+      .from('investments')
+      .select('id, user_id, plan_name, amount, daily_return, duration, created_at')
+      .order('created_at', { ascending: false });
+
+    if (userId) q = q.eq('user_id', userId);
+
+    const { data, error } = await q;
+    if (error) throw error;
+
+    return (data || []).map(r => ({
+      id: r.id,
+      userId: r.user_id,
+      planName: r.plan_name,
+      amount: fmtNum(r.amount),
+      dailyReturn: fmtNum(r.daily_return),
+      duration: fmtNum(r.duration),
+      createdAt: r.created_at,   // importante para el cálculo de ganancias
+      status: 'active',          // si no tenés columna status, usamos 'active'
+    }));
+  };
+
+  // Inserta inversión (wrapper opcional)
+  // Nota: tu pantalla de Planes ya inserta directo; esto es por si lo querés usar desde otro lado.
+  const addInvestment = async ({ user_id, plan_name, amount, daily_return, duration, description }) => {
+    if (!user_id) throw new Error('addInvestment: falta user_id');
+    const { data, error } = await supabase
+      .from('investments')
+      .insert({
+        user_id,
+        plan_name,
+        amount: fmtNum(amount),
+        daily_return: fmtNum(daily_return),
+        duration: fmtNum(duration),
+      })
+      .select('id, user_id, plan_name, amount, daily_return, duration, created_at')
+      .single();
+    if (error) throw error;
+
+    // Registrar en historial
+    await supabase.from('wallet_transactions').insert({
+      user_id,
+      type: 'investment',
+      status: 'completed',
+      amount: fmtNum(amount),
+      description: description || `Plan: ${plan_name}`,
+    });
+
+    return {
+      id: data.id,
+      userId: data.user_id,
+      planName: data.plan_name,
+      amount: fmtNum(data.amount),
+      dailyReturn: fmtNum(data.daily_return),
+      duration: fmtNum(data.duration),
+      createdAt: data.created_at,
       status: 'active',
     };
-    const next = [...arr, item];
-    localStorage.setItem('cryptoinvest_investments', JSON.stringify(next));
-    return item;
   };
 
-  const getTransactions = () => safeParse('cryptoinvest_transactions', []);
-  const addTransaction = (tx) => {
-    const arr = getTransactions();
-    const item = {
-      id: Date.now().toString(),
-      ...tx,
-      createdAt: new Date().toISOString(),
-    };
-    const next = [...arr, item];
-    localStorage.setItem('cryptoinvest_transactions', JSON.stringify(next));
-    return item;
+  // Movimientos (wallet_transactions)
+  const getTransactions = async (userId = null) => {
+    let q = supabase
+      .from('wallet_transactions')
+      .select('id, user_id, amount, type, status, description, created_at')
+      .order('created_at', { ascending: false });
+    if (userId) q = q.eq('user_id', userId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
   };
 
-  const getReferrals = (userId) => {
-    try {
-      const users = JSON.parse(localStorage.getItem('cryptoinvest_users') || '[]');
-      const user = users.find(u => u?.id === userId);
-      if (!user?.referralCode) return [];
-      return users.filter(u => u?.referredBy === user.referralCode);
-    } catch {
-      return [];
-    }
+  const addTransaction = async ({ user_id, amount, type, status = 'completed', description }) => {
+    if (!user_id) throw new Error('addTransaction: falta user_id');
+    const { data, error } = await supabase
+      .from('wallet_transactions')
+      .insert({ user_id, amount: fmtNum(amount), type, status, description })
+      .select('id, user_id, amount, type, status, description, created_at')
+      .single();
+    if (error) throw error;
+    return data;
+  };
+
+  // Referidos (desde tabla profiles)
+  const getReferrals = async (userId) => {
+    if (!userId) return [];
+    // 1) obtener mi referral_code
+    const { data: me, error: meErr } = await supabase
+      .from('profiles')
+      .select('referral_code')
+      .eq('id', userId)
+      .maybeSingle();
+    if (meErr || !me?.referral_code) return [];
+
+    // 2) buscar quienes tengan referred_by = mi referral_code
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, username, referred_by, created_at')
+      .eq('referred_by', me.referral_code)
+      .order('created_at', { ascending: false });
+    if (error) return [];
+    return data || [];
   };
 
   const value = useMemo(() => ({
     cryptoPrices,
     investmentPlans,
-    getInvestments,
-    addInvestment,
-    getTransactions,
-    addTransaction,
-    getReferrals,
+    // Supabase API:
+    getInvestments,      // (userId?) -> Promise<Array>
+    addInvestment,       // payload -> Promise<Investment>
+    getTransactions,     // (userId?) -> Promise<Array>
+    addTransaction,      // payload -> Promise<Tx>
+    getReferrals,        // (userId) -> Promise<Array>
   }), [cryptoPrices, investmentPlans]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
 
 // ========================
-// Hook (con fallback: NO tira error si no hay provider)
+// Hook (fallback por si no hay provider)
 // ========================
 export function useData() {
   const ctx = useContext(DataContext);
@@ -128,11 +190,11 @@ export function useData() {
     return {
       cryptoPrices: {},
       investmentPlans: [],
-      getInvestments: () => [],
-      addInvestment: () => null,
-      getTransactions: () => [],
-      addTransaction: () => null,
-      getReferrals: () => [],
+      getInvestments: async () => [],
+      addInvestment: async () => null,
+      getTransactions: async () => [],
+      addTransaction: async () => null,
+      getReferrals: async () => [],
     };
   }
   return ctx;

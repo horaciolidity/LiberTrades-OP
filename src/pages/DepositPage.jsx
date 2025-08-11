@@ -1,3 +1,4 @@
+// src/pages/DepositPage.jsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,6 +12,9 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
 import { toast } from '@/components/ui/use-toast';
 import { useSound } from '@/contexts/SoundContext';
+import { supabase } from '@/lib/supabaseClient';
+
+const TX_TABLE = 'wallet_transactions';
 
 const fmt = (n, dec = 2) => {
   const num = Number(n);
@@ -26,6 +30,7 @@ export default function DepositPage() {
   const [cryptoCurrency, setCryptoCurrency] = useState('USDT');
   const [fiatMethod, setFiatMethod] = useState('alias');
   const [amount, setAmount] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const cryptoAddresses = {
     USDT: '0xUSDT_DEPOSIT_ADDRESS_EXAMPLE',
@@ -40,13 +45,23 @@ export default function DepositPage() {
     MXN: 'ALIAS.CRYPTOINVEST.MXN',
   };
 
-  const handleCopy = (text) => {
-    playSound('click');
-    navigator.clipboard.writeText(text);
-    toast({ title: 'Copiado', description: `${text} copiado al portapapeles.` });
+  const handleCopy = async (text) => {
+    try {
+      playSound('click');
+      await navigator.clipboard.writeText(text);
+      toast({ title: 'Copiado', description: `${text} copiado al portapapeles.` });
+    } catch {
+      toast({ title: 'No se pudo copiar', description: 'Copia manualmente por favor.', variant: 'destructive' });
+    }
   };
 
-  const handleDeposit = () => {
+  const handleDeposit = async () => {
+    if (!user?.id) {
+      playSound('error');
+      toast({ title: 'Inicia sesión', description: 'Necesitas estar logueado para depositar.', variant: 'destructive' });
+      return;
+    }
+
     const depositAmount = Number(amount);
     if (!depositAmount || depositAmount <= 0) {
       playSound('error');
@@ -54,21 +69,54 @@ export default function DepositPage() {
       return;
     }
 
-    addTransaction?.({
-      userId: user?.id,
+    const currency = depositMethod === 'crypto' ? cryptoCurrency : 'USD';
+    const description =
+      depositMethod === 'crypto'
+        ? `Depósito vía ${cryptoCurrency}`
+        : `Depósito vía ${fiatMethod.toUpperCase()}`;
+
+    const supaTx = {
+      user_id: user.id,
       type: 'deposit',
       amount: depositAmount,
-      currency: depositMethod === 'crypto' ? cryptoCurrency : 'USD', // fiat: USD equivalente
-      description: `Depósito vía ${depositMethod === 'crypto' ? cryptoCurrency : fiatMethod}`,
+      currency,
       status: 'pending',
-    });
+      description,
+    };
 
-    playSound('success');
-    toast({
-      title: 'Solicitud enviada',
-      description: `Tu depósito de ${fmt(depositAmount, 2)} quedó pendiente de confirmación.`,
-    });
-    setAmount('');
+    setSaving(true);
+    try {
+      // 1) Guardar en Supabase (para que aparezca en el panel admin)
+      const { error: sErr } = await supabase.from(TX_TABLE).insert(supaTx);
+      if (sErr) throw sErr;
+
+      // 2) Guardar en local (para que aparezca en tu historial/estadísticas al instante)
+      addTransaction?.({
+        userId: user.id,
+        type: 'deposit',
+        amount: depositAmount,
+        currency,
+        status: 'pending',
+        description,
+      });
+
+      playSound('success');
+      toast({
+        title: 'Solicitud enviada',
+        description: `Tu depósito de $${fmt(depositAmount, 2)} quedó pendiente de confirmación.`,
+      });
+      setAmount('');
+    } catch (e) {
+      console.error('Error creando depósito:', e?.message || e);
+      playSound('error');
+      toast({
+        title: 'No se pudo registrar el depósito',
+        description: e?.message || 'Intenta nuevamente en unos minutos.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -246,9 +294,10 @@ export default function DepositPage() {
 
           <Button
             onClick={handleDeposit}
+            disabled={saving}
             className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600"
           >
-            Notificar Depósito
+            {saving ? 'Enviando...' : 'Notificar Depósito'}
           </Button>
           <p className="text-xs text-center text-slate-400">
             Al hacer clic en "Notificar Depósito", tu transacción quedará pendiente de confirmación por nuestro equipo.

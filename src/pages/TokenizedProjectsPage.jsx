@@ -1,12 +1,20 @@
+// src/pages/TokenizedProjectsPage.jsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Coins, Rocket, TrendingUp, Zap, Calendar, Users, DollarSign, Eye } from 'lucide-react';
+import { Coins, Rocket, TrendingUp, Zap, Calendar, Users, DollarSign, Eye, Wallet } from 'lucide-react';
 import { useSound } from '@/contexts/SoundContext';
 import { toast } from '@/components/ui/use-toast';
+import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabaseClient';
+
+const fmt = (n, dec = 2) => {
+  const num = Number(n);
+  return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
+};
 
 const upcomingProjects = [
   { 
@@ -29,23 +37,113 @@ const upcomingProjects = [
   },
 ];
 
-const TokenizedProjectsPage = () => {
+export default function TokenizedProjectsPage() {
   const { playSound } = useSound();
+  const { user, balances, /* opcional */ refreshBalances } = useAuth();
+
   const [selectedProject, setSelectedProject] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleViewDetails = (project) => {
     playSound('navigation');
     setSelectedProject(project);
+    setInvestmentAmount('');
   };
 
-  const handleInvest = () => {
+  const handleInvest = async () => {
     if (!selectedProject) return;
+    if (!user?.id) {
+      playSound('error');
+      toast({ title: 'Sin sesión', description: 'Inicia sesión para invertir.', variant: 'destructive' });
+      return;
+    }
+
+    const amt = Number(investmentAmount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      playSound('error');
+      toast({ title: 'Monto inválido', description: 'Ingresa un número válido.', variant: 'destructive' });
+      return;
+    }
+
+    if (amt < Number(selectedProject.minInvestment)) {
+      playSound('error');
+      toast({
+        title: 'Monto muy bajo',
+        description: `El mínimo para ${selectedProject.symbol} es $${fmt(selectedProject.minInvestment)}.`,
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    const currentUsdc = Number(balances?.usdc ?? 0);
+    if (amt > currentUsdc) {
+      playSound('error');
+      toast({ title: 'Fondos insuficientes', description: 'Tu saldo disponible no alcanza.', variant: 'destructive' });
+      return;
+    }
+
+    setIsSubmitting(true);
     playSound('invest');
-    toast({
-      title: "Función Próximamente",
-      description: `🚧 La inversión en ${selectedProject.name} estará disponible pronto. ¡Mantente atento! 🚀`,
-    });
+
+    try {
+      // 1) Insertar inversión del proyecto
+      const { data: ins, error: invErr } = await supabase
+        .from('project_investments')
+        .insert({
+          user_id: user.id,
+          project_symbol: selectedProject.symbol,
+          project_name: selectedProject.name,
+          amount_usd: amt,
+          status: 'active'
+        })
+        .select('id')
+        .single();
+      if (invErr) throw invErr;
+
+      // 2) Descontar saldo
+      const newUsdc = Math.max(0, currentUsdc - amt);
+      const { error: balErr } = await supabase
+        .from('balances')
+        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
+        .eq('user_id', user.id);
+      if (balErr) throw balErr;
+
+      // 3) Registrar en historial
+      const { error: txErr } = await supabase
+        .from('wallet_transactions')
+        .insert({
+          user_id: user.id,
+          type: 'project_investment',
+          status: 'completed',
+          amount: amt,
+          description: `Proyecto ${selectedProject.symbol} - ${selectedProject.name}`
+        });
+      if (txErr) throw txErr;
+
+      // 4) Refrescar balances (si tenés helper)
+      if (typeof refreshBalances === 'function') {
+        try { await refreshBalances(); } catch {}
+      }
+
+      toast({
+        title: '¡Inversión realizada!',
+        description: `Invertiste $${fmt(amt)} en ${selectedProject.name} (${selectedProject.symbol}).`
+      });
+
+      setSelectedProject(null);
+      setInvestmentAmount('');
+    } catch (e) {
+      console.error('Error al invertir en proyecto:', e?.message || e);
+      playSound('error');
+      toast({
+        title: 'Error',
+        description: e?.message || 'No se pudo completar la inversión.',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -65,6 +163,23 @@ const TokenizedProjectsPage = () => {
           </p>
         </motion.div>
 
+        {/* Saldo disponible */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
+          <Card className="crypto-card">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-slate-400 text-sm font-medium">Saldo Disponible (App)</p>
+                  <p className="text-3xl font-bold text-green-400 mt-1">${fmt(balances?.usdc ?? 0)}</p>
+                </div>
+                <div className="p-4 rounded-lg bg-green-500/10">
+                  <Wallet className="h-8 w-8 text-green-400" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {upcomingProjects.map((project, index) => {
             const Icon = project.icon;
@@ -79,11 +194,7 @@ const TokenizedProjectsPage = () => {
                   <CardHeader>
                     <div className="flex items-center space-x-3 mb-3">
                       <div className="w-12 h-12 bg-gradient-to-br from-slate-700 to-slate-600 rounded-lg flex items-center justify-center">
-                        <img
-                          className="w-8 h-8 object-contain filter invert brightness-0 saturate-100 hue-rotate-[120deg]"
-                          alt={`${project.name} logo`}
-                          src="https://images.unsplash.com/photo-1658204212985-e0126040f88f"
-                        />
+                        <Icon className="w-7 h-7 text-white" />
                       </div>
                       <div>
                         <CardTitle className="text-xl text-white">{project.name} ({project.symbol})</CardTitle>
@@ -129,17 +240,13 @@ const TokenizedProjectsPage = () => {
             onClick={() => setSelectedProject(null)}
           >
             <Card
-              className="crypto-card w-full max-w-lg max-h-[90vh] overflow-y-auto"
+              className="crypto-card w-full max-w-lg max-h[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
               <CardHeader>
                 <div className="flex items-center space-x-4 mb-4">
                   <div className="w-16 h-16 bg-gradient-to-br from-slate-700 to-slate-600 rounded-lg flex items-center justify-center">
-                    <img
-                      className="w-10 h-10 object-contain filter invert brightness-0 saturate-100 hue-rotate-[120deg]"
-                      alt={`${selectedProject.name} logo`}
-                      src="https://images.unsplash.com/photo-1572177812156-58036aae439c"
-                    />
+                    <Coins className="w-8 h-8 text-white" />
                   </div>
                   <div>
                     <CardTitle className="text-2xl text-white">
@@ -148,11 +255,6 @@ const TokenizedProjectsPage = () => {
                     <CardDescription className="text-blue-400">{selectedProject.category}</CardDescription>
                   </div>
                 </div>
-                <img
-                  className="w-full h-48 object-cover rounded-lg mb-4"
-                  alt={`Imagen de ${selectedProject.name}`}
-                  src="https://images.unsplash.com/photo-1572177812156-58036aae439c"
-                />
                 <p className="text-slate-300">{selectedProject.details}</p>
               </CardHeader>
 
@@ -174,12 +276,6 @@ const TokenizedProjectsPage = () => {
                     <p className="text-slate-400">Inversión Mínima:</p>
                     <p className="text-white font-semibold">${selectedProject.minInvestment}</p>
                   </div>
-                  <div>
-                    <p className="text-slate-400">Tokens Disponibles:</p>
-                    <p className="text-white font-semibold">
-                      {(selectedProject.targetRaise / (selectedProject.minInvestment * 0.1)).toLocaleString()} (Estimado)
-                    </p>
-                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -193,15 +289,18 @@ const TokenizedProjectsPage = () => {
                   />
                 </div>
 
-                <Button
-                  onClick={handleInvest}
-                  className="w-full bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600"
-                >
-                  Invertir en {selectedProject.symbol} (Próximamente)
-                </Button>
-                <Button variant="outline" onClick={() => setSelectedProject(null)} className="w-full">
-                  Cerrar
-                </Button>
+                <div className="flex gap-3">
+                  <Button
+                    onClick={handleInvest}
+                    disabled={isSubmitting || !investmentAmount}
+                    className="w-full bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600"
+                  >
+                    {isSubmitting ? 'Procesando…' : `Invertir en ${selectedProject.symbol}`}
+                  </Button>
+                  <Button variant="outline" onClick={() => setSelectedProject(null)} className="w-full">
+                    Cerrar
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </motion.div>
@@ -209,6 +308,4 @@ const TokenizedProjectsPage = () => {
       </div>
     </>
   );
-};
-
-export default TokenizedProjectsPage;
+}
