@@ -27,7 +27,7 @@ const fmt = (n, dec = 2) => {
 };
 
 export default function AdminDashboard() {
-  const { user: authUser, refreshBalances } = useAuth(); // 👈 para reflejar saldo al instante
+  const { user: authUser, refreshBalances } = useAuth(); // para reflejar saldo al instante si tocas el tuyo
   const [loading, setLoading] = useState(true);
 
   // data
@@ -64,7 +64,7 @@ export default function AdminDashboard() {
     const balMap = Object.fromEntries((bals || []).map(b => [b.user_id, b]));
     const merged = (profs || []).map(p => ({
       ...p,
-      email: '', // no existe columna email en profiles
+      email: '', // si no guardás email en profiles
       balance: Number(balMap[p.id]?.usdc ?? 0),
       demo_balance: Number(balMap[p.id]?.demo_balance ?? 0),
     }));
@@ -74,7 +74,7 @@ export default function AdminDashboard() {
   const fetchPending = async () => {
     const { data: dep, error: dErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, type, status, created_at')
+      .select('id, user_id, amount, currency, description, type, status, created_at')
       .eq('type', 'deposit')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -82,7 +82,7 @@ export default function AdminDashboard() {
 
     const { data: wit, error: wErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, type, status, created_at')
+      .select('id, user_id, amount, currency, description, type, status, created_at')
       .eq('type', 'withdrawal')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -131,6 +131,17 @@ export default function AdminDashboard() {
     fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {});
   }, [users, pendingDeposits, pendingWithdrawals]);
 
+  // Realtime: refresca colas cuando cambian transacciones
+  useEffect(() => {
+    const ch = supabase
+      .channel('admin-pending')
+      .on('postgres_changes', { event: '*', schema: 'public', table: TX_TABLE }, () => {
+        fetchPending().catch(() => {});
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, []);
+
   // ------- acciones admin -------
   const maybeRefreshSelf = async (affectedUserId) => {
     if (authUser?.id && authUser.id === affectedUserId && typeof refreshBalances === 'function') {
@@ -155,7 +166,7 @@ export default function AdminDashboard() {
       const newUsdc = Number(row?.usdc || 0) + delta;
       const { error: uErr } = await supabase
         .from('balances')
-        .update({ usdc: newUsdc })
+        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
         .eq('user_id', userId);
       if (uErr) throw uErr;
 
@@ -163,12 +174,14 @@ export default function AdminDashboard() {
         user_id: userId,
         type: delta >= 0 ? 'admin_credit' : 'admin_debit',
         amount: Math.abs(delta),
+        currency: 'USD',
         status: 'completed',
+        description: 'Ajuste manual admin',
       });
 
       toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(newUsdc)}` });
 
-      await maybeRefreshSelf(userId); // 👈 refresco inmediato si tocaste tu propio saldo
+      await maybeRefreshSelf(userId);
       await reloadAll();
       setAdjustValues(v => ({ ...v, [userId]: '' }));
     } catch (e) {
@@ -189,19 +202,19 @@ export default function AdminDashboard() {
       const newUsdc = Number(balRow?.usdc || 0) + Number(tx.amount || 0);
       const { error: bErr } = await supabase
         .from('balances')
-        .update({ usdc: newUsdc })
+        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
         .eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
       const { error: tErr } = await supabase
         .from(TX_TABLE)
         .update({ status: 'completed' })
-        .eq('id', tx.id);
+        .eq('id', tx.id)
+        .eq('status', 'pending'); // guard anti doble aprobación
       if (tErr) throw tErr;
 
       toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
-
-      await maybeRefreshSelf(tx.user_id); // 👈 si es tuyo, actualiza saldo del contexto
+      await maybeRefreshSelf(tx.user_id);
       await reloadAll();
     } catch (e) {
       console.error(e);
@@ -227,19 +240,19 @@ export default function AdminDashboard() {
 
       const { error: bErr } = await supabase
         .from('balances')
-        .update({ usdc: current - amt })
+        .update({ usdc: current - amt, updated_at: new Date().toISOString() })
         .eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
       const { error: tErr } = await supabase
         .from(TX_TABLE)
         .update({ status: 'completed' })
-        .eq('id', tx.id);
+        .eq('id', tx.id)
+        .eq('status', 'pending'); // guard anti doble aprobación
       if (tErr) throw tErr;
 
       toast({ title: 'Retiro aprobado', description: `Debitado $${fmt(tx.amount)}` });
-
-      await maybeRefreshSelf(tx.user_id); // 👈 idem
+      await maybeRefreshSelf(tx.user_id);
       await reloadAll();
     } catch (e) {
       console.error(e);
@@ -252,7 +265,8 @@ export default function AdminDashboard() {
       const { error } = await supabase
         .from(TX_TABLE)
         .update({ status: 'rejected' })
-        .eq('id', tx.id);
+        .eq('id', tx.id)
+        .eq('status', 'pending'); // evita cambios si ya se procesó
       if (error) throw error;
       toast({ title: 'Solicitud rechazada' });
       await reloadAll();
@@ -273,6 +287,10 @@ export default function AdminDashboard() {
         (u.id || '').toLowerCase().includes(q)
     );
   }, [users, search]);
+
+  if (loading) {
+    return <div className="p-6 text-slate-300">Cargando panel de administración…</div>;
+  }
 
   return (
     <div className="space-y-8">
@@ -312,12 +330,12 @@ export default function AdminDashboard() {
 
       {/* Usuarios */}
       <Card className="crypto-card">
-        <CardHeader>
-          <CardTitle className="text-white">Usuarios</CardTitle>
-          <CardDescription className="text-slate-300">Buscar, ver saldo y ajustar.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center gap-2">
+        <CardHeader className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+          <div>
+            <CardTitle className="text-white">Usuarios</CardTitle>
+            <CardDescription className="text-slate-300">Buscar, ver saldo y ajustar.</CardDescription>
+          </div>
+          <div className="flex items-center gap-2 w-full md:w-auto">
             <Search className="h-4 w-4 text-slate-400" />
             <Input
               placeholder="Buscar por email, usuario o id…"
@@ -325,7 +343,12 @@ export default function AdminDashboard() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
+            <Button variant="outline" className="border-slate-600" onClick={reloadAll}>
+              <RefreshCw className="h-4 w-4 mr-2" /> Refrescar
+            </Button>
           </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -379,7 +402,9 @@ export default function AdminDashboard() {
       {/* Depósitos pendientes */}
       <Card className="crypto-card">
         <CardHeader>
-          <CardTitle className="text-white flex items-center"><Download className="h-5 w-5 mr-2 text-green-400" /> Depósitos pendientes</CardTitle>
+          <CardTitle className="text-white flex items-center">
+            <Download className="h-5 w-5 mr-2 text-green-400" /> Depósitos pendientes
+          </CardTitle>
           <CardDescription className="text-slate-300">Aprueba o rechaza las solicitudes.</CardDescription>
         </CardHeader>
         <CardContent>
@@ -388,7 +413,10 @@ export default function AdminDashboard() {
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
                   <p className="text-white font-medium">Usuario: {tx.user_id}</p>
-                  <p className="text-slate-400">Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span></p>
+                  <p className="text-slate-400">
+                    Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)} {tx.currency || 'USD'}</span>
+                  </p>
+                  {tx.description && <p className="text-slate-500 text-xs">{tx.description}</p>}
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" onClick={() => approveDeposit(tx)} className="bg-green-600 hover:bg-green-700">
@@ -408,7 +436,9 @@ export default function AdminDashboard() {
       {/* Retiros pendientes */}
       <Card className="crypto-card">
         <CardHeader>
-          <CardTitle className="text-white flex items-center"><Upload className="h-5 w-5 mr-2 text-yellow-400" /> Retiros pendientes</CardTitle>
+          <CardTitle className="text-white flex items-center">
+            <Upload className="h-5 w-5 mr-2 text-yellow-400" /> Retiros pendientes
+          </CardTitle>
           <CardDescription className="text-slate-300">Aprueba o rechaza las solicitudes.</CardDescription>
         </CardHeader>
         <CardContent>
@@ -417,7 +447,10 @@ export default function AdminDashboard() {
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
                   <p className="text-white font-medium">Usuario: {tx.user_id}</p>
-                  <p className="text-slate-400">Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span></p>
+                  <p className="text-slate-400">
+                    Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)} {tx.currency || 'USD'}</span>
+                  </p>
+                  {tx.description && <p className="text-slate-500 text-xs">{tx.description}</p>}
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" onClick={() => approveWithdrawal(tx)} className="bg-blue-600 hover:bg-blue-700">

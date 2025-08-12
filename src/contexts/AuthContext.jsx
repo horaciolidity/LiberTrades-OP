@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { toast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
+import { walletApi } from '@/lib/walletApi';
 
 const AuthContext = createContext();
 
@@ -32,48 +33,48 @@ export function AuthProvider({ children }) {
   }
 
   // Crea si no existe y devuelve la fila (idempotente)
- async function fetchOrCreateBalances(userId) {
-  // 1) Intentar leer
-  const { data: existing, error: selErr } = await supabase
-    .from('balances')
-    .select('*')
-    .eq('user_id', userId)
-    .maybeSingle();
+  async function fetchOrCreateBalances(userId) {
+    // 1) Intentar leer
+    const { data: existing, error: selErr } = await supabase
+      .from('balances')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-  if (selErr) {
-    console.warn('Balance (select):', selErr.message);
+    if (selErr) {
+      console.warn('Balance (select):', selErr.message);
+    }
+
+    // 2) Si existe, usarlo tal cual
+    if (existing) {
+      setBalances(existing);
+      return existing;
+    }
+
+    // 3) Si NO existe, crear con 0s (solo una vez)
+    const { data: inserted, error: insErr } = await supabase
+      .from('balances')
+      .insert({ user_id: userId, usdc: 0, eth: 0 })
+      .select()
+      .single();
+
+    if (insErr) {
+      console.warn('Balance (insert):', insErr.message);
+    }
+
+    setBalances(inserted || null);
+    return inserted || null;
   }
-
-  // 2) Si existe, usarlo tal cual
-  if (existing) {
-    setBalances(existing);
-    return existing;
-  }
-
-  // 3) Si NO existe, crear con 0s (solo una vez)
-  const { data: inserted, error: insErr } = await supabase
-    .from('balances')
-    .insert({ user_id: userId, usdc: 0, eth: 0 })
-    .select()
-    .single();
-
-  if (insErr) {
-    console.warn('Balance (insert):', insErr.message);
-  }
-
-  setBalances(inserted || null);
-  return inserted || null;
-}
 
   // Refresca solo balances (útil post-ajuste admin)
   const refreshBalances = async () => {
     if (!user?.id) return null;
-    const { data, error } = await supabase
-      .from('balances')
-      .select('*')
-      .eq('user_id', user.id)
-      .single();
-    if (!error) setBalances(data || null);
+    const { data, error } = await walletApi.fetchBalances(user.id);
+    if (error) {
+      console.warn('refreshBalances:', error.message);
+      return null;
+    }
+    setBalances(data || null);
     return data || null;
   };
 
@@ -138,7 +139,7 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  // ------- listeners Realtime (balances + profiles) -------
+  // ------- listeners Realtime (balances + profiles + wallet/investments/trades) -------
   useEffect(() => {
     if (!user?.id) return;
 
@@ -166,9 +167,30 @@ export function AuthProvider({ children }) {
       )
       .subscribe();
 
+    // cambios en transacciones/inversiones/trades -> refrescar balance
+    const chWallet = supabase
+      .channel('rt-wallet')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        () => refreshBalances()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        () => {} // aquí podrías disparar un fetch de inversiones si lo centralizas luego
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'trades', filter: `user_id=eq.${user.id}` },
+        () => {} // idem trades
+      )
+      .subscribe();
+
     return () => {
       supabase.removeChannel(chBalances);
       supabase.removeChannel(chProfile);
+      supabase.removeChannel(chWallet);
     };
   }, [user?.id]);
 
@@ -250,6 +272,81 @@ export function AuthProvider({ children }) {
     toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado exitosamente' });
   };
 
+  // ======== OPERACIONES ATÓMICAS (RPC) EXPUESTAS AL FRONT ========
+
+  const buyPlan = async ({ planName, amount, dailyReturn }) => {
+    if (!user?.id) throw new Error('Usuario no autenticado');
+    const { data, error } = await walletApi.buyPlan({
+      userId: user.id,
+      planName,
+      amount: Number(amount),
+      dailyReturn: Number(dailyReturn || 0),
+    });
+    if (error) throw error;
+    await refreshBalances();
+    return data?.[0]; // { new_balance, investment_id }
+  };
+
+  const buyProject = async ({ projectName, amount }) => {
+    if (!user?.id) throw new Error('Usuario no autenticado');
+    const { data, error } = await walletApi.buyProject({
+      userId: user.id,
+      projectName,
+      amount: Number(amount),
+    });
+    if (error) throw error;
+    await refreshBalances();
+    return data?.[0]; // { new_balance }
+  };
+
+  const activateBot = async ({ botName, fee = 0 }) => {
+    if (!user?.id) throw new Error('Usuario no autenticado');
+    const { data, error } = await walletApi.activateBot({
+      userId: user.id,
+      botName,
+      fee: Number(fee || 0),
+    });
+    if (error) throw error;
+    await refreshBalances();
+    return data?.[0]; // { new_balance }
+  };
+
+  const executeTradeReal = async ({ symbol, side, size, price }) => {
+    if (!user?.id) throw new Error('Usuario no autenticado');
+    const { data, error } = await walletApi.executeTradeReal({
+      userId: user.id,
+      symbol,
+      side,                         // 'buy' | 'sell'
+      size: Number(size),
+      price: Number(price),
+    });
+    if (error) throw error;
+    await refreshBalances();
+    return data?.[0]; // { new_balance, trade_id }
+  };
+
+  // Modo demo/simulado: NO toca saldo; sólo escribe trades 'demo'
+  const executeTradeDemo = async ({ symbol, side, size, price }) => {
+    if (!user?.id) throw new Error('Usuario no autenticado');
+    const { data, error } = await supabase
+      .from('trades')
+      .insert({
+        user_id: user.id,
+        mode: 'demo',
+        symbol,
+        side,                      // 'buy' | 'sell'
+        size: Number(size),
+        price: Number(price),
+        cost: (side === 'buy' ? 1 : -1) * Number(size) * Number(price),
+        pnl: 0,
+        status: 'open',
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  };
+
   const displayName =
     profile?.username ||
     user?.user_metadata?.full_name ||
@@ -264,11 +361,20 @@ export function AuthProvider({ children }) {
         displayName,
         isAuthenticated,
         loading,
+        // auth
         login,
         register,
         logout,
         updateUser,
-        refreshBalances, // <- expuesto
+        // lecturas
+        refreshBalances,
+        // mutaciones atómicas (RPC)
+        buyPlan,
+        buyProject,
+        activateBot,
+        executeTradeReal,
+        // demo
+        executeTradeDemo,
       }}
     >
       {children}
