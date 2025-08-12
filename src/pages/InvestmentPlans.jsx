@@ -20,7 +20,6 @@ import { useData } from '@/contexts/DataContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from '@/components/ui/use-toast';
 import { useSound } from '@/contexts/SoundContext';
-import { supabase } from '@/lib/supabaseClient';
 
 const fmt = (n, dec = 2) => {
   const num = Number(n);
@@ -29,7 +28,7 @@ const fmt = (n, dec = 2) => {
 
 export default function InvestmentPlans() {
   const { investmentPlans: defaultPlans, cryptoPrices } = useData();
-  const { user, balances, refreshBalances } = useAuth();
+  const { user, balances, buyPlan } = useAuth();
   const { playSound } = useSound();
 
   // agrego lista de monedas aceptadas por plan
@@ -74,6 +73,7 @@ export default function InvestmentPlans() {
       return;
     }
 
+    // Convertimos a USD para la RPC
     let amountInUSD = amount;
     if (selectedCurrency !== 'USDT') {
       const price = Number(cryptoPrices?.[selectedCurrency]?.price ?? 0);
@@ -89,6 +89,7 @@ export default function InvestmentPlans() {
       amountInUSD = amount * price;
     }
 
+    // Validaciones de rango
     const min = Number(selectedPlan?.minAmount || 0);
     const max = Number(selectedPlan?.maxAmount || 0);
     if (amountInUSD < min || (max > 0 && amountInUSD > max)) {
@@ -101,6 +102,7 @@ export default function InvestmentPlans() {
       return;
     }
 
+    // Chequeo previo de fondos (la RPC también valida y aborta atómicamente)
     const currentUsdc = Number(balances?.usdc ?? 0);
     if (amountInUSD > currentUsdc) {
       playSound('error');
@@ -116,38 +118,12 @@ export default function InvestmentPlans() {
     playSound('invest');
 
     try {
-      // 1) Insertar inversión (usar nombres reales de tu tabla)
-      const { error: invErr } = await supabase.from('investments').insert({
-        user_id: user.id,
-        plan_name: selectedPlan.name,
+      // ✅ Llamada atómica: debita saldo, crea investment y registra transacción
+      await buyPlan({
+        planName: selectedPlan.name,
         amount: amountInUSD,
-        daily_return: selectedPlan.dailyReturn,
-        duration: selectedPlan.duration,
-        status: 'active',
-        // ⚠️ No enviar currency_input (no existe). Si tienes columna 'currency', descomenta:
-        // currency: selectedCurrency,
+        dailyReturn: Number(selectedPlan.dailyReturn || 0),
       });
-      if (invErr) throw invErr;
-
-      // 2) Debitar balance USDC
-      const newUsdc = Math.max(0, currentUsdc - amountInUSD);
-      const { error: balErr } = await supabase
-        .from('balances')
-        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
-        .eq('user_id', user.id);
-      if (balErr) throw balErr;
-
-      // 3) Registrar transacción (opcional pero útil)
-      await supabase.from('wallet_transactions').insert({
-        user_id: user.id,
-        type: 'investment',
-        amount: amountInUSD,
-        status: 'completed',
-        description: `Compra plan ${selectedPlan.name}`,
-      });
-
-      // 4) Refrescar saldo en UI inmediatamente
-      refreshBalances?.();
 
       toast({
         title: '¡Inversión exitosa!',
@@ -163,7 +139,7 @@ export default function InvestmentPlans() {
       playSound('error');
       toast({
         title: 'Error de Inversión',
-        description: 'Hubo un problema al procesar tu inversión.',
+        description: error?.message || 'Hubo un problema al procesar tu inversión.',
         variant: 'destructive',
       });
     } finally {
@@ -399,7 +375,7 @@ export default function InvestmentPlans() {
                       {fmt(
                         calculateEquivalentValue(investmentAmount, selectedCurrency) *
                           Number(selectedPlan.dailyReturn || 0) *
-                          Number(selectedPlan.duration || 0) /
+                          Number(selectedPlan.duration || 0) / 
                           100,
                         2
                       )}
