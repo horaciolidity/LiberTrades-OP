@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+// src/pages/Dashboard.jsx
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -14,42 +15,117 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
+import { supabase } from '@/lib/supabaseClient';
 
 const fmt = (n, dec = 2) => {
   const num = Number(n);
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
 };
 
+// Normaliza una inversión
+function normalizeInvestment(inv) {
+  const id = inv?.id ?? Math.random().toString(36).slice(2);
+  const userId = inv?.user_id ?? inv?.userId ?? null;
+  const planName = inv?.plan_name ?? inv?.planName ?? 'Plan';
+  const amount = Number(inv?.amount ?? 0);
+  const dailyReturn = Number(inv?.daily_return ?? inv?.dailyReturn ?? 0);
+  const duration = Number(inv?.duration ?? 0);
+  const createdAt = inv?.created_at ?? inv?.createdAt ?? new Date().toISOString();
+  return { id: String(id), userId, planName, amount, dailyReturn, duration, createdAt };
+}
+
 export default function Dashboard() {
   const { user, displayName, balances, loading } = useAuth();
-  const { cryptoPrices = {}, getInvestments, getReferrals } = useData();
+  const { cryptoPrices = {} } = useData();
+
   const [investments, setInvestments] = useState([]);
   const [referrals, setReferrals] = useState([]);
   const [error, setError] = useState(null);
+  const [hydrating, setHydrating] = useState(true);
+
+  const fetchInvestments = useCallback(async () => {
+    if (!user?.id) {
+      setInvestments([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('investments')
+      .select('id, user_id, plan_name, amount, daily_return, duration, created_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    setInvestments((data || []).map(normalizeInvestment));
+  }, [user?.id]);
+
+  const fetchReferrals = useCallback(async () => {
+    if (!user?.id) {
+      setReferrals([]);
+      return;
+    }
+    // mi código de referidos
+    const { data: me, error: meErr } = await supabase
+      .from('profiles')
+      .select('referral_code')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (meErr || !me?.referral_code) {
+      setReferrals([]);
+      return;
+    }
+    // quienes se registraron con mi código
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, username, referred_by, created_at')
+      .eq('referred_by', me.referral_code)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    setReferrals(data || []);
+  }, [user?.id]);
+
+  const fetchAll = useCallback(async () => {
+    if (!user?.id) {
+      setHydrating(false);
+      return;
+    }
+    setError(null);
+    setHydrating(true);
+    try {
+      await Promise.all([fetchInvestments(), fetchReferrals()]);
+    } catch (e) {
+      console.error('Dashboard fetchAll error:', e);
+      setError('No se pudieron cargar los datos.');
+    } finally {
+      setHydrating(false);
+    }
+  }, [user?.id, fetchInvestments, fetchReferrals]);
 
   useEffect(() => {
-    const fetchData = async () => {
-      if (!user?.id) return;
-      try {
-        const invs = await getInvestments?.();
-        const refs = await getReferrals?.(user.id);
-        setInvestments(invs?.filter(inv => inv?.userId === user.id) || []);
-        setReferrals(refs || []);
-      } catch (err) {
-        console.error('Error cargando datos del dashboard:', err);
-        setError('No se pudieron cargar los datos.');
-      }
-    };
-    fetchData();
-  }, [user?.id, getInvestments, getReferrals]);
+    fetchAll();
+  }, [fetchAll]);
 
-  if (loading) return <div className="p-8 text-white">Cargando...</div>;
+  // Realtime: refrescar inversiones del usuario
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('rt-dashboard-investments')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        fetchInvestments
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [user?.id, fetchInvestments]);
+
+  if (loading || hydrating) return <div className="p-8 text-white">Cargando...</div>;
   if (error) return <div className="p-8 text-red-500">{error}</div>;
   if (!user) return <div className="p-8 text-white">Iniciá sesión para ver el dashboard.</div>;
 
-  const totalInvested = (investments || []).reduce(
-    (sum, inv) => sum + Number(inv?.amount || 0), 0
-  );
+  // Métricas
+  const totalInvested = (investments || []).reduce((sum, inv) => sum + Number(inv?.amount || 0), 0);
 
   const totalEarnings = (investments || []).reduce((sum, inv) => {
     const createdAtMs = inv?.createdAt ? new Date(inv.createdAt).getTime() : Date.now();
@@ -183,20 +259,20 @@ export default function Dashboard() {
             <CardContent>
               {(investments?.length || 0) > 0 ? (
                 <div className="space-y-4">
-                  {investments.slice(0, 5).map((investment) => (
-                    <div key={investment?.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
+                  {investments.slice(0, 5).map((inv) => (
+                    <div key={`${inv.id}-${inv.createdAt}`} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
                       <div>
-                        <div className="text-white font-medium">{investment?.planName || 'Plan'}</div>
+                        <div className="text-white font-medium">{inv?.planName || 'Plan'}</div>
                         <div className="text-slate-400 text-sm">
-                          {investment?.createdAt ? new Date(investment.createdAt).toLocaleDateString() : '--/--/----'}
+                          {inv?.createdAt ? new Date(inv.createdAt).toLocaleDateString() : '--/--/----'}
                         </div>
                       </div>
                       <div className="text-right">
                         <div className="text-white font-semibold">
-                          ${fmt(investment?.amount, 2)}
+                          ${fmt(inv?.amount, 2)}
                         </div>
                         <div className="text-green-400 text-sm">
-                          {fmt(investment?.dailyReturn, 2)}% diario
+                          {fmt(inv?.dailyReturn, 2)}% diario
                         </div>
                       </div>
                     </div>

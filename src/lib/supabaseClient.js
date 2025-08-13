@@ -1,49 +1,74 @@
+// src/lib/supabaseClient.js
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim();
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
 
-// Logs útiles en dev (podés quitarlos en prod)
+// logs útiles (en prod podés quitarlos)
 console.log('VITE_SUPABASE_URL:', supabaseUrl);
 console.log('VITE_SUPABASE_ANON_KEY presente:', !!supabaseAnonKey);
 
 let supabase;
 
-// Modo “demo” si faltan envs (evita que la app crashee en build)
 if (!supabaseUrl || !supabaseAnonKey) {
   console.warn('[WARN] Supabase no configurado. Modo demo.');
+
+  // Respuesta de error estándar
+  const errRes = (msg = 'Supabase no configurado') => ({ data: null, error: { message: msg } });
+
+  // Builder "thenable" para que `await supabase.from(...).select()...` no rompa
+  const builder = () => {
+    const b = {
+      on() { return b; },
+      eq() { return b; },
+      single() { return b; },
+      maybeSingle() { return b; },
+      order() { return b; },
+      limit() { return b; },
+      // Métodos de consultas/escrituras encadenables
+      select() { return b; },
+      insert() { return b; },
+      update() { return b; },
+      upsert() { return b; },
+      onConflict() { return b; },
+      // Hace que `await` funcione y devuelva un error controlado
+      then(resolve) { resolve(errRes()); },
+      catch() { return b; },
+      finally() { return b; },
+    };
+    return b;
+  };
+
   supabase = {
     auth: {
       getSession: async () => ({ data: { session: null }, error: null }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
-      signInWithPassword: async () => ({ data: null, error: { message: 'Supabase no configurado' } }),
-      signUp: async () => ({ data: null, error: { message: 'Supabase no configurado' } }),
-      signOut: async () => ({ error: null } ),
+      signInWithPassword: async () => errRes(),
+      signUp: async () => errRes(),
+      signOut: async () => ({ error: null }),
     },
-    from() {
-      const stub = {
-        select: async () => ({ data: [], error: { message: 'Supabase no configurado' } }),
-        insert: async () => ({ data: null, error: { message: 'Supabase no configurado' } }),
-        update: async () => ({ data: null, error: { message: 'Supabase no configurado' } }),
-        upsert: async () => ({ data: null, error: { message: 'Supabase no configurado' } }),
-        onConflict() { return this; },
-        eq() { return this; },
-        single() { return this; },
-        maybeSingle() { return this; },
-        select() { return this; },
+    from() { return builder(); },
+    rpc: async () => errRes(),
+    channel() {
+      // stub de realtime
+      return {
+        on() { return this; },
+        subscribe() { return { unsubscribe() {} }; },
       };
-      return stub;
     },
+    removeChannel() {},
   };
 } else {
-  // ✅ Opciones clave para navegador
   supabase = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
-      persistSession: true,       // guarda sesión en localStorage
-      autoRefreshToken: true,     // refresca el token automáticamente
-      detectSessionInUrl: true,   // maneja callbacks con tokens en la URL
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
     },
   });
 }
+
+// Helper de debug en navegador
+if (typeof window !== 'undefined') window.__sb = supabase;
 
 export { supabase };

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+// src/pages/RewardsPage.jsx
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -6,6 +7,7 @@ import { Gift, CheckCircle, Zap, Star, DollarSign, Users, TrendingUp } from 'luc
 import { useAuth } from '@/contexts/AuthContext';
 import { useSound } from '@/contexts/SoundContext';
 import { toast } from '@/components/ui/use-toast';
+import { supabase } from '@/lib/supabaseClient';
 
 const initialTasks = [
   { id: 1, title: 'Primer Depósito', description: 'Realiza tu primer depósito de al menos $50.', reward: '$5 Bonus', icon: DollarSign, completed: false, category: 'Depósito' },
@@ -28,8 +30,17 @@ const safeParse = (raw, fallback) => {
   try { return JSON.parse(raw); } catch { return fallback; }
 };
 
-const RewardsPage = () => {
-  const { user } = useAuth();
+// helpers para parsear el reward
+const parseDollarBonus = (rewardStr = '') => {
+  const m = rewardStr.match(/\$(\d+(?:\.\d+)?)/);
+  return m ? Number(m[1]) : 0;
+};
+const isDemoBonus = (rewardStr = '') => /saldo\s*virtual/i.test(rewardStr);
+
+const TX_TABLE = 'wallet_transactions';
+
+export default function RewardsPage() {
+  const { user, refreshBalances } = useAuth();
   const { playSound } = useSound();
 
   const keyTasks = user?.id ? `crypto_rewards_tasks_${user.id}` : null;
@@ -46,27 +57,121 @@ const RewardsPage = () => {
     return raw ? safeParse(raw, []) : [];
   });
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!keyTasks) return;
-    // guardamos sin la función para evitar corrupción
-    const toSave = tasks.map(({ icon, ...rest }) => rest);
+    const toSave = tasks.map(({ icon, ...rest }) => rest); // guardamos sin la función
     localStorage.setItem(keyTasks, JSON.stringify(toSave));
   }, [tasks, keyTasks]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!keyClaim) return;
     localStorage.setItem(keyClaim, JSON.stringify(claimedRewards));
   }, [claimedRewards, keyClaim]);
 
-  const handleClaimReward = (taskId) => {
+  // --- Acredita recompensa en Supabase ---
+  const creditReward = async (task) => {
+    if (!user?.id) return;
+
+    // DEMO bonus (ej: "$1000 Saldo Virtual Extra")
+    if (isDemoBonus(task.reward)) {
+      const addDemo = parseDollarBonus(task.reward) || 1000;
+
+      // leer (si no hay fila, row = null)
+      const { data: row, error: selErr } = await supabase
+        .from('balances')
+        .select('demo_balance')
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (selErr) throw selErr;
+
+      if (!row) {
+        const { error: upErr } = await supabase
+          .from('balances')
+          .upsert({ user_id: user.id, usdc: 0, demo_balance: addDemo, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+        if (upErr) throw upErr;
+      } else {
+        const newDemo = Number(row?.demo_balance || 0) + addDemo;
+        const { error: updErr } = await supabase
+          .from('balances')
+          .update({ demo_balance: newDemo, updated_at: new Date().toISOString() })
+          .eq('user_id', user.id);
+        if (updErr) throw updErr;
+      }
+
+      return; // demo no genera transacción real
+    }
+
+    // USDC real bonus (ej: "$5 Bonus")
+    const addUsdc = parseDollarBonus(task.reward);
+    if (addUsdc <= 0) return;
+
+    const { data: row, error: selErr } = await supabase
+      .from('balances')
+      .select('usdc')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (selErr) throw selErr;
+
+    if (!row) {
+      const { error: upErr } = await supabase
+        .from('balances')
+        .upsert({ user_id: user.id, usdc: addUsdc, demo_balance: 0, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+      if (upErr) throw upErr;
+    } else {
+      const newUsdc = Number(row?.usdc || 0) + addUsdc;
+      const { error: updErr } = await supabase
+        .from('balances')
+        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
+        .eq('user_id', user.id);
+      if (updErr) throw updErr;
+    }
+
+    // registro en historial
+    await supabase.from(TX_TABLE).insert({
+      user_id: user.id,
+      type: 'reward',
+      amount: addUsdc,
+      status: 'completed',
+      description: `Recompensa: ${task.title}`,
+    });
+  };
+
+  const handleClaimReward = async (taskId) => {
     playSound('success');
     const task = tasks.find(t => t.id === taskId);
-    if (task && !task.completed) {
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: true } : t));
-      setClaimedRewards(prev => [...prev, { id: task.id, title: task.title, reward: task.reward, claimedAt: new Date().toISOString() }]);
-      toast({ title: '¡Recompensa Reclamada!', description: `Has reclamado "${task.reward}" por completar "${task.title}".` });
-    } else {
-      toast({ title: 'Tarea ya completada', description: `Ya has reclamado la recompensa por "${task?.title || ''}".`, variant: 'destructive' });
+
+    if (!task) return;
+    if (task.completed) {
+      toast({ title: 'Tarea ya completada', description: `Ya reclamaste "${task.title}".`, variant: 'destructive' });
+      return;
+    }
+
+    // Optimista en UI
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: true } : t));
+    const claimedAt = new Date().toISOString();
+    setClaimedRewards(prev => [...prev, { id: task.id, title: task.title, reward: task.reward, claimedAt }]);
+
+    try {
+      await creditReward(task);
+      // refresca el header si el contexto lo permite
+      try { await refreshBalances?.(); } catch {}
+
+      toast({
+        title: '¡Recompensa Reclamada!',
+        description: `Has reclamado "${task.reward}" por completar "${task.title}".`
+      });
+    } catch (e) {
+      // revertir si falla
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: false } : t));
+      setClaimedRewards(prev => prev.filter(r => !(r.id === task.id && r.claimedAt === claimedAt)));
+
+      console.error('Error acreditando recompensa:', e?.message || e);
+      playSound('error');
+      toast({
+        title: 'No se pudo acreditar',
+        description: e?.message || 'Intenta nuevamente.',
+        variant: 'destructive'
+      });
     }
   };
 
@@ -83,17 +188,17 @@ const RewardsPage = () => {
           <p className="text-slate-300">Completa tareas y gana recompensas exclusivas para potenciar tus inversiones.</p>
         </motion.div>
 
-        {categories.map(category => (
+        {categories.map((category, i) => (
           <motion.div
             key={category}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.1 * categories.indexOf(category) }}
+            transition={{ duration: 0.5, delay: 0.1 * i }}
           >
             <h2 className="text-2xl font-semibold text-purple-300 mb-4 mt-6">{category}</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {tasks.filter(task => task.category === category).map((task) => {
-                const Icon = typeof task.icon === 'function' ? task.icon : Gift; // <- blindado
+                const Icon = typeof task.icon === 'function' ? task.icon : Gift;
                 return (
                   <Card key={task.id} className={`crypto-card h-full flex flex-col ${task.completed ? 'opacity-60 border-green-500' : 'border-purple-500'}`}>
                     <CardHeader>
@@ -131,7 +236,7 @@ const RewardsPage = () => {
               <CardContent className="pt-6">
                 <ul className="space-y-3">
                   {claimedRewards.map(reward => (
-                    <li key={reward.id} className="flex justify-between items-center p-3 bg-slate-800/50 rounded-md">
+                    <li key={`${reward.id}-${reward.claimedAt}`} className="flex justify-between items-center p-3 bg-slate-800/50 rounded-md">
                       <div className="flex items-center">
                         <Gift className="h-5 w-5 mr-3 text-yellow-400" />
                         <div>
@@ -150,6 +255,5 @@ const RewardsPage = () => {
       </div>
     </>
   );
-};
-
-export default RewardsPage;
+}
+      

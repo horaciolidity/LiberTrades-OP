@@ -1,26 +1,30 @@
+// src/contexts/AuthContext.jsx
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { toast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
+import { toast } from '@/components/ui/use-toast';
 
-const AuthContext = createContext();
+const AuthContext = createContext(null);
 
-export function useAuth() {
+export const useAuth = () => {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within an AuthProvider');
   return ctx;
-}
+};
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);         // auth user
-  const [profile, setProfile] = useState(null);   // public.profiles
-  const [balances, setBalances] = useState(null); // public.balances
+  // ---- state base ----
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [balances, setBalances] = useState({ usdc: 0, demo_balance: 0, balance: 0 });
+  const [investments, setInvestments] = useState([]);
+  const [transactions, setTransactions] = useState([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const SAFE_TIMEOUT = 2500; // ms: evita loaders eternos
+  const SAFE_TIMEOUT = 2500; // evita loaders eternos si algo falla
 
-  // ------- helpers -------
-  async function fetchProfile(userId) {
+  // ---------- fetch helpers ----------
+  const fetchProfile = async (userId) => {
     const { data, error } = await supabase
       .from('profiles')
       .select('id, username, referred_by, referral_code, role')
@@ -29,61 +33,82 @@ export function AuthProvider({ children }) {
     if (error) console.warn('Perfil:', error.message);
     setProfile(data || null);
     return data || null;
-  }
+  };
 
-  // Crea si no existe y devuelve la fila (idempotente)
- async function fetchOrCreateBalances(userId) {
-  // 1) Intentar leer
-  const { data: existing, error: selErr } = await supabase
-    .from('balances')
-    .select('*')
-    .eq('user_id', userId)
-    .maybeSingle();
+  const fetchOrCreateBalances = async (userId) => {
+    // intentar leer
+    const { data, error } = await supabase
+      .from('balances')
+      .select('user_id, usdc, demo_balance, balance, updated_at')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-  if (selErr) {
-    console.warn('Balance (select):', selErr.message);
-  }
+    if (!error && data) {
+      setBalances(data);
+      return data;
+    }
 
-  // 2) Si existe, usarlo tal cual
-  if (existing) {
-    setBalances(existing);
-    return existing;
-  }
+    // crear fila si no existe (RLS debe permitir insert del propio user)
+    const { data: ins, error: insErr } = await supabase
+      .from('balances')
+      .insert({ user_id: userId, usdc: 0, demo_balance: 0, balance: 0 })
+      .select('user_id, usdc, demo_balance, balance, updated_at')
+      .single();
 
-  // 3) Si NO existe, crear con 0s (solo una vez)
-  const { data: inserted, error: insErr } = await supabase
-    .from('balances')
-    .insert({ user_id: userId, usdc: 0, eth: 0 })
-    .select()
-    .single();
+    if (insErr) {
+      console.warn('Balance (insert):', insErr.message);
+      return null;
+    }
+    setBalances(ins);
+    return ins;
+  };
 
-  if (insErr) {
-    console.warn('Balance (insert):', insErr.message);
-  }
-
-  setBalances(inserted || null);
-  return inserted || null;
-}
-
-  // Refresca solo balances (útil post-ajuste admin)
   const refreshBalances = async () => {
     if (!user?.id) return null;
     const { data, error } = await supabase
       .from('balances')
-      .select('*')
+      .select('user_id, usdc, demo_balance, balance, updated_at')
       .eq('user_id', user.id)
-      .single();
-    if (!error) setBalances(data || null);
-    return data || null;
+      .maybeSingle();
+    if (error) {
+      console.warn('refreshBalances:', error.message);
+      return null;
+    }
+    if (data) setBalances(data);
+    return data;
   };
 
-  // carga en segundo plano — NO bloquea el loader
-  function loadAllBG(userId) {
-    Promise.allSettled([fetchProfile(userId), fetchOrCreateBalances(userId)]).catch(() => {});
-    setIsAuthenticated(true);
-  }
+  const loadInvestments = async () => {
+    const { data, error } = await supabase.from('user_investments').select('*');
+    if (error) {
+      console.warn('loadInvestments:', error.message);
+      return [];
+    }
+    setInvestments(data || []);
+    return data || [];
+  };
 
-  // ------- bootstrap + listener de auth -------
+  const loadTransactions = async () => {
+    const { data, error } = await supabase.from('user_transactions').select('*');
+    if (error) {
+      console.warn('loadTransactions:', error.message);
+      return [];
+    }
+    setTransactions(data || []);
+    return data || [];
+  };
+
+  const loadAll = async (userId) => {
+    await Promise.allSettled([
+      fetchProfile(userId),
+      fetchOrCreateBalances(userId),
+      loadInvestments(),
+      loadTransactions(),
+    ]);
+    setIsAuthenticated(true);
+  };
+
+  // ---------- bootstrap de sesión ----------
   useEffect(() => {
     let mounted = true;
     const killer = setTimeout(() => mounted && setLoading(false), SAFE_TIMEOUT);
@@ -91,42 +116,37 @@ export function AuthProvider({ children }) {
     (async () => {
       try {
         const { data, error } = await supabase.auth.getSession();
-        if (error) console.warn('getSession error:', error.message);
-
+        if (error) console.warn('getSession:', error.message);
         const session = data?.session ?? null;
-        if (!mounted) return;
 
+        if (!mounted) return;
         setUser(session?.user ?? null);
         setIsAuthenticated(!!session?.user);
 
         if (session?.user) {
-          loadAllBG(session.user.id); // en BG
+          loadAll(session.user.id);
         } else {
           setProfile(null);
-          setBalances(null);
-        }
-      } catch (e) {
-        console.error('Error inesperado al cargar la sesión:', e);
-        if (mounted) {
-          setUser(null);
-          setProfile(null);
-          setBalances(null);
-          setIsAuthenticated(false);
+          setBalances({ usdc: 0, demo_balance: 0, balance: 0 });
+          setInvestments([]);
+          setTransactions([]);
         }
       } finally {
-        if (mounted) setLoading(false); // soltar loader ya
+        mounted && setLoading(false);
       }
     })();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_ev, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_ev, session) => {
       const u = session?.user ?? null;
       setUser(u);
       setIsAuthenticated(!!u);
       if (u) {
-        loadAllBG(u.id); // en BG
+        loadAll(u.id);
       } else {
         setProfile(null);
-        setBalances(null);
+        setBalances({ usdc: 0, demo_balance: 0, balance: 0 });
+        setInvestments([]);
+        setTransactions([]);
       }
       setLoading(false);
     });
@@ -134,54 +154,63 @@ export function AuthProvider({ children }) {
     return () => {
       mounted = false;
       clearTimeout(killer);
-      subscription.unsubscribe();
+      sub?.subscription?.unsubscribe?.();
     };
   }, []);
 
-  // ------- listeners Realtime (balances + profiles) -------
+  // ---------- Realtime ----------
   useEffect(() => {
     if (!user?.id) return;
 
-    // balances del usuario logueado
+    // balances -> actualiza en vivo
     const chBalances = supabase
       .channel('rt-balances')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'balances', filter: `user_id=eq.${user.id}` },
-        (payload) => {
-          if (payload?.new) setBalances(payload.new);
-        }
+        (payload) => payload?.new && setBalances(payload.new)
       )
       .subscribe();
 
-    // opcional: cambios de perfil (nombre/role)
+    // profile -> cambios visibles
     const chProfile = supabase
       .channel('rt-profiles')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
-        (payload) => {
-          if (payload?.new) setProfile(payload.new);
-        }
+        (payload) => payload?.new && setProfile(payload.new)
+      )
+      .subscribe();
+
+    // wallet/investments -> refrescar listas
+    const chWallet = supabase
+      .channel('rt-wallet-investments')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        loadTransactions
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        loadInvestments
       )
       .subscribe();
 
     return () => {
       supabase.removeChannel(chBalances);
       supabase.removeChannel(chProfile);
+      supabase.removeChannel(chWallet);
     };
   }, [user?.id]);
 
-  // ------- actions -------
-  const generateReferralCode = () =>
-    Math.random().toString(36).substring(2, 8).toUpperCase();
-
+  // ---------- acciones de auth ----------
   const login = async (email, password) => {
     setLoading(true);
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      if (data?.user?.id) loadAllBG(data.user.id);
+      if (data?.user?.id) await loadAll(data.user.id);
       toast({ title: '¡Bienvenido!', description: 'Has iniciado sesión exitosamente' });
       return data.user ?? null;
     } catch (error) {
@@ -201,11 +230,11 @@ export function AuthProvider({ children }) {
         options: { data: { full_name: name || null } },
       });
       if (error) throw error;
-
       const userId = data?.user?.id;
-      const referralCode = generateReferralCode();
 
+      // crear fila de perfil + balance
       if (userId) {
+        const referralCode = Math.random().toString(36).slice(2, 8).toUpperCase();
         const { error: pErr } = await supabase.from('profiles').insert({
           id: userId,
           username: name || email.split('@')[0],
@@ -213,11 +242,10 @@ export function AuthProvider({ children }) {
           referral_code: referralCode,
         });
         if (pErr) throw pErr;
-
-        loadAllBG(userId); // en BG
+        await fetchOrCreateBalances(userId);
       }
 
-      toast({ title: '¡Registro exitoso!', description: 'Tu cuenta ha sido creada correctamente.' });
+      toast({ title: '¡Registro exitoso!', description: 'Te enviamos un correo para verificar tu cuenta.' });
       return data.user ?? null;
     } catch (err) {
       toast({ title: 'Error de registro', description: err.message, variant: 'destructive' });
@@ -231,7 +259,9 @@ export function AuthProvider({ children }) {
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
-    setBalances(null);
+    setBalances({ usdc: 0, demo_balance: 0, balance: 0 });
+    setInvestments([]);
+    setTransactions([]);
     setIsAuthenticated(false);
     toast({ title: 'Sesión cerrada', description: 'Has cerrado sesión exitosamente' });
   };
@@ -243,13 +273,59 @@ export function AuthProvider({ children }) {
     }
     const { error } = await supabase.from('profiles').update(updatedData).eq('id', user.id);
     if (error) {
-      toast({ title: 'Error al actualizar usuario', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error al actualizar', description: error.message, variant: 'destructive' });
       return;
     }
-    fetchProfile(user.id); // refresh en BG
-    toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado exitosamente' });
+    fetchProfile(user.id);
+    toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado.' });
   };
 
+  // ---------- operaciones atómicas ----------
+  // Compra de plan: usa la RPC process_plan_purchase (SQL ya aplicado)
+  const buyPlan = async ({ planName, amount, dailyReturnPercent, durationDays, currency = 'USDT' }) => {
+  if (!user?.id) throw new Error('Usuario no autenticado');
+
+  const { data, error } = await supabase.rpc('process_plan_purchase', {
+    p_plan_name: planName,
+    p_amount: Number(amount),
+    p_daily_return_percent: Number(dailyReturnPercent || 0),
+    p_duration_days: Number(durationDays || 0),
+    p_currency: currency,
+  });
+
+  console.log('RPC buyPlan →', { data, error });
+
+  if (error || !data?.ok) {
+    throw new Error(data?.message || error?.message || 'No se pudo procesar la inversión');
+  }
+
+  await Promise.allSettled([refreshBalances(), loadInvestments(), loadTransactions()]);
+  return data;
+};
+
+  // (opcional) trade demo: no toca saldo
+  const executeTradeDemo = async ({ symbol, side, size, price }) => {
+    if (!user?.id) throw new Error('Usuario no autenticado');
+    const { data, error } = await supabase
+      .from('trades')
+      .insert({
+        user_id: user.id,
+        mode: 'demo',
+        symbol,
+        side, // 'buy' | 'sell'
+        size: Number(size),
+        price: Number(price),
+        cost: (side === 'buy' ? 1 : -1) * Number(size) * Number(price),
+        pnl: 0,
+        status: 'open',
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  };
+
+  // ---------- derivados ----------
   const displayName =
     profile?.username ||
     user?.user_metadata?.full_name ||
@@ -258,17 +334,27 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider
       value={{
+        // estado
         user,
         profile,
         balances,
-        displayName,
+        investments,
+        transactions,
         isAuthenticated,
         loading,
+        displayName,
+        // auth
         login,
         register,
         logout,
         updateUser,
-        refreshBalances, // <- expuesto
+        // lecturas
+        refreshBalances,
+        loadInvestments,
+        loadTransactions,
+        // mutaciones
+        buyPlan,
+        executeTradeDemo,
       }}
     >
       {children}

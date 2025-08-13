@@ -20,6 +20,7 @@ import TradingBotsPage from '@/pages/TradingBotsPage';
 import UserStatsPage from '@/pages/UserStatsPage';
 import RewardsPage from '@/pages/RewardsPage';
 import WalletPage from '@/pages/WalletPage';
+import WithdrawPage from '@/pages/WithdrawPage'; // <- NUEVO
 
 import ProtectedRoute, { GuestRoute } from '@/routes/ProtectedRoute';
 
@@ -59,6 +60,7 @@ export default function App() {
               <Route path="/history" element={<TransactionHistory />} />
               <Route path="/profile" element={<Profile />} />
               <Route path="/deposit" element={<DepositPage />} />
+              <Route path="/withdraw" element={<WithdrawPage />} /> {/* <- NUEVO */}
               <Route path="/tokenized-projects" element={<TokenizedProjectsPage />} />
               <Route path="/trading-bots" element={<TradingBotsPage />} />
               <Route path="/stats" element={<UserStatsPage />} />

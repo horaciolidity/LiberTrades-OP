@@ -1,13 +1,20 @@
+// src/pages/TradingBotsPage.jsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Bot, Zap, TrendingUp, BarChart2, DollarSign, Activity, CheckCircle } from 'lucide-react';
+import { Bot, Zap, TrendingUp, BarChart2, DollarSign, Activity, CheckCircle, Wallet } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSound } from '@/contexts/SoundContext';
 import { toast } from '@/components/ui/use-toast';
+import { supabase } from '@/lib/supabaseClient';
+
+const fmt = (n, dec = 2) => {
+  const num = Number(n);
+  return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
+};
 
 const tradingBots = [
   {
@@ -30,69 +37,119 @@ const tradingBots = [
   },
 ];
 
-const TradingBotsPage = () => {
-  const { user, balances } = useAuth();
+export default function TradingBotsPage() {
+  const { user, balances, activateBot } = useAuth();
   const { playSound } = useSound();
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleActivateBot = () => {
-    playSound('invest');
+  const handleActivateBot = async () => {
+    playSound('click');
+
+    if (!user?.id) {
+      playSound('error');
+      toast({ title: 'Sin sesión', description: 'Inicia sesión para activar un bot.', variant: 'destructive' });
+      return;
+    }
     if (!selectedBot || !investmentAmount) {
-      toast({ title: "Error", description: "Selecciona un bot e ingresa un monto.", variant: "destructive" });
-      return;
-    }
-    const amount = parseFloat(investmentAmount);
-    if (amount < selectedBot.minInvestment) {
-      toast({ title: "Monto Insuficiente", description: `El mínimo para ${selectedBot.name} es $${selectedBot.minInvestment}.`, variant: "destructive" });
-      return;
-    }
-    if (amount > (balances?.usdc ?? 0)) {
-      toast({ title: "Saldo Insuficiente", description: "No tienes suficiente saldo en la app.", variant: "destructive" });
+      playSound('error');
+      toast({ title: 'Error', description: 'Selecciona un bot e ingresa un monto.', variant: 'destructive' });
       return;
     }
 
-    toast({
-      title: "Activación de Bot (Simulada)",
-      description: `Has solicitado activar ${selectedBot.name} con $${amount}. Esta función es demostrativa.`,
-    });
-    setSelectedBot(null);
-    setInvestmentAmount('');
+    const amount = Number(investmentAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      playSound('error');
+      toast({ title: 'Monto inválido', description: 'Ingresa un número válido.', variant: 'destructive' });
+      return;
+    }
+    if (amount < Number(selectedBot.minInvestment)) {
+      playSound('error');
+      toast({
+        title: 'Monto insuficiente',
+        description: `El mínimo para ${selectedBot.name} es $${fmt(selectedBot.minInvestment)}.`,
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    const currentUsdc = Number(balances?.usdc ?? 0);
+    if (amount > currentUsdc) {
+      playSound('error');
+      toast({ title: 'Saldo insuficiente', description: 'No tienes suficiente saldo en la app.', variant: 'destructive' });
+      return;
+    }
+
+    setIsSubmitting(true);
+    playSound('invest');
+
+    try {
+      // ✅ 1) Llamada atómica: descuenta saldo y registra wallet_transactions
+      await activateBot({ botName: selectedBot.name, fee: amount });
+
+      // ⛳ 2) (Opcional) Guardar metadata de activación en una tabla propia
+      try {
+        await supabase.from('bot_activations').insert({
+          user_id: user.id,
+          bot_id: selectedBot.id,
+          bot_name: selectedBot.name,
+          strategy: selectedBot.strategy,
+          amount_usd: amount,
+          status: 'active',
+        });
+      } catch (metaErr) {
+        // Si la tabla no existe o hay RLS, no rompas el flujo
+        console.warn('bot_activations insert warn:', metaErr?.message);
+      }
+
+      toast({
+        title: '¡Bot activado!',
+        description: `Activaste ${selectedBot.name} con $${fmt(amount)}.`,
+      });
+
+      setSelectedBot(null);
+      setInvestmentAmount('');
+    } catch (e) {
+      console.error(e);
+      playSound('error');
+      toast({
+        title: 'Error al activar',
+        description: e?.message || 'No se pudo completar la activación.',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <>
       <div className="space-y-8">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8 }}>
           <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
             <Bot className="h-8 w-8 mr-3 text-purple-400" />
             Bots de Trading Automatizado
           </h1>
-          <p className="text-slate-300">
-            Maximiza tus ganancias con nuestros bots de trading inteligentes.
-          </p>
+          <p className="text-slate-300">Maximiza tus ganancias con nuestros bots de trading inteligentes.</p>
         </motion.div>
 
+        {/* Saldo */}
         <Card className="crypto-card">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-slate-400 text-sm font-medium">Saldo Disponible en App</p>
-                <p className="text-3xl font-bold text-green-400 mt-1">
-                  ${((balances?.usdc ?? 0)).toFixed(2)}
-                </p>
+                <p className="text-slate-400 text-sm font-medium">Saldo Disponible (App)</p>
+                <p className="text-3xl font-bold text-green-400 mt-1">${fmt(balances?.usdc ?? 0)}</p>
               </div>
               <div className="p-4 rounded-lg bg-green-500/10">
-                <DollarSign className="h-8 w-8 text-green-400" />
+                <Wallet className="h-8 w-8 text-green-400" />
               </div>
             </div>
           </CardContent>
         </Card>
 
+        {/* Cards de bots */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {tradingBots.map((bot, index) => {
             const Icon = bot.icon;
@@ -129,7 +186,7 @@ const TradingBotsPage = () => {
                     <div className="pt-2">
                       <p className="text-sm font-medium text-white mb-1">Características:</p>
                       <ul className="space-y-1">
-                        {bot.features.map(feature => (
+                        {bot.features.map((feature) => (
                           <li key={feature} className="flex items-center text-xs text-slate-300">
                             <CheckCircle className="h-3 w-3 mr-2 text-green-500 shrink-0" />
                             {feature}
@@ -140,8 +197,12 @@ const TradingBotsPage = () => {
                   </CardContent>
                   <CardFooter>
                     <Button
-                      onClick={() => { playSound('click'); setSelectedBot(bot); }}
-                      className={`w-full bg-gradient-to-r ${bot.bgColor.includes('blue') ? 'from-blue-500 to-cyan-500' : bot.bgColor.includes('red') ? 'from-red-500 to-pink-500' : 'from-green-500 to-teal-500'} hover:opacity-90`}
+                      onClick={() => { playSound('click'); setSelectedBot(bot); setInvestmentAmount(''); }}
+                      className={`w-full bg-gradient-to-r ${
+                        bot.bgColor.includes('blue') ? 'from-blue-500 to-cyan-500'
+                        : bot.bgColor.includes('red') ? 'from-red-500 to-pink-500'
+                        : 'from-green-500 to-teal-500'
+                      } hover:opacity-90`}
                     >
                       Activar Bot
                     </Button>
@@ -152,6 +213,7 @@ const TradingBotsPage = () => {
           })}
         </div>
 
+        {/* Modal */}
         {selectedBot && (
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
@@ -183,17 +245,24 @@ const TradingBotsPage = () => {
                     type="number"
                     value={investmentAmount}
                     onChange={(e) => setInvestmentAmount(e.target.value)}
-                    placeholder={`Mínimo $${selectedBot.minInvestment}, Disponible: $${(balances?.usdc ?? 0).toFixed(2)}`}
+                    placeholder={`Mínimo $${selectedBot.minInvestment}, Disponible: $${fmt(balances?.usdc ?? 0)}`}
                     className="bg-slate-800 border-slate-600 text-white"
                   />
                 </div>
                 <Button
                   onClick={handleActivateBot}
-                  className={`w-full bg-gradient-to-r ${selectedBot.bgColor.includes('blue') ? 'from-blue-500 to-cyan-500' : selectedBot.bgColor.includes('red') ? 'from-red-500 to-pink-500' : 'from-green-500 to-teal-500'} hover:opacity-90`}
+                  disabled={isSubmitting || !investmentAmount}
+                  className={`w-full bg-gradient-to-r ${
+                    selectedBot.bgColor.includes('blue') ? 'from-blue-500 to-cyan-500'
+                    : selectedBot.bgColor.includes('red') ? 'from-red-500 to-pink-500'
+                    : 'from-green-500 to-teal-500'
+                  } hover:opacity-90`}
                 >
-                  Activar {selectedBot.name}
+                  {isSubmitting ? 'Procesando…' : `Activar ${selectedBot.name}`}
                 </Button>
-                <Button variant="outline" onClick={() => setSelectedBot(null)} className="w-full">Cancelar</Button>
+                <Button variant="outline" onClick={() => setSelectedBot(null)} className="w-full">
+                  Cancelar
+                </Button>
               </CardContent>
             </Card>
           </motion.div>
@@ -201,6 +270,4 @@ const TradingBotsPage = () => {
       </div>
     </>
   );
-};
-
-export default TradingBotsPage;
+}

@@ -1,3 +1,4 @@
+// src/pages/InvestmentPlans.jsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -19,7 +20,6 @@ import { useData } from '@/contexts/DataContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from '@/components/ui/use-toast';
 import { useSound } from '@/contexts/SoundContext';
-import { supabase } from '@/lib/supabaseClient';
 
 const fmt = (n, dec = 2) => {
   const num = Number(n);
@@ -28,7 +28,7 @@ const fmt = (n, dec = 2) => {
 
 export default function InvestmentPlans() {
   const { investmentPlans: defaultPlans, cryptoPrices } = useData();
-  const { user, balances } = useAuth();
+  const { user, balances, buyPlan } = useAuth();
   const { playSound } = useSound();
 
   // agrego lista de monedas aceptadas por plan
@@ -51,110 +51,108 @@ export default function InvestmentPlans() {
   };
 
   const handleInvest = async () => {
-    if (!user?.id) {
-      playSound('error');
-      toast({ title: 'Sin sesión', description: 'Inicia sesión para invertir.', variant: 'destructive' });
-      return;
-    }
-    if (!selectedPlan || !investmentAmount) {
+  if (!user?.id) {
+    playSound('error');
+    toast({ title: 'Sin sesión', description: 'Inicia sesión para invertir.', variant: 'destructive' });
+    return;
+  }
+  if (!selectedPlan || !investmentAmount) {
+    playSound('error');
+    toast({
+      title: 'Error',
+      description: 'Selecciona un plan e ingresa un monto.',
+      variant: 'destructive',
+    });
+    return;
+  }
+
+  const amount = Number(investmentAmount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    playSound('error');
+    toast({ title: 'Monto inválido', description: 'Ingresa un monto válido.', variant: 'destructive' });
+    return;
+  }
+
+  // Convertimos a USD para la RPC
+  let amountInUSD = amount;
+  if (selectedCurrency !== 'USDT') {
+    const price = Number(cryptoPrices?.[selectedCurrency]?.price ?? 0);
+    if (!price) {
       playSound('error');
       toast({
-        title: 'Error',
-        description: 'Selecciona un plan e ingresa un monto.',
+        title: 'Error de Precio',
+        description: `No se pudo obtener el precio de ${selectedCurrency}.`,
         variant: 'destructive',
       });
       return;
     }
+    amountInUSD = amount * price;
+  }
 
-    const amount = Number(investmentAmount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      playSound('error');
-      toast({ title: 'Monto inválido', description: 'Ingresa un monto válido.', variant: 'destructive' });
-      return;
-    }
+  // Validaciones de rango
+  const min = Number(selectedPlan?.minAmount || 0);
+  const max = Number(selectedPlan?.maxAmount || 0);
+  if (amountInUSD < min || (max > 0 && amountInUSD > max)) {
+    playSound('error');
+    toast({
+      title: 'Monto inválido',
+      description: `El monto en USD ($${fmt(amountInUSD)}) debe estar entre $${fmt(min)} y $${fmt(max)}.`,
+      variant: 'destructive',
+    });
+    return;
+  }
 
-    let amountInUSD = amount;
-    if (selectedCurrency !== 'USDT') {
-      const price = Number(cryptoPrices?.[selectedCurrency]?.price ?? 0);
-      if (!price) {
-        playSound('error');
-        toast({
-          title: 'Error de Precio',
-          description: `No se pudo obtener el precio de ${selectedCurrency}.`,
-          variant: 'destructive',
-        });
-        return;
-      }
-      amountInUSD = amount * price;
-    }
+  // Chequeo previo de fondos (la RPC también valida y aborta atómicamente)
+  const currentUsdc = Number(balances?.usdc ?? 0);
+  if (amountInUSD > currentUsdc) {
+    playSound('error');
+    toast({
+      title: 'Fondos insuficientes',
+      description: 'No tienes suficiente saldo en la app para esta inversión.',
+      variant: 'destructive',
+    });
+    return;
+  }
 
-    const min = Number(selectedPlan?.minAmount || 0);
-    const max = Number(selectedPlan?.maxAmount || 0);
-    if (amountInUSD < min || (max > 0 && amountInUSD > max)) {
-      playSound('error');
-      toast({
-        title: 'Monto inválido',
-        description: `El monto en USD ($${fmt(amountInUSD)}) debe estar entre $${fmt(min)} y $${fmt(max)}.`,
-        variant: 'destructive',
-      });
-      return;
-    }
+  setIsInvesting(true);
+  playSound('invest');
 
-    const currentUsdc = Number(balances?.usdc ?? 0);
-    if (amountInUSD > currentUsdc) {
-      playSound('error');
-      toast({
-        title: 'Fondos insuficientes',
-        description: 'No tienes suficiente saldo en la app para esta inversión.',
-        variant: 'destructive',
-      });
-      return;
-    }
+  try {
+    // 🔎 Log de depuración: verificá que aparezca en la consola
+    console.log('[INVEST] calling buyPlan', {
+      planName: selectedPlan.name,
+      amountUSD: amountInUSD,
+      dailyReturnPercent: Number(selectedPlan.dailyReturn || 0),
+      durationDays: Number(selectedPlan.duration || 0),
+    });
 
-    setIsInvesting(true);
-    playSound('invest');
+    // ✅ Llamada atómica: debita saldo, crea investment y registra transacción
+   await buyPlan({
+  planName: selectedPlan.name,
+  amount: amountInUSD,
+  dailyReturnPercent: Number(selectedPlan.dailyReturn || 0),
+  durationDays: Number(selectedPlan.duration || 0),
+  currency: selectedCurrency,
+});
 
-    try {
-      // 1) Insertar inversión (ajusta columnas si tu tabla difiere)
-      const { error: invErr } = await supabase.from('investments').insert({
-        user_id: user.id,
-        plan_name: selectedPlan.name,
-        amount: amountInUSD,
-        daily_return: selectedPlan.dailyReturn,
-        duration: selectedPlan.duration,
-        currency_input: selectedCurrency, // opcional: guarda en qué moneda invirtió
-      });
-      if (invErr) throw invErr;
+// reset modal
+setSelectedPlan(null);
+setInvestmentAmount('');
+setSelectedCurrency('USDT'); // ¡ojo que no sea 'USUT'!
 
-      // 2) Actualizar balance USDC
-      const newUsdc = Math.max(0, currentUsdc - amountInUSD);
-      const { error: balErr } = await supabase
-        .from('balances')
-        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
-        .eq('user_id', user.id);
-      if (balErr) throw balErr;
+  } catch (error) {
+    console.error('Error al invertir:', error?.message || error);
+    playSound('error');
+    toast({
+      title: 'Error de Inversión',
+      description: error?.message || 'Hubo un problema al procesar tu inversión.',
+      variant: 'destructive',
+    });
+  } finally {
+    setIsInvesting(false);
+  }
+};
 
-      toast({
-        title: '¡Inversión exitosa!',
-        description: `Invertiste ${fmt(amount)} ${selectedCurrency} (≈ $${fmt(amountInUSD)}) en ${selectedPlan.name}.`,
-      });
-
-      // reset modal
-      setSelectedPlan(null);
-      setInvestmentAmount('');
-      setSelectedCurrency('USDT');
-    } catch (error) {
-      console.error('Error al invertir:', error?.message || error);
-      playSound('error');
-      toast({
-        title: 'Error de Inversión',
-        description: 'Hubo un problema al procesar tu inversión.',
-        variant: 'destructive',
-      });
-    } finally {
-      setIsInvesting(false);
-    }
-  };
 
   const getPlanIcon = (planName) => {
     switch (planName) {
@@ -384,7 +382,7 @@ export default function InvestmentPlans() {
                       {fmt(
                         calculateEquivalentValue(investmentAmount, selectedCurrency) *
                           Number(selectedPlan.dailyReturn || 0) *
-                          Number(selectedPlan.duration || 0) /
+                          Number(selectedPlan.duration || 0) / 
                           100,
                         2
                       )}

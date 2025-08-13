@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+// src/pages/ReferralSystem.jsx
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   Users,
@@ -8,45 +9,107 @@ import {
   Share2,
   Gift,
   Crown,
-  Star
+  Star,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAuth } from '@/contexts/AuthContext';
-import { useData } from '@/contexts/DataContext';
 import { toast } from '@/components/ui/use-toast';
+import { supabase } from '@/lib/supabaseClient';
 
-const ReferralSystem = () => {
-  const { user, profile } = useAuth();
-  const { getReferrals } = useData();
+function generateReferralCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+export default function ReferralSystem() {
+  const { user, profile, updateUser, loading } = useAuth();
 
   const [referrals, setReferrals] = useState([]);
   const [referralLink, setReferralLink] = useState('');
+  const [loadingRefs, setLoadingRefs] = useState(false);
+  const [creatingCode, setCreatingCode] = useState(false);
 
-  const referralCode = profile?.referral_code || user?.referralCode || '';
+  const referralCode = profile?.referral_code || '';
 
+  // Armar link con fallback seguro
   useEffect(() => {
     if (!user) return;
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    setReferralLink(`${origin}/register?ref=${referralCode || ''}`);
+  }, [user, referralCode]);
 
-    // getReferrals por código (coincide con el schema profiles.referral_code)
-    try {
-      const list = getReferrals?.(referralCode) || [];
-      setReferrals(list);
-    } catch {
+  // Traer referidos
+  const fetchReferrals = useCallback(async () => {
+    if (!user?.id || !referralCode) {
       setReferrals([]);
+      return;
     }
+    setLoadingRefs(true);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, username, created_at')
+        .eq('referred_by', referralCode)
+        .order('created_at', { ascending: false });
 
-    setReferralLink(`${window.location.origin}/register?ref=${referralCode}`);
-  }, [user, referralCode, getReferrals]);
+      if (error) throw error;
 
-  const copyReferralLink = () => {
+      const list = (data || []).map(r => ({
+        id: r.id,
+        name: r.username || 'Usuario',
+        createdAt: r.created_at,
+      }));
+      setReferrals(list);
+    } catch (e) {
+      console.error('Error trayendo referidos:', e?.message || e);
+      toast({
+        title: 'No se pudieron cargar los referidos',
+        description: e?.message || 'Inténtalo de nuevo más tarde.',
+        variant: 'destructive',
+      });
+      setReferrals([]);
+    } finally {
+      setLoadingRefs(false);
+    }
+  }, [user?.id, referralCode]);
+
+  // Carga inicial
+  useEffect(() => {
+    fetchReferrals();
+  }, [fetchReferrals]);
+
+  // Realtime: actualizar cuando entren nuevos referidos con mi código
+  useEffect(() => {
+    if (!user?.id || !referralCode) return;
+    const ch = supabase
+      .channel('rt-referrals')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles', filter: `referred_by=eq.${referralCode}` },
+        fetchReferrals
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [user?.id, referralCode, fetchReferrals]);
+
+  const copyReferralLink = async () => {
     if (!referralLink) return;
-    navigator.clipboard.writeText(referralLink);
-    toast({
-      title: '¡Enlace copiado!',
-      description: 'El enlace de referido ha sido copiado al portapapeles',
-    });
+    try {
+      await navigator.clipboard.writeText(referralLink);
+      toast({
+        title: '¡Enlace copiado!',
+        description: 'El enlace de referido ha sido copiado al portapapeles',
+      });
+    } catch {
+      toast({
+        title: 'No se pudo copiar',
+        description: 'Copia manualmente por favor.',
+        variant: 'destructive',
+      });
+    }
   };
 
   const shareReferralLink = () => {
@@ -62,12 +125,34 @@ const ReferralSystem = () => {
     }
   };
 
-  const totalEarnings = referrals.length * 50; // $50 por referido
-  const activeReferrals = referrals.filter(ref => {
-    const lastActivity = new Date(ref.createdAt);
-    const daysSinceActivity = (Date.now() - lastActivity.getTime()) / (1000 * 60 * 60 * 24);
-    return daysSinceActivity <= 30;
-  }).length;
+  const handleGenerateCode = async () => {
+    if (!user?.id) return;
+    setCreatingCode(true);
+    try {
+      const newCode = generateReferralCode();
+      await updateUser({ referral_code: newCode }); // AuthContext ya refresca profile
+      toast({ title: 'Código creado', description: `Tu nuevo código es ${newCode}` });
+    } catch (e) {
+      toast({
+        title: 'No se pudo crear el código',
+        description: e?.message || 'Intenta nuevamente.',
+        variant: 'destructive',
+      });
+    } finally {
+      setCreatingCode(false);
+    }
+  };
+
+  // Métricas (estimadas para UI)
+  const totalEarnings = useMemo(() => referrals.length * 50, [referrals]);
+  const activeReferrals = useMemo(() => {
+    const now = Date.now();
+    return referrals.filter(ref => {
+      const ts = ref.createdAt ? new Date(ref.createdAt).getTime() : now;
+      const days = (now - ts) / (1000 * 60 * 60 * 24);
+      return days <= 30;
+    }).length;
+  }, [referrals]);
 
   const getReferralLevel = (count) => {
     if (count >= 100) return { name: 'Diamante', icon: Crown, color: 'text-purple-400', bg: 'bg-purple-500/10' };
@@ -86,13 +171,8 @@ const ReferralSystem = () => {
     { title: 'Nivel Actual',      value: currentLevel.name,           icon: currentLevel.icon, color: currentLevel.color, bgColor: currentLevel.bg },
   ];
 
-  const referralBenefits = [
-    { level: 'Principiante', referrals: '1-4 referidos',  commission: '$50 por referido',  bonus: 'Bono de bienvenida' },
-    { level: 'Bronce',       referrals: '5-19 referidos', commission: '$75 por referido',  bonus: 'Acceso a webinars exclusivos' },
-    { level: 'Plata',        referrals: '20-49 referidos', commission: '$100 por referido', bonus: 'Asesoría personalizada' },
-    { level: 'Oro',          referrals: '50-99 referidos', commission: '$150 por referido', bonus: 'Acceso VIP + Señales premium' },
-    { level: 'Diamante',     referrals: '100+ referidos', commission: '$200 por referido', bonus: 'Todos los beneficios + Participación en ganancias' },
-  ];
+  if (loading) return <div className="p-6 text-slate-300">Cargando…</div>;
+  if (!user)   return <div className="p-6 text-slate-300">Inicia sesión para ver tus referidos.</div>;
 
   return (
     <>
@@ -107,13 +187,31 @@ const ReferralSystem = () => {
           <p className="text-slate-300">Invita amigos y gana comisiones por cada referido activo</p>
         </motion.div>
 
+        {/* Si no hay código de referido, botón para crearlo */}
+        {!referralCode && (
+          <Card className="crypto-card">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-slate-300">Aún no tienes un código de referido.</p>
+                  <p className="text-slate-400 text-sm">Créalo para empezar a invitar.</p>
+                </div>
+                <Button onClick={handleGenerateCode} disabled={creatingCode}
+                  className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600">
+                  {creatingCode ? 'Creando…' : 'Crear código'}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {stats.map((stat, index) => {
             const Icon = stat.icon;
             return (
               <motion.div
-                key={index}
+                key={stat.title}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: index * 0.1 }}
@@ -138,11 +236,7 @@ const ReferralSystem = () => {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Referral Link */}
-          <motion.div
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.8, delay: 0.4 }}
-          >
+          <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8, delay: 0.4 }}>
             <Card className="crypto-card">
               <CardHeader>
                 <CardTitle className="text-white flex items-center">
@@ -156,11 +250,7 @@ const ReferralSystem = () => {
               <CardContent className="space-y-6">
                 <div className="space-y-4">
                   <div className="flex space-x-2">
-                    <Input
-                      value={referralLink}
-                      readOnly
-                      className="bg-slate-800 border-slate-600 text-white"
-                    />
+                    <Input value={referralLink} readOnly className="bg-slate-800 border-slate-600 text-white" />
                     <Button onClick={copyReferralLink} size="icon">
                       <Copy className="h-4 w-4" />
                     </Button>
@@ -188,20 +278,26 @@ const ReferralSystem = () => {
                 <div className="bg-slate-800/50 p-4 rounded-lg">
                   <h4 className="text-white font-semibold mb-2">Tu Código de Referido</h4>
                   <div className="flex items-center justify-between">
-                    <span className="text-2xl font-bold text-green-400">{referralCode}</span>
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        if (!referralCode) return;
-                        navigator.clipboard.writeText(referralCode);
-                        toast({
-                          title: '¡Código copiado!',
-                          description: 'El código de referido ha sido copiado',
-                        });
-                      }}
-                    >
-                      <Copy className="h-3 w-3" />
-                    </Button>
+                    <span className="text-2xl font-bold text-green-400">{referralCode || '—'}</span>
+                    {referralCode ? (
+                      <Button
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(referralCode);
+                            toast({ title: '¡Código copiado!', description: 'El código de referido ha sido copiado' });
+                          } catch {
+                            toast({ title: 'No se pudo copiar', variant: 'destructive' });
+                          }
+                        }}
+                      >
+                        <Copy className="h-3 w-3" />
+                      </Button>
+                    ) : (
+                      <Button size="sm" onClick={handleGenerateCode} disabled={creatingCode}>
+                        {creatingCode ? 'Creando…' : 'Crear código'}
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -209,11 +305,7 @@ const ReferralSystem = () => {
           </motion.div>
 
           {/* Referral Progress */}
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.8, delay: 0.5 }}
-          >
+          <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8, delay: 0.5 }}>
             <Card className="crypto-card">
               <CardHeader>
                 <CardTitle className="text-white flex items-center">
@@ -232,9 +324,7 @@ const ReferralSystem = () => {
                       Nivel {currentLevel.name}
                     </span>
                   </div>
-                  <p className="text-slate-300">
-                    {referrals.length} referidos totales
-                  </p>
+                  <p className="text-slate-300">{referrals.length} referidos totales</p>
                 </div>
 
                 {currentLevel.name !== 'Diamante' && (
@@ -269,9 +359,7 @@ const ReferralSystem = () => {
                     <li>• $50 por cada referido</li>
                     <li>• Comisiones instantáneas</li>
                     <li>• Seguimiento en tiempo real</li>
-                    {currentLevel.name !== 'Principiante' && (
-                      <li>• Bonos adicionales de nivel</li>
-                    )}
+                    {currentLevel.name !== 'Principiante' && <li>• Bonos adicionales de nivel</li>}
                   </ul>
                 </div>
               </CardContent>
@@ -279,12 +367,8 @@ const ReferralSystem = () => {
           </motion.div>
         </div>
 
-        {/* Referral Benefits Table */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.6 }}
-        >
+        {/* Niveles y beneficios */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.6 }}>
           <Card className="crypto-card">
             <CardHeader>
               <CardTitle className="text-white">Niveles y Beneficios</CardTitle>
@@ -304,23 +388,25 @@ const ReferralSystem = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {referralBenefits.map((benefit, index) => (
+                    {[
+                      { level: 'Principiante', refs: '1-4 referidos',  com: '$50 por referido',  bonus: 'Bono de bienvenida' },
+                      { level: 'Bronce',       refs: '5-19 referidos', com: '$75 por referido',  bonus: 'Acceso a webinars exclusivos' },
+                      { level: 'Plata',        refs: '20-49 referidos', com: '$100 por referido', bonus: 'Asesoría personalizada' },
+                      { level: 'Oro',          refs: '50-99 referidos', com: '$150 por referido', bonus: 'Acceso VIP + Señales premium' },
+                      { level: 'Diamante',     refs: '100+ referidos',  com: '$200 por referido', bonus: 'Todos los beneficios + Participación en ganancias' },
+                    ].map((b) => (
                       <tr
-                        key={index}
-                        className={`border-b border-slate-700/50 ${
-                          benefit.level === currentLevel.name ? 'bg-green-500/10' : ''
-                        }`}
+                        key={b.level}
+                        className={`border-b border-slate-700/50 ${b.level === currentLevel.name ? 'bg-green-500/10' : ''}`}
                       >
                         <td className="py-3 px-4">
-                          <span className={`font-semibold ${
-                            benefit.level === currentLevel.name ? 'text-green-400' : 'text-white'
-                          }`}>
-                            {benefit.level}
+                          <span className={`font-semibold ${b.level === currentLevel.name ? 'text-green-400' : 'text-white'}`}>
+                            {b.level}
                           </span>
                         </td>
-                        <td className="py-3 px-4 text-slate-300">{benefit.referrals}</td>
-                        <td className="py-3 px-4 text-green-400 font-semibold">{benefit.commission}</td>
-                        <td className="py-3 px-4 text-slate-300">{benefit.bonus}</td>
+                        <td className="py-3 px-4 text-slate-300">{b.refs}</td>
+                        <td className="py-3 px-4 text-green-400 font-semibold">{b.com}</td>
+                        <td className="py-3 px-4 text-slate-300">{b.bonus}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -330,17 +416,13 @@ const ReferralSystem = () => {
           </Card>
         </motion.div>
 
-        {/* Referrals List */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.7 }}
-        >
+        {/* Lista de referidos */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.7 }}>
           <Card className="crypto-card">
             <CardHeader>
               <CardTitle className="text-white">Tus Referidos</CardTitle>
               <CardDescription className="text-slate-300">
-                Lista de usuarios que se registraron con tu código
+                Lista de usuarios que se registraron con tu código {loadingRefs ? '(actualizando…)' : ''}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -356,7 +438,7 @@ const ReferralSystem = () => {
                       </div>
                       <div className="text-right">
                         <p className="text-green-400 font-semibold">+$50.00</p>
-                        <p className="text-slate-400 text-sm">Comisión ganada</p>
+                        <p className="text-slate-400 text-sm">Comisión estimada</p>
                       </div>
                     </div>
                   ))}
@@ -364,7 +446,11 @@ const ReferralSystem = () => {
               ) : (
                 <div className="text-center py-8">
                   <Users className="h-12 w-12 text-slate-600 mx-auto mb-4" />
-                  <p className="text-slate-400">Aún no tienes referidos</p>
+                  <p className="text-slate-400">
+                    {referralCode
+                      ? 'Aún no tienes referidos'
+                      : 'Genera tu código para comenzar a invitar'}
+                  </p>
                   <p className="text-slate-500 text-sm">Comparte tu enlace para comenzar a ganar</p>
                 </div>
               )}
@@ -374,6 +460,4 @@ const ReferralSystem = () => {
       </div>
     </>
   );
-};
-
-export default ReferralSystem;
+}
