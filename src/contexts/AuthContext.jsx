@@ -282,26 +282,26 @@ export function AuthProvider({ children }) {
 
   // ---------- operaciones atómicas ----------
   // Compra de plan: usa la RPC process_plan_purchase (SQL ya aplicado)
-  const buyPlan = async ({ planName, amount, dailyReturnPercent, durationDays }) => {
-    if (!user?.id) throw new Error('Usuario no autenticado');
+  const buyPlan = async ({ planName, amount, dailyReturnPercent, durationDays, currency = 'USDT' }) => {
+  if (!user?.id) throw new Error('Usuario no autenticado');
 
-    const { data, error } = await supabase.rpc('process_plan_purchase', {
-      p_plan_name: planName,
-      p_amount: Number(amount),
-      p_daily_return_percent: Number(dailyReturnPercent || 0),
-      p_duration_days: Number(durationDays || 0),
-      p_currency: 'USDT',
-    });
+  const { data, error } = await supabase.rpc('process_plan_purchase', {
+    p_plan_name: planName,
+    p_amount: Number(amount),
+    p_daily_return_percent: Number(dailyReturnPercent || 0),
+    p_duration_days: Number(durationDays || 0),
+    p_currency: currency,
+  });
 
-    console.log('RPC buyPlan →', { data, error });
+  console.log('RPC buyPlan →', { data, error });
 
-    if (error || !data?.ok) {
-      throw new Error(data?.message || error?.message || 'No se pudo procesar la inversión');
-    }
+  if (error || !data?.ok) {
+    throw new Error(data?.message || error?.message || 'No se pudo procesar la inversión');
+  }
 
-    await Promise.allSettled([refreshBalances(), loadInvestments(), loadTransactions()]);
-    return data;
-  };
+  await Promise.allSettled([refreshBalances(), loadInvestments(), loadTransactions()]);
+  return data;
+};
 
   // (opcional) trade demo: no toca saldo
   const executeTradeDemo = async ({ symbol, side, size, price }) => {

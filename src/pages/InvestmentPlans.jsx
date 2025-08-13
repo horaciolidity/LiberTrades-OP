@@ -127,23 +127,19 @@ export default function InvestmentPlans() {
     });
 
     // ✅ Llamada atómica: debita saldo, crea investment y registra transacción
-    await buyPlan({
-      planName: selectedPlan.name,
-      amount: amountInUSD,
-      dailyReturnPercent: Number(selectedPlan.dailyReturn || 0), // ← OK
-      durationDays: Number(selectedPlan.duration || 0),
-    });
+   await buyPlan({
+  planName: selectedPlan.name,
+  amount: amountInUSD,
+  dailyReturnPercent: Number(selectedPlan.dailyReturn || 0),
+  durationDays: Number(selectedPlan.duration || 0),
+  currency: selectedCurrency,
+});
 
+// reset modal
+setSelectedPlan(null);
+setInvestmentAmount('');
+setSelectedCurrency('USDT'); // ¡ojo que no sea 'USUT'!
 
-    toast({
-      title: '¡Inversión exitosa!',
-      description: `Invertiste ${fmt(amount)} ${selectedCurrency} (≈ $${fmt(amountInUSD)}) en ${selectedPlan.name}.`,
-    });
-
-    // reset modal
-    setSelectedPlan(null);
-    setInvestmentAmount('');
-    setSelectedCurrency('USUT'); // <- si querés mantener 'USDT', deja 'USDT'
   } catch (error) {
     console.error('Error al invertir:', error?.message || error);
     playSound('error');
