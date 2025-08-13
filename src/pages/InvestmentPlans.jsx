@@ -130,9 +130,10 @@ export default function InvestmentPlans() {
     await buyPlan({
       planName: selectedPlan.name,
       amount: amountInUSD,
-      dailyReturnPercent: Number(selectedPlan.dailyReturn || 0), // <- nombre correcto
+      dailyReturnPercent: Number(selectedPlan.dailyReturn || 0), // ← OK
       durationDays: Number(selectedPlan.duration || 0),
     });
+
 
     toast({
       title: '¡Inversión exitosa!',
