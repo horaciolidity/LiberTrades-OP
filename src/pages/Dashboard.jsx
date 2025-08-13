@@ -38,10 +38,27 @@ export default function Dashboard() {
   const { user, displayName, balances, loading } = useAuth();
   const { cryptoPrices = {} } = useData();
 
+  const [walletNet, setWalletNet] = useState(0);          // ✅ saldo real desde v_user_stats
   const [investments, setInvestments] = useState([]);
   const [referrals, setReferrals] = useState([]);
   const [error, setError] = useState(null);
   const [hydrating, setHydrating] = useState(true);
+
+  // --- Fetchers ---
+  const fetchWalletNet = useCallback(async () => {
+    if (!user?.id) { setWalletNet(0); return; }
+    const { data, error } = await supabase
+      .from('v_user_stats')
+      .select('wallet_net')
+      .eq('user_id', user.id)
+      .single();
+    if (error) {
+      console.error('wallet_net error', error);
+      setWalletNet(0);
+      return;
+    }
+    setWalletNet(Number(data?.wallet_net ?? 0));
+  }, [user?.id]);
 
   const fetchInvestments = useCallback(async () => {
     if (!user?.id) {
@@ -53,7 +70,6 @@ export default function Dashboard() {
       .select('id, user_id, plan_name, amount, daily_return, duration, created_at')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
-
     if (error) throw error;
     setInvestments((data || []).map(normalizeInvestment));
   }, [user?.id]);
@@ -91,40 +107,53 @@ export default function Dashboard() {
     setError(null);
     setHydrating(true);
     try {
-      await Promise.all([fetchInvestments(), fetchReferrals()]);
+      await Promise.all([fetchWalletNet(), fetchInvestments(), fetchReferrals()]);
     } catch (e) {
       console.error('Dashboard fetchAll error:', e);
       setError('No se pudieron cargar los datos.');
     } finally {
       setHydrating(false);
     }
-  }, [user?.id, fetchInvestments, fetchReferrals]);
+  }, [user?.id, fetchWalletNet, fetchInvestments, fetchReferrals]);
 
+  // --- Carga inicial ---
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
 
-  // Realtime: refrescar inversiones del usuario
+  // --- Realtime: refrescar saldo cuando cambien transacciones del usuario ---
   useEffect(() => {
     if (!user?.id) return;
     const ch = supabase
-      .channel('rt-dashboard-investments')
+      .channel(`rt-dashboard-wallet-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        fetchWalletNet
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [user?.id, fetchWalletNet]);
+
+  // --- Realtime: refrescar inversiones del usuario ---
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel(`rt-dashboard-investments-${user.id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
         fetchInvestments
       )
       .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
+    return () => { supabase.removeChannel(ch); };
   }, [user?.id, fetchInvestments]);
 
   if (loading || hydrating) return <div className="p-8 text-white">Cargando...</div>;
   if (error) return <div className="p-8 text-red-500">{error}</div>;
   if (!user) return <div className="p-8 text-white">Iniciá sesión para ver el dashboard.</div>;
 
-  // Métricas
+  // Métricas derivadas de inversiones (como ya tenías)
   const totalInvested = (investments || []).reduce((sum, inv) => sum + Number(inv?.amount || 0), 0);
 
   const totalEarnings = (investments || []).reduce((sum, inv) => {
@@ -136,10 +165,12 @@ export default function Dashboard() {
     return sum + (amount * (dailyReturnPct / 100)) * Math.min(daysPassed, duration);
   }, 0);
 
+  // Tarjetas del dashboard
   const stats = [
     {
       title: 'Saldo Total',
-      value: fmt(balances?.usdc ?? 0, 2),
+      // ❗️Antes: balances?.usdc -> Ahora: walletNet real desde la DB
+      value: fmt(walletNet, 2),
       icon: Wallet,
       color: 'text-green-400',
       bgColor: 'bg-green-500/10',
@@ -254,7 +285,7 @@ export default function Dashboard() {
                 <PieChart className="h-5 w-5 mr-2 text-blue-400" />
                 Inversiones Activas
               </CardTitle>
-              <CardDescription className="text-slate-300">Tus inversiones más recientes</CardDescription>
+            <CardDescription className="text-slate-300">Tus inversiones más recientes</CardDescription>
             </CardHeader>
             <CardContent>
               {(investments?.length || 0) > 0 ? (

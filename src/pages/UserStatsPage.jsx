@@ -34,39 +34,60 @@ const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
 const fmt = (n) => Number(n || 0);
 
 export default function UserStatsPage() {
-  const { user, loading: authLoading, balances } = useAuth();
+  const { user, loading: authLoading } = useAuth();
 
   const [loading, setLoading] = useState(true);
+  const [walletNet, setWalletNet] = useState(0);     // ✅ saldo real desde v_user_stats
   const [investments, setInvestments] = useState([]);
-  const [transactions, setTransactions] = useState([]);
+  const [transactions, setTransactions] = useState([]); // transacciones con monto firmado
   const [referralsCount, setReferralsCount] = useState(0);
 
   const loadAll = useCallback(async () => {
     if (!user?.id) return;
     setLoading(true);
     try {
-      const [{ data: inv, error: invErr }, { data: tx, error: txErr }] = await Promise.all([
-        supabase
-          .from('investments')
-          .select('id, user_id, plan_name, amount, daily_return, duration, status, created_at')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('wallet_transactions')
-          .select('id, user_id, amount, type, status, description, created_at')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false }),
-      ]);
-
+      // 1) Inversiones del usuario
+      const { data: inv, error: invErr } = await supabase
+        .from('investments')
+        .select('id, user_id, plan_name, amount, daily_return, duration, status, created_at')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
       if (!invErr) setInvestments(inv || []);
-      if (!txErr) setTransactions(tx || []);
 
+      // 2) Transacciones firmadas (vista)
+      const { data: tx, error: txErr } = await supabase
+        .from('v_wallet_history_signed')
+        .select('id, user_id, amount_signed, type, status, description, created_at')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+      if (!txErr) {
+        // Normalizamos estructura
+        const txNorm = (tx || []).map((t) => ({
+          id: t.id,
+          user_id: t.user_id,
+          amount_signed: Number(t.amount_signed ?? 0),
+          type: (t.type || '').toLowerCase(), // ej: deposit | withdrawal | plan_purchase | ...
+          status: (t.status || '').toLowerCase(), // completed | pending | ...
+          description: t.description || '',
+          created_at: t.created_at
+        }));
+        setTransactions(txNorm);
+      }
+
+      // 3) Wallet net (vista v_user_stats)
+      const { data: statsRow, error: statsErr } = await supabase
+        .from('v_user_stats')
+        .select('wallet_net')
+        .eq('user_id', user.id)
+        .single();
+      if (!statsErr) setWalletNet(Number(statsRow?.wallet_net ?? 0));
+
+      // 4) Referidos
       const { data: me } = await supabase
         .from('profiles')
         .select('referral_code')
         .eq('id', user.id)
         .maybeSingle();
-
       if (me?.referral_code) {
         const { count } = await supabase
           .from('profiles')
@@ -88,11 +109,11 @@ export default function UserStatsPage() {
     loadAll();
   }, [user?.id, loadAll]);
 
-  // Realtime
+  // Realtime: refrescar en cambios de inversiones / transacciones
   useEffect(() => {
     if (!user?.id) return;
     const ch = supabase
-      .channel('rt-user-stats')
+      .channel(`rt-user-stats-${user.id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
@@ -113,10 +134,32 @@ export default function UserStatsPage() {
   // -------- Helpers de tipo --------
   const txType = (t) => (t.type || '').toLowerCase();
   const isDeposit = (t) => txType(t) === 'deposit';
-  const isWithdrawal = (t) => ['withdrawal', 'withdraw'].includes(txType(t));
+  const isWithdrawal = (t) => txType(t) === 'withdrawal' || txType(t) === 'withdraw';
+  const isPlanPurchase = (t) => txType(t) === 'plan_purchase';
   const isCompleted = (t) => (t.status || '').toLowerCase() === 'completed';
 
-  // -------- KPIs base --------
+  // -------- KPIs base (usando montos firmados) --------
+  // Firmado: deposit/bono positivo, withdrawal/plan_purchase negativo.
+  const totalDeposits = useMemo(
+    () => transactions
+      .filter((t) => isCompleted(t) && isDeposit(t) && t.amount_signed > 0)
+      .reduce((s, t) => s + fmt(t.amount_signed), 0),
+    [transactions]
+  );
+
+  const totalWithdrawals = useMemo(
+    () => transactions
+      .filter((t) => isCompleted(t) && isWithdrawal(t) && t.amount_signed < 0)
+      .reduce((s, t) => s + Math.abs(fmt(t.amount_signed)), 0),
+    [transactions]
+  );
+
+  // Flujo Neto (depósitos - retiros)
+  const netCashFlow = useMemo(
+    () => totalDeposits - totalWithdrawals,
+    [totalDeposits, totalWithdrawals]
+  );
+
   const totalInvested = useMemo(
     () => investments.reduce((sum, inv) => sum + fmt(inv.amount), 0),
     [investments]
@@ -133,26 +176,13 @@ export default function UserStatsPage() {
     }, 0);
   }, [investments]);
 
-  const totalDeposits = useMemo(
-    () => transactions.filter((t) => isDeposit(t) && isCompleted(t)).reduce((s, t) => s + fmt(t.amount), 0),
-    [transactions]
-  );
-
-  const totalWithdrawals = useMemo(
-    () => transactions.filter((t) => isWithdrawal(t) && isCompleted(t)).reduce((s, t) => s + fmt(t.amount), 0),
-    [transactions]
-  );
-
-  // ✅ NUEVO: Flujo Neto (depósitos completados − retiros completados)
-  const netCashFlow = useMemo(() => totalDeposits - totalWithdrawals, [totalDeposits, totalWithdrawals]);
-
   // -------- Distribución de portafolio --------
   const portfolioDistributionData = useMemo(
     () => investments.map((inv) => ({ name: inv.plan_name || 'Plan', value: fmt(inv.amount) })),
     [investments]
   );
 
-  // -------- Actividad mensual últimos 6 meses --------
+  // -------- Actividad mensual últimos 6 meses (desde tx firmadas) --------
   const monthlyActivityData = useMemo(() => {
     const arr = [];
     for (let i = 5; i >= 0; i--) {
@@ -162,36 +192,30 @@ export default function UserStatsPage() {
       const y = d.getFullYear();
       const label = d.toLocaleString('default', { month: 'short' });
 
-      const dep = transactions
-        .filter((t) => {
-          const dt = new Date(t.created_at || Date.now());
-          return dt.getMonth() === m && dt.getFullYear() === y && isDeposit(t) && isCompleted(t);
-        })
-        .reduce((s, t) => s + fmt(t.amount), 0);
+      const monthTx = transactions.filter((t) => {
+        const dt = new Date(t.created_at || Date.now());
+        return dt.getMonth() === m && dt.getFullYear() === y && isCompleted(t);
+      });
 
-      const wit = transactions
-        .filter((t) => {
-          const dt = new Date(t.created_at || Date.now());
-          return dt.getMonth() === m && dt.getFullYear() === y && isWithdrawal(t) && isCompleted(t);
-        })
-        .reduce((s, t) => s + fmt(t.amount), 0);
+      const dep = monthTx
+        .filter((t) => isDeposit(t) && t.amount_signed > 0)
+        .reduce((s, t) => s + fmt(t.amount_signed), 0);
 
-      const invSum = investments
-        .filter((inv) => {
-          const dt = new Date(inv.created_at || Date.now());
-          return dt.getMonth() === m && dt.getFullYear() === y;
-        })
-        .reduce((s, inv) => s + fmt(inv.amount), 0);
+      const wit = monthTx
+        .filter((t) => isWithdrawal(t) && t.amount_signed < 0)
+        .reduce((s, t) => s + Math.abs(fmt(t.amount_signed)), 0);
+
+      // inversiones: usamos plan_purchase (débito)
+      const invSum = monthTx
+        .filter((t) => isPlanPurchase(t) && t.amount_signed < 0)
+        .reduce((s, t) => s + Math.abs(fmt(t.amount_signed)), 0);
 
       arr.push({ month: label, deposits: dep, withdrawals: wit, investments: invSum });
     }
     return arr;
-  }, [transactions, investments]);
+  }, [transactions]);
 
-  // ✅ NUEVO: Serie de saldo reconstruido desde las transacciones completadas
-  // Regla de signo:
-  // + deposit, + bonus/referral_bonus
-  // - withdrawal/withdraw, - investment, - bot_activation, - project_investment
+  // -------- Serie de saldo acumulado (solo tx completadas) --------
   const balanceSeries = useMemo(() => {
     const rows = transactions
       .filter((t) => isCompleted(t))
@@ -200,16 +224,7 @@ export default function UserStatsPage() {
 
     let bal = 0;
     return rows.map((t) => {
-      const type = txType(t);
-      const amt = fmt(t.amount);
-      let delta = 0;
-
-      if (type === 'deposit') delta = amt;
-      else if (['withdrawal', 'withdraw'].includes(type)) delta = -amt;
-      else if (['investment', 'bot_activation', 'project_investment'].includes(type)) delta = -amt;
-      else if (['referral_bonus', 'bonus'].includes(type)) delta = amt;
-
-      bal += delta;
+      bal += fmt(t.amount_signed); // ya está firmado
       return {
         date: new Date(t.created_at).toLocaleDateString(),
         balance: Number(bal.toFixed(2)),
@@ -219,13 +234,13 @@ export default function UserStatsPage() {
 
   // -------- Resumen reciente --------
   const recentActivity = useMemo(() => {
-    const txMapped = transactions.map((t) => ({
+    const txMapped = transactions.slice(0, 200).map((t) => ({
       id: `tx_${t.id}`,
       created_at: t.created_at,
-      type: txType(t),
-      amount: fmt(t.amount),
+      type: isPlanPurchase(t) ? 'investment' : txType(t), // para mostrar "Inversión"
+      amount: Math.abs(fmt(t.amount_signed)),
       description: t.description || '',
-      sign: isDeposit(t) ? '+' : isWithdrawal(t) ? '-' : '',
+      sign: fmt(t.amount_signed) >= 0 ? '+' : '-',
       status: (t.status || '').toLowerCase(),
     }));
 
@@ -244,13 +259,12 @@ export default function UserStatsPage() {
       .slice(0, 5);
   }, [transactions, investments]);
 
-  // -------- KPIs (con Flujo Neto) --------
+  // -------- KPIs (con WalletNet real) --------
   const generalStats = [
-    { title: 'Balance Actual', value: `$${Number(balances?.usdc ?? 0).toFixed(2)}`, icon: DollarSign, color: 'text-green-400' },
+    { title: 'Balance Actual', value: `$${walletNet.toFixed(2)}`, icon: DollarSign, color: 'text-green-400' },
     { title: 'Total Invertido', value: `$${totalInvested.toFixed(2)}`, icon: TrendingUp, color: 'text-blue-400' },
     { title: 'Ganancias de Inversión', value: `$${totalEarningsFromInvestments.toFixed(2)}`, icon: Star, color: 'text-yellow-400' },
     { title: 'Total Referidos', value: referralsCount, icon: Users, color: 'text-purple-400' },
-    // NUEVO KPI
     { title: 'Flujo Neto', value: `$${netCashFlow.toFixed(2)}`, icon: Activity, color: netCashFlow >= 0 ? 'text-green-400' : 'text-red-400' },
   ];
 
@@ -371,7 +385,7 @@ export default function UserStatsPage() {
           </motion.div>
         </div>
 
-        {/* ✅ NUEVO: Evolución del Saldo (reconstruido) */}
+        {/* Evolución del Saldo (reconstruido desde montos firmados) */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.55 }}>
           <Card className="crypto-card">
             <CardHeader>
@@ -420,7 +434,7 @@ export default function UserStatsPage() {
             <CardContent>
               {recentActivity.map((item) => {
                 const date = item.created_at || Date.now();
-                const isPositive = item.type === 'deposit';
+                const isPositive = item.sign === '+';
                 return (
                   <div key={item.id} className="flex justify-between items-center p-3 mb-2 bg-slate-800/50 rounded-md">
                     <div>

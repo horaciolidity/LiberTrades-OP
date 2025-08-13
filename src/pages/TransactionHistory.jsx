@@ -23,45 +23,40 @@ const TransactionHistory = () => {
     if (!user?.id) return;
 
     try {
-      // Wallet transactions
-      const { data: txs, error: txErr } = await supabase
-        .from('wallet_transactions')
-        .select('*')
+      // 1) HISTORY: leer desde la VISTA con monto firmado
+      const { data: hist, error: eh } = await supabase
+        .from('v_wallet_history_signed')
+        .select('created_at, direction, type, amount_signed, currency, description, status')
         .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(200);
 
-      if (txErr) throw txErr;
+      if (eh) throw eh;
 
-      // Normalizar descripción desde metadata si no existe
-      const normalizedTxs = (txs || []).map((t) => {
-        let desc = t.description || '';
-        try {
-          if (!desc && t.metadata && typeof t.metadata === 'object') {
-            const reason = t.metadata.reason || '';
-            const extra =
-              t.metadata.plan ||
-              t.metadata.project ||
-              t.metadata.symbol ||
-              t.metadata.bot ||
-              '';
-            desc = [reason, extra].filter(Boolean).join(' ').replace(/_/g, ' ');
-          }
-        } catch (_) {}
-        return { ...t, description: desc };
-      });
+      // Mapear a la forma que esperan tus componentes
+      // - amount: ya firmado (credit/debit)
+      // - type: mapeamos plan_purchase -> investment para íconos/tabs existentes
+      const tx = (hist || []).map((r) => ({
+        created_at: r.created_at,
+        direction: r.direction, // 'credit' | 'debit'
+        type: r.type === 'plan_purchase' ? 'investment' : (r.type || ''),
+        amount: Number(r.amount_signed ?? 0), // firmado
+        currency: r.currency || 'USDC',
+        description: r.description || '',
+        status: (r.status || 'completed').toLowerCase(),
+      }));
 
-      setTransactions(normalizedTxs);
-      setFilteredTransactions(normalizedTxs);
+      setTransactions(tx);
+      setFilteredTransactions(tx);
 
-      // Investments
-      const { data: invs, error: invErr } = await supabase
+      // 2) INVESTMENTS: (para la pestaña de inversiones)
+      const { data: invs, error: ei } = await supabase
         .from('investments')
         .select('*')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
-      if (invErr) throw invErr;
-
+      if (ei) throw ei;
       setInvestments(invs || []);
     } catch (e) {
       console.error('TransactionHistory fetchData error:', e);
@@ -77,12 +72,12 @@ const TransactionHistory = () => {
     fetchData();
   }, [fetchData]);
 
-  // Realtime: refrescar al cambiar tx o investments
+  // Realtime: SIEMPRE escuchar TABLAS (no vistas) y re-fetch
   useEffect(() => {
     if (!user?.id) return;
 
     const channel = supabase
-      .channel('history-sync')
+      .channel(`history-sync-${user.id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
@@ -93,7 +88,11 @@ const TransactionHistory = () => {
         { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
         fetchData
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          // opcional: console.log('Realtime conectado');
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -167,6 +166,7 @@ const TransactionHistory = () => {
           </p>
         </motion.div>
 
+        {/* Stats: usa el arreglo completo (ya con montos firmados) */}
         <TransactionStats transactions={transactions} />
 
         <TransactionFilters
@@ -179,6 +179,7 @@ const TransactionHistory = () => {
           exportTransactions={exportTransactions}
         />
 
+        {/* Tabs: le pasamos la lista filtrada y las inversiones */}
         <TransactionTabs
           filteredTransactions={filteredTransactions}
           investments={investments}
