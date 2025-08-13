@@ -1,5 +1,5 @@
 // src/pages/ReferralSystem.jsx
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   Users,
@@ -32,14 +32,15 @@ export default function ReferralSystem() {
 
   const referralCode = profile?.referral_code || '';
 
-  // Arma link
+  // Armar link con fallback seguro
   useEffect(() => {
     if (!user) return;
-    setReferralLink(`${window.location.origin}/register?ref=${referralCode || ''}`);
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    setReferralLink(`${origin}/register?ref=${referralCode || ''}`);
   }, [user, referralCode]);
 
-  // Trae referidos desde Supabase (profiles.referred_by = mi referral_code)
-  const fetchReferrals = async () => {
+  // Traer referidos
+  const fetchReferrals = useCallback(async () => {
     if (!user?.id || !referralCode) {
       setReferrals([]);
       return;
@@ -71,12 +72,28 @@ export default function ReferralSystem() {
     } finally {
       setLoadingRefs(false);
     }
-  };
+  }, [user?.id, referralCode]);
 
+  // Carga inicial
   useEffect(() => {
     fetchReferrals();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, referralCode]);
+  }, [fetchReferrals]);
+
+  // Realtime: actualizar cuando entren nuevos referidos con mi código
+  useEffect(() => {
+    if (!user?.id || !referralCode) return;
+    const ch = supabase
+      .channel('rt-referrals')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles', filter: `referred_by=eq.${referralCode}` },
+        fetchReferrals
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [user?.id, referralCode, fetchReferrals]);
 
   const copyReferralLink = async () => {
     if (!referralLink) return;
@@ -113,7 +130,7 @@ export default function ReferralSystem() {
     setCreatingCode(true);
     try {
       const newCode = generateReferralCode();
-      await updateUser({ referral_code: newCode }); // esto refresca profile en AuthContext
+      await updateUser({ referral_code: newCode }); // AuthContext ya refresca profile
       toast({ title: 'Código creado', description: `Tu nuevo código es ${newCode}` });
     } catch (e) {
       toast({
@@ -126,7 +143,7 @@ export default function ReferralSystem() {
     }
   };
 
-  // Métricas
+  // Métricas (estimadas para UI)
   const totalEarnings = useMemo(() => referrals.length * 50, [referrals]);
   const activeReferrals = useMemo(() => {
     const now = Date.now();
@@ -152,14 +169,6 @@ export default function ReferralSystem() {
     { title: 'Referidos Activos', value: activeReferrals.toString(),  icon: TrendingUp, color: 'text-green-400',  bgColor: 'bg-green-500/10' },
     { title: 'Ganancias Totales', value: `$${totalEarnings.toFixed(2)}`, icon: DollarSign, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
     { title: 'Nivel Actual',      value: currentLevel.name,           icon: currentLevel.icon, color: currentLevel.color, bgColor: currentLevel.bg },
-  ];
-
-  const referralBenefits = [
-    { level: 'Principiante', referrals: '1-4 referidos',  commission: '$50 por referido',  bonus: 'Bono de bienvenida' },
-    { level: 'Bronce',       referrals: '5-19 referidos', commission: '$75 por referido',  bonus: 'Acceso a webinars exclusivos' },
-    { level: 'Plata',        referrals: '20-49 referidos', commission: '$100 por referido', bonus: 'Asesoría personalizada' },
-    { level: 'Oro',          referrals: '50-99 referidos', commission: '$150 por referido', bonus: 'Acceso VIP + Señales premium' },
-    { level: 'Diamante',     referrals: '100+ referidos', commission: '$200 por referido', bonus: 'Todos los beneficios + Participación en ganancias' },
   ];
 
   if (loading) return <div className="p-6 text-slate-300">Cargando…</div>;
@@ -202,7 +211,7 @@ export default function ReferralSystem() {
             const Icon = stat.icon;
             return (
               <motion.div
-                key={index}
+                key={stat.title}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: index * 0.1 }}
@@ -227,11 +236,7 @@ export default function ReferralSystem() {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Referral Link */}
-          <motion.div
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.8, delay: 0.4 }}
-          >
+          <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8, delay: 0.4 }}>
             <Card className="crypto-card">
               <CardHeader>
                 <CardTitle className="text-white flex items-center">
@@ -245,11 +250,7 @@ export default function ReferralSystem() {
               <CardContent className="space-y-6">
                 <div className="space-y-4">
                   <div className="flex space-x-2">
-                    <Input
-                      value={referralLink}
-                      readOnly
-                      className="bg-slate-800 border-slate-600 text-white"
-                    />
+                    <Input value={referralLink} readOnly className="bg-slate-800 border-slate-600 text-white" />
                     <Button onClick={copyReferralLink} size="icon">
                       <Copy className="h-4 w-4" />
                     </Button>
@@ -304,11 +305,7 @@ export default function ReferralSystem() {
           </motion.div>
 
           {/* Referral Progress */}
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.8, delay: 0.5 }}
-          >
+          <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8, delay: 0.5 }}>
             <Card className="crypto-card">
               <CardHeader>
                 <CardTitle className="text-white flex items-center">
@@ -327,9 +324,7 @@ export default function ReferralSystem() {
                       Nivel {currentLevel.name}
                     </span>
                   </div>
-                  <p className="text-slate-300">
-                    {referrals.length} referidos totales
-                  </p>
+                  <p className="text-slate-300">{referrals.length} referidos totales</p>
                 </div>
 
                 {currentLevel.name !== 'Diamante' && (
@@ -372,12 +367,8 @@ export default function ReferralSystem() {
           </motion.div>
         </div>
 
-        {/* Referral Benefits Table */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.6 }}
-        >
+        {/* Niveles y beneficios */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.6 }}>
           <Card className="crypto-card">
             <CardHeader>
               <CardTitle className="text-white">Niveles y Beneficios</CardTitle>
@@ -425,12 +416,8 @@ export default function ReferralSystem() {
           </Card>
         </motion.div>
 
-        {/* Referrals List */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.7 }}
-        >
+        {/* Lista de referidos */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.7 }}>
           <Card className="crypto-card">
             <CardHeader>
               <CardTitle className="text-white">Tus Referidos</CardTitle>

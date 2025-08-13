@@ -39,7 +39,7 @@ const upcomingProjects = [
 
 export default function TokenizedProjectsPage() {
   const { playSound } = useSound();
-  const { user, balances, /* opcional */ refreshBalances } = useAuth();
+  const { user, balances, buyProject } = useAuth();
 
   const [selectedProject, setSelectedProject] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
@@ -87,43 +87,20 @@ export default function TokenizedProjectsPage() {
     playSound('invest');
 
     try {
-      // 1) Insertar inversión del proyecto
-      const { data: ins, error: invErr } = await supabase
-        .from('project_investments')
-        .insert({
+      // ✅ RPC atómica: descuenta saldo y escribe wallet_transactions (reason: project_purchase)
+      await buyProject({ projectName: selectedProject.name, amount: amt });
+
+      // ⛳ (Opcional) Persistir metadata del proyecto en una tabla propia
+      try {
+        await supabase.from('project_investments').insert({
           user_id: user.id,
           project_symbol: selectedProject.symbol,
           project_name: selectedProject.name,
           amount_usd: amt,
-          status: 'active'
-        })
-        .select('id')
-        .single();
-      if (invErr) throw invErr;
-
-      // 2) Descontar saldo
-      const newUsdc = Math.max(0, currentUsdc - amt);
-      const { error: balErr } = await supabase
-        .from('balances')
-        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
-        .eq('user_id', user.id);
-      if (balErr) throw balErr;
-
-      // 3) Registrar en historial
-      const { error: txErr } = await supabase
-        .from('wallet_transactions')
-        .insert({
-          user_id: user.id,
-          type: 'project_investment',
-          status: 'completed',
-          amount: amt,
-          description: `Proyecto ${selectedProject.symbol} - ${selectedProject.name}`
+          status: 'active',
         });
-      if (txErr) throw txErr;
-
-      // 4) Refrescar balances (si tenés helper)
-      if (typeof refreshBalances === 'function') {
-        try { await refreshBalances(); } catch {}
+      } catch (metaErr) {
+        console.warn('project_investments insert warn:', metaErr?.message);
       }
 
       toast({
@@ -159,7 +136,7 @@ export default function TokenizedProjectsPage() {
             Proyectos Tokenizados
           </h1>
           <p className="text-slate-300">
-            Descubre e invierte en los próximos grandes proyectos tokenizados.
+            Descubre e investe en los próximos grandes proyectos tokenizados.
           </p>
         </motion.div>
 

@@ -123,6 +123,7 @@ export default function InvestmentPlans() {
         planName: selectedPlan.name,
         amount: amountInUSD,
         dailyReturn: Number(selectedPlan.dailyReturn || 0),
+        durationDays: Number(selectedPlan.duration || 0),
       });
 
       toast({

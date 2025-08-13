@@ -9,7 +9,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DollarSign, Copy, QrCode, CreditCard, Info } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { useData } from '@/contexts/DataContext';
 import { toast } from '@/components/ui/use-toast';
 import { useSound } from '@/contexts/SoundContext';
 import { supabase } from '@/lib/supabaseClient';
@@ -23,7 +22,6 @@ const fmt = (n, dec = 2) => {
 
 export default function DepositPage() {
   const { user, balances } = useAuth();
-  const { addTransaction } = useData();
   const { playSound } = useSound();
 
   const [depositMethod, setDepositMethod] = useState('crypto');
@@ -86,19 +84,20 @@ export default function DepositPage() {
 
     setSaving(true);
     try {
-      // 1) Guardar en Supabase (para que aparezca en el panel admin)
+      // 1) Registrar solicitud de depósito (PENDIENTE) en el ledger
       const { error: sErr } = await supabase.from(TX_TABLE).insert(supaTx);
       if (sErr) throw sErr;
 
-      // 2) Guardar en local (para que aparezca en tu historial/estadísticas al instante)
-      addTransaction?.({
-        userId: user.id,
-        type: 'deposit',
-        amount: depositAmount,
-        currency,
-        status: 'pending',
-        description,
-      });
+      // (Opcional) Si tenés una tabla 'deposits', podés guardar metadata:
+      // try {
+      //   await supabase.from('deposits').insert({
+      //     user_id: user.id,
+      //     amount: depositAmount,
+      //     provider: depositMethod === 'crypto' ? cryptoCurrency : fiatMethod,
+      //     provider_ref: null,
+      //     status: 'pending',
+      //   });
+      // } catch (_) {}
 
       playSound('success');
       toast({

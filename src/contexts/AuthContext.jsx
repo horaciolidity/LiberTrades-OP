@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabaseClient';
 import { toast } from '@/components/ui/use-toast';
 
 const AuthContext = createContext(null);
+
 export const useAuth = () => {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within an AuthProvider');
@@ -280,7 +281,7 @@ export function AuthProvider({ children }) {
   };
 
   // ---------- operaciones atómicas ----------
-  // Compra de plan: usa la RPC process_plan_purchase (SQL que te pasé)
+  // Compra de plan: usa la RPC process_plan_purchase (SQL ya aplicado)
   const buyPlan = async ({ planName, amount, dailyReturnPercent, durationDays }) => {
     if (!user?.id) throw new Error('Usuario no autenticado');
 
@@ -292,16 +293,13 @@ export function AuthProvider({ children }) {
       p_currency: 'USDT',
     });
 
+    console.log('RPC buyPlan →', { data, error });
+
     if (error || !data?.ok) {
       throw new Error(data?.message || error?.message || 'No se pudo procesar la inversión');
     }
 
-    // refrescar datasets que usa la UI
     await Promise.allSettled([refreshBalances(), loadInvestments(), loadTransactions()]);
-    toast({
-      title: '¡Inversión exitosa!',
-      description: `Plan ${planName} por $${Number(amount).toFixed(2)} creado.`,
-    });
     return data;
   };
 

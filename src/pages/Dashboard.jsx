@@ -1,5 +1,5 @@
 // src/pages/Dashboard.jsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -22,101 +22,110 @@ const fmt = (n, dec = 2) => {
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
 };
 
-// Normaliza una inversión venga de Supabase o de localStorage
-function normalizeInvestment(inv, source = 'local') {
-  const id = inv?.id ?? `${source}-${Math.random().toString(36).slice(2)}`;
+// Normaliza una inversión
+function normalizeInvestment(inv) {
+  const id = inv?.id ?? Math.random().toString(36).slice(2);
   const userId = inv?.user_id ?? inv?.userId ?? null;
   const planName = inv?.plan_name ?? inv?.planName ?? 'Plan';
   const amount = Number(inv?.amount ?? 0);
   const dailyReturn = Number(inv?.daily_return ?? inv?.dailyReturn ?? 0);
   const duration = Number(inv?.duration ?? 0);
-  const createdAt =
-    inv?.created_at ??
-    inv?.createdAt ??
-    new Date().toISOString();
-
-  return { id: String(id), userId, planName, amount, dailyReturn, duration, createdAt, __src: source };
+  const createdAt = inv?.created_at ?? inv?.createdAt ?? new Date().toISOString();
+  return { id: String(id), userId, planName, amount, dailyReturn, duration, createdAt };
 }
 
 export default function Dashboard() {
   const { user, displayName, balances, loading } = useAuth();
-  const { cryptoPrices = {}, getInvestments, getReferrals } = useData();
+  const { cryptoPrices = {} } = useData();
 
   const [investments, setInvestments] = useState([]);
   const [referrals, setReferrals] = useState([]);
   const [error, setError] = useState(null);
   const [hydrating, setHydrating] = useState(true);
 
-  // Carga híbrida: localStorage + Supabase (si hay sesión)
-  useEffect(() => {
-    const fetchData = async () => {
-      if (!user?.id) {
-        setInvestments([]);
-        setReferrals([]);
-        setHydrating(false);
-        return;
-      }
-      setError(null);
-      setHydrating(true);
-      try {
-        // 1) Local
-        const localInvsRaw = (typeof getInvestments === 'function' ? getInvestments() : []) || [];
-        const localInvs = localInvsRaw
-          .filter(Boolean)
-          .filter(inv => (inv?.user_id ?? inv?.userId) === user.id)
-          .map(inv => normalizeInvestment(inv, 'local'));
+  const fetchInvestments = useCallback(async () => {
+    if (!user?.id) {
+      setInvestments([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('investments')
+      .select('id, user_id, plan_name, amount, daily_return, duration, created_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
 
-        // 2) Supabase (opcional)
-        let supaInvs = [];
-        const { data: invRows, error: invErr } = await supabase
-          .from('investments')
-          .select('id, user_id, plan_name, amount, daily_return, duration, created_at')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false });
-
-        if (!invErr && Array.isArray(invRows)) {
-          supaInvs = invRows.map(r => normalizeInvestment(r, 'supa'));
-        }
-
-        // 3) Merge + dedupe (por userId|planName|amount|createdAt[seg])
-        const key = (x) => {
-          const ts = x.createdAt ? new Date(x.createdAt).toISOString().slice(0, 19) : '';
-          return `${x.userId}|${x.planName}|${fmt(x.amount, 2)}|${ts}`;
-        };
-        const mergedMap = new Map();
-        [...supaInvs, ...localInvs].forEach(item => {
-          const k = key(item);
-          if (!mergedMap.has(k)) mergedMap.set(k, item);
-        });
-        const merged = Array.from(mergedMap.values())
-          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-        setInvestments(merged);
-
-        // 4) Referidos (local)
-        const refs = typeof getReferrals === 'function' ? (getReferrals(user.id) || []) : [];
-        setReferrals(refs);
-      } catch (err) {
-        console.error('Error cargando datos del dashboard:', err);
-        setError('No se pudieron cargar los datos.');
-      } finally {
-        setHydrating(false);
-      }
-    };
-
-    fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (error) throw error;
+    setInvestments((data || []).map(normalizeInvestment));
   }, [user?.id]);
+
+  const fetchReferrals = useCallback(async () => {
+    if (!user?.id) {
+      setReferrals([]);
+      return;
+    }
+    // mi código de referidos
+    const { data: me, error: meErr } = await supabase
+      .from('profiles')
+      .select('referral_code')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (meErr || !me?.referral_code) {
+      setReferrals([]);
+      return;
+    }
+    // quienes se registraron con mi código
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, username, referred_by, created_at')
+      .eq('referred_by', me.referral_code)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    setReferrals(data || []);
+  }, [user?.id]);
+
+  const fetchAll = useCallback(async () => {
+    if (!user?.id) {
+      setHydrating(false);
+      return;
+    }
+    setError(null);
+    setHydrating(true);
+    try {
+      await Promise.all([fetchInvestments(), fetchReferrals()]);
+    } catch (e) {
+      console.error('Dashboard fetchAll error:', e);
+      setError('No se pudieron cargar los datos.');
+    } finally {
+      setHydrating(false);
+    }
+  }, [user?.id, fetchInvestments, fetchReferrals]);
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  // Realtime: refrescar inversiones del usuario
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('rt-dashboard-investments')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        fetchInvestments
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [user?.id, fetchInvestments]);
 
   if (loading || hydrating) return <div className="p-8 text-white">Cargando...</div>;
   if (error) return <div className="p-8 text-red-500">{error}</div>;
   if (!user) return <div className="p-8 text-white">Iniciá sesión para ver el dashboard.</div>;
 
   // Métricas
-  const totalInvested = (investments || []).reduce(
-    (sum, inv) => sum + Number(inv?.amount || 0),
-    0
-  );
+  const totalInvested = (investments || []).reduce((sum, inv) => sum + Number(inv?.amount || 0), 0);
 
   const totalEarnings = (investments || []).reduce((sum, inv) => {
     const createdAtMs = inv?.createdAt ? new Date(inv.createdAt).getTime() : Date.now();

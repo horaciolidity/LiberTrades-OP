@@ -38,7 +38,7 @@ const tradingBots = [
 ];
 
 export default function TradingBotsPage() {
-  const { user, balances, refreshBalances } = useAuth(); // refreshBalances es opcional
+  const { user, balances, activateBot } = useAuth();
   const { playSound } = useSound();
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
@@ -73,6 +73,7 @@ export default function TradingBotsPage() {
       });
       return;
     }
+
     const currentUsdc = Number(balances?.usdc ?? 0);
     if (amount > currentUsdc) {
       playSound('error');
@@ -84,10 +85,12 @@ export default function TradingBotsPage() {
     playSound('invest');
 
     try {
-      // 1) Crear activación
-      const { error: actErr } = await supabase
-        .from('bot_activations')
-        .insert({
+      // ✅ 1) Llamada atómica: descuenta saldo y registra wallet_transactions
+      await activateBot({ botName: selectedBot.name, fee: amount });
+
+      // ⛳ 2) (Opcional) Guardar metadata de activación en una tabla propia
+      try {
+        await supabase.from('bot_activations').insert({
           user_id: user.id,
           bot_id: selectedBot.id,
           bot_name: selectedBot.name,
@@ -95,37 +98,16 @@ export default function TradingBotsPage() {
           amount_usd: amount,
           status: 'active',
         });
-      if (actErr) throw actErr;
-
-      // 2) Descontar saldo
-      const newUsdc = Math.max(0, currentUsdc - amount);
-      const { error: balErr } = await supabase
-        .from('balances')
-        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
-        .eq('user_id', user.id);
-      if (balErr) throw balErr;
-
-      // 3) Registrar en historial
-      const { error: txErr } = await supabase
-        .from('wallet_transactions')
-        .insert({
-          user_id: user.id,
-          type: 'bot_activation',
-          status: 'completed',
-          amount: amount,
-          description: `Activación ${selectedBot.name}`,
-        });
-      if (txErr) throw txErr;
-
-      // 4) Refrescar saldo en el UI (si está disponible)
-      if (typeof refreshBalances === 'function') {
-        try { await refreshBalances(); } catch {}
+      } catch (metaErr) {
+        // Si la tabla no existe o hay RLS, no rompas el flujo
+        console.warn('bot_activations insert warn:', metaErr?.message);
       }
 
       toast({
         title: '¡Bot activado!',
         description: `Activaste ${selectedBot.name} con $${fmt(amount)}.`,
       });
+
       setSelectedBot(null);
       setInvestmentAmount('');
     } catch (e) {

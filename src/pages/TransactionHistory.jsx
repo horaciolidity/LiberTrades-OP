@@ -1,14 +1,15 @@
-import React, { useState, useEffect } from 'react';
+// src/pages/TransactionHistory.jsx
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import TransactionStats from '@/components/transactions/TransactionStats';
 import TransactionFilters from '@/components/transactions/TransactionFilters';
 import TransactionTabs from '@/components/transactions/TransactionTabs';
 import { useAuth } from '@/contexts/AuthContext';
-import { useData } from '@/contexts/DataContext';
+import { supabase } from '@/lib/supabaseClient';
+import { toast } from '@/components/ui/use-toast';
 
 const TransactionHistory = () => {
   const { user } = useAuth();
-  const { getTransactions, getInvestments } = useData();
 
   const [transactions, setTransactions] = useState([]);
   const [investments, setInvestments] = useState([]);
@@ -18,45 +19,116 @@ const TransactionHistory = () => {
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
 
+  const fetchData = useCallback(async () => {
+    if (!user?.id) return;
+
+    try {
+      // Wallet transactions
+      const { data: txs, error: txErr } = await supabase
+        .from('wallet_transactions')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (txErr) throw txErr;
+
+      // Normalizar descripción desde metadata si no existe
+      const normalizedTxs = (txs || []).map((t) => {
+        let desc = t.description || '';
+        try {
+          if (!desc && t.metadata && typeof t.metadata === 'object') {
+            const reason = t.metadata.reason || '';
+            const extra =
+              t.metadata.plan ||
+              t.metadata.project ||
+              t.metadata.symbol ||
+              t.metadata.bot ||
+              '';
+            desc = [reason, extra].filter(Boolean).join(' ').replace(/_/g, ' ');
+          }
+        } catch (_) {}
+        return { ...t, description: desc };
+      });
+
+      setTransactions(normalizedTxs);
+      setFilteredTransactions(normalizedTxs);
+
+      // Investments
+      const { data: invs, error: invErr } = await supabase
+        .from('investments')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (invErr) throw invErr;
+
+      setInvestments(invs || []);
+    } catch (e) {
+      console.error('TransactionHistory fetchData error:', e);
+      toast({
+        title: 'Error al cargar historial',
+        description: e?.message || 'Intenta nuevamente en unos segundos.',
+        variant: 'destructive',
+      });
+    }
+  }, [user?.id]);
+
   useEffect(() => {
-    if (!user) return;
+    fetchData();
+  }, [fetchData]);
 
-    const allTx = (getTransactions?.() || []);
-    const allInv = (getInvestments?.() || []);
+  // Realtime: refrescar al cambiar tx o investments
+  useEffect(() => {
+    if (!user?.id) return;
 
-    // Acepta user_id o userId
-    const uid = user.id;
-    const userTransactions = allTx.filter(t => (t.user_id ?? t.userId) === uid);
-    const userInvestments  = allInv.filter(i => (i.user_id ?? i.userId) === uid);
+    const channel = supabase
+      .channel('history-sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        fetchData
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        fetchData
+      )
+      .subscribe();
 
-    setTransactions(userTransactions);
-    setInvestments(userInvestments);
-    setFilteredTransactions(userTransactions);
-  }, [user, getTransactions, getInvestments]);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id, fetchData]);
 
+  // Filtros locales
   useEffect(() => {
     let filtered = [...transactions];
 
     if (filterType !== 'all') {
-      filtered = filtered.filter(t => (t.type || '').toLowerCase() === filterType.toLowerCase());
+      filtered = filtered.filter(
+        (t) => (t.type || '').toLowerCase() === filterType.toLowerCase()
+      );
     }
     if (filterStatus !== 'all') {
-      filtered = filtered.filter(t => (t.status || '').toLowerCase() === filterStatus.toLowerCase());
+      filtered = filtered.filter(
+        (t) => (t.status || '').toLowerCase() === filterStatus.toLowerCase()
+      );
     }
     if (searchTerm) {
       const q = searchTerm.toLowerCase();
-      filtered = filtered.filter(t =>
+      filtered = filtered.filter((t) =>
         (t.description || '').toLowerCase().includes(q) ||
         (t.type || '').toLowerCase().includes(q)
       );
     }
+
     setFilteredTransactions(filtered);
   }, [transactions, filterType, filterStatus, searchTerm]);
 
   const exportTransactions = () => {
     const rows = [
-      ['Fecha', 'Tipo', 'Descripción', 'Monto', 'Estado'],
-      ...filteredTransactions.map(t => {
+      ['Fecha', 'Tipo', 'Descripción', 'Monto', 'Moneda', 'Estado'],
+      ...filteredTransactions.map((t) => {
         const date = t.created_at || t.createdAt || t.date || new Date().toISOString();
         const amt = Number(t.amount);
         return [
@@ -64,12 +136,12 @@ const TransactionHistory = () => {
           t.type || '',
           t.description || '',
           Number.isFinite(amt) ? amt.toFixed(2) : '0.00',
-          t.status || ''
+          t.currency || 'USDC',
+          t.status || '',
         ];
-      })
+      }),
     ];
-    const csvContent = rows.map(r => r.map(String).join(',')).join('\n');
-
+    const csvContent = rows.map((r) => r.map(String).join(',')).join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');

@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+// src/pages/UserStatsPage.jsx
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
@@ -22,62 +23,100 @@ import {
   Bar,
   PieChart,
   Pie,
-  Cell
+  Cell,
+  AreaChart,
+  Area,
+  CartesianGrid
 } from 'recharts';
 import { supabase } from '@/lib/supabaseClient';
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
-
 const fmt = (n) => Number(n || 0);
 
 export default function UserStatsPage() {
   const { user, loading: authLoading, balances } = useAuth();
 
   const [loading, setLoading] = useState(true);
-  const [investments, setInvestments] = useState([]); // from public.investments
-  const [transactions, setTransactions] = useState([]); // from public.wallet_transactions
-  const [referralsCount, setReferralsCount] = useState(0); // opcional: si luego guardas referidos en DB
+  const [investments, setInvestments] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [referralsCount, setReferralsCount] = useState(0);
+
+  const loadAll = useCallback(async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    try {
+      const [{ data: inv, error: invErr }, { data: tx, error: txErr }] = await Promise.all([
+        supabase
+          .from('investments')
+          .select('id, user_id, plan_name, amount, daily_return, duration, status, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('wallet_transactions')
+          .select('id, user_id, amount, type, status, description, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false }),
+      ]);
+
+      if (!invErr) setInvestments(inv || []);
+      if (!txErr) setTransactions(tx || []);
+
+      const { data: me } = await supabase
+        .from('profiles')
+        .select('referral_code')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (me?.referral_code) {
+        const { count } = await supabase
+          .from('profiles')
+          .select('id', { count: 'exact', head: true })
+          .eq('referred_by', me.referral_code);
+        setReferralsCount(count || 0);
+      } else {
+        setReferralsCount(0);
+      }
+    } catch (e) {
+      console.warn('UserStats load error:', e?.message || e);
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user?.id) return;
-    const load = async () => {
-      setLoading(true);
-      try {
-        const [{ data: inv }, { data: tx }] = await Promise.all([
-          supabase
-            .from('investments')
-            .select('id, user_id, plan_name, amount, daily_return, duration, status, created_at')
-            .eq('user_id', user.id)
-            .order('created_at', { ascending: false }),
-          supabase
-            .from('wallet_transactions')
-            .select('id, user_id, amount, type, status, description, created_at')
-            .eq('user_id', user.id)
-            .order('created_at', { ascending: false }),
-        ]);
+    loadAll();
+  }, [user?.id, loadAll]);
 
-        setInvestments(inv || []);
-        setTransactions(tx || []);
+  // Realtime
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('rt-user-stats')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        loadAll
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        loadAll
+      )
+      .subscribe();
+    return () => supabase.removeChannel(ch);
+  }, [user?.id, loadAll]);
 
-        // Si luego tienes referidos en DB, carga aquí y setReferralsCount(...)
-        setReferralsCount(0);
-      } catch (e) {
-        console.warn('UserStats load error:', e?.message || e);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [user?.id]);
+  if (authLoading || !user) return <div className="p-6 text-slate-300">Cargando datos del usuario…</div>;
+  if (loading) return <div className="p-6 text-slate-300">Cargando estadísticas…</div>;
 
-  if (authLoading || !user) {
-    return <div className="p-6 text-slate-300">Cargando datos del usuario…</div>;
-  }
-  if (loading) {
-    return <div className="p-6 text-slate-300">Cargando estadísticas…</div>;
-  }
+  // -------- Helpers de tipo --------
+  const txType = (t) => (t.type || '').toLowerCase();
+  const isDeposit = (t) => txType(t) === 'deposit';
+  const isWithdrawal = (t) => ['withdrawal', 'withdraw'].includes(txType(t));
+  const isCompleted = (t) => (t.status || '').toLowerCase() === 'completed';
 
-  // ---------- Cálculos ----------
+  // -------- KPIs base --------
   const totalInvested = useMemo(
     () => investments.reduce((sum, inv) => sum + fmt(inv.amount), 0),
     [investments]
@@ -95,32 +134,25 @@ export default function UserStatsPage() {
   }, [investments]);
 
   const totalDeposits = useMemo(
-    () =>
-      transactions
-        .filter(t => (t.type || '').toLowerCase() === 'deposit' && (t.status || '').toLowerCase() === 'completed')
-        .reduce((s, t) => s + fmt(t.amount), 0),
+    () => transactions.filter((t) => isDeposit(t) && isCompleted(t)).reduce((s, t) => s + fmt(t.amount), 0),
     [transactions]
   );
 
   const totalWithdrawals = useMemo(
-    () =>
-      transactions
-        .filter(t => (t.type || '').toLowerCase() === 'withdrawal' && (t.status || '').toLowerCase() === 'completed')
-        .reduce((s, t) => s + fmt(t.amount), 0),
+    () => transactions.filter((t) => isWithdrawal(t) && isCompleted(t)).reduce((s, t) => s + fmt(t.amount), 0),
     [transactions]
   );
 
-  // Distribución del portafolio por plan
+  // ✅ NUEVO: Flujo Neto (depósitos completados − retiros completados)
+  const netCashFlow = useMemo(() => totalDeposits - totalWithdrawals, [totalDeposits, totalWithdrawals]);
+
+  // -------- Distribución de portafolio --------
   const portfolioDistributionData = useMemo(
-    () =>
-      investments.map(inv => ({
-        name: inv.plan_name || 'Plan',
-        value: fmt(inv.amount),
-      })),
+    () => investments.map((inv) => ({ name: inv.plan_name || 'Plan', value: fmt(inv.amount) })),
     [investments]
   );
 
-  // Actividad mensual últimos 6 meses (depósitos/retiros desde wallet_transactions, inversiones desde investments)
+  // -------- Actividad mensual últimos 6 meses --------
   const monthlyActivityData = useMemo(() => {
     const arr = [];
     for (let i = 5; i >= 0; i--) {
@@ -131,54 +163,80 @@ export default function UserStatsPage() {
       const label = d.toLocaleString('default', { month: 'short' });
 
       const dep = transactions
-        .filter(t => {
+        .filter((t) => {
           const dt = new Date(t.created_at || Date.now());
-          return dt.getMonth() === m && dt.getFullYear() === y && (t.type || '').toLowerCase() === 'deposit';
+          return dt.getMonth() === m && dt.getFullYear() === y && isDeposit(t) && isCompleted(t);
         })
         .reduce((s, t) => s + fmt(t.amount), 0);
 
       const wit = transactions
-        .filter(t => {
+        .filter((t) => {
           const dt = new Date(t.created_at || Date.now());
-          return dt.getMonth() === m && dt.getFullYear() === y && (t.type || '').toLowerCase() === 'withdrawal';
+          return dt.getMonth() === m && dt.getFullYear() === y && isWithdrawal(t) && isCompleted(t);
         })
         .reduce((s, t) => s + fmt(t.amount), 0);
 
       const invSum = investments
-        .filter(inv => {
+        .filter((inv) => {
           const dt = new Date(inv.created_at || Date.now());
           return dt.getMonth() === m && dt.getFullYear() === y;
         })
         .reduce((s, inv) => s + fmt(inv.amount), 0);
 
-      arr.push({
-        month: label,
-        deposits: dep,
-        withdrawals: wit,
-        investments: invSum,
-      });
+      arr.push({ month: label, deposits: dep, withdrawals: wit, investments: invSum });
     }
     return arr;
   }, [transactions, investments]);
 
-  // Resumen reciente: mezclamos transacciones + inversiones
+  // ✅ NUEVO: Serie de saldo reconstruido desde las transacciones completadas
+  // Regla de signo:
+  // + deposit, + bonus/referral_bonus
+  // - withdrawal/withdraw, - investment, - bot_activation, - project_investment
+  const balanceSeries = useMemo(() => {
+    const rows = transactions
+      .filter((t) => isCompleted(t))
+      .slice()
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    let bal = 0;
+    return rows.map((t) => {
+      const type = txType(t);
+      const amt = fmt(t.amount);
+      let delta = 0;
+
+      if (type === 'deposit') delta = amt;
+      else if (['withdrawal', 'withdraw'].includes(type)) delta = -amt;
+      else if (['investment', 'bot_activation', 'project_investment'].includes(type)) delta = -amt;
+      else if (['referral_bonus', 'bonus'].includes(type)) delta = amt;
+
+      bal += delta;
+      return {
+        date: new Date(t.created_at).toLocaleDateString(),
+        balance: Number(bal.toFixed(2)),
+      };
+    });
+  }, [transactions]);
+
+  // -------- Resumen reciente --------
   const recentActivity = useMemo(() => {
-    const txMapped = transactions.map(t => ({
+    const txMapped = transactions.map((t) => ({
       id: `tx_${t.id}`,
       created_at: t.created_at,
-      type: (t.type || '').toLowerCase(), // deposit | withdrawal | ...
+      type: txType(t),
       amount: fmt(t.amount),
       description: t.description || '',
-      sign: (t.type || '').toLowerCase() === 'deposit' ? '+' : '-', // depósitos +
+      sign: isDeposit(t) ? '+' : isWithdrawal(t) ? '-' : '',
+      status: (t.status || '').toLowerCase(),
     }));
 
-    const invMapped = investments.map(inv => ({
+    const invMapped = investments.map((inv) => ({
       id: `inv_${inv.id}`,
       created_at: inv.created_at,
       type: 'investment',
       amount: fmt(inv.amount),
       description: inv.plan_name || 'Inversión',
-      sign: '-', // inversión resta saldo disponible
+      sign: '-',
+      status: 'completed',
     }));
 
     return [...txMapped, ...invMapped]
@@ -186,11 +244,14 @@ export default function UserStatsPage() {
       .slice(0, 5);
   }, [transactions, investments]);
 
+  // -------- KPIs (con Flujo Neto) --------
   const generalStats = [
     { title: 'Balance Actual', value: `$${Number(balances?.usdc ?? 0).toFixed(2)}`, icon: DollarSign, color: 'text-green-400' },
     { title: 'Total Invertido', value: `$${totalInvested.toFixed(2)}`, icon: TrendingUp, color: 'text-blue-400' },
     { title: 'Ganancias de Inversión', value: `$${totalEarningsFromInvestments.toFixed(2)}`, icon: Star, color: 'text-yellow-400' },
     { title: 'Total Referidos', value: referralsCount, icon: Users, color: 'text-purple-400' },
+    // NUEVO KPI
+    { title: 'Flujo Neto', value: `$${netCashFlow.toFixed(2)}`, icon: Activity, color: netCashFlow >= 0 ? 'text-green-400' : 'text-red-400' },
   ];
 
   return (
@@ -248,7 +309,7 @@ export default function UserStatsPage() {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={monthlyActivityData}>
                     <XAxis dataKey="month" stroke="#94a3b8" fontSize={12} />
-                    <YAxis stroke="#94a3b8" fontSize={12} tickFormatter={(value) => `$${(value / 1000).toFixed(1)}k`} />
+                    <YAxis stroke="#94a3b8" fontSize={12} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
                     <Tooltip
                       cursor={{ fill: 'rgba(100, 116, 139, 0.1)' }}
                       contentStyle={{ backgroundColor: 'rgba(30, 41, 59, 0.9)', border: 'none', borderRadius: '0.5rem' }}
@@ -310,6 +371,43 @@ export default function UserStatsPage() {
           </motion.div>
         </div>
 
+        {/* ✅ NUEVO: Evolución del Saldo (reconstruido) */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.55 }}>
+          <Card className="crypto-card">
+            <CardHeader>
+              <CardTitle className="text-white">Evolución del Saldo (reconstruido)</CardTitle>
+              <CardDescription className="text-slate-300">
+                Calculado desde 0 aplicando sólo movimientos <span className="text-slate-200 font-medium">completados</span> de tu wallet.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="h-[320px]">
+              {balanceSeries.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={balanceSeries} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="saldoGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#22c55e" stopOpacity={0.6}/>
+                        <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                    <XAxis dataKey="date" stroke="#94a3b8" fontSize={12} />
+                    <YAxis stroke="#94a3b8" fontSize={12} tickFormatter={(v) => `$${v}`} />
+                    <Tooltip
+                      formatter={(v) => [`$${Number(v).toFixed(2)}`, 'Saldo']}
+                      contentStyle={{ backgroundColor: 'rgba(30, 41, 59, 0.9)', border: 'none', borderRadius: '0.5rem' }}
+                      labelStyle={{ color: '#cbd5e1' }}
+                    />
+                    <Area type="monotone" dataKey="balance" stroke="#22c55e" fill="url(#saldoGrad)" strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="text-slate-400 text-center py-8">Aún no hay movimientos completados.</div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
         {/* Resumen reciente */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.6 }}>
           <Card className="crypto-card">
@@ -320,15 +418,20 @@ export default function UserStatsPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {recentActivity.map(item => {
+              {recentActivity.map((item) => {
                 const date = item.created_at || Date.now();
                 const isPositive = item.type === 'deposit';
                 return (
                   <div key={item.id} className="flex justify-between items-center p-3 mb-2 bg-slate-800/50 rounded-md">
                     <div>
                       <p className="text-white capitalize">
-                        {item.type === 'deposit' ? 'Depósito' : item.type === 'withdrawal' ? 'Retiro' : 'Inversión'}
+                        {item.type === 'deposit'
+                          ? 'Depósito'
+                          : item.type === 'withdrawal' || item.type === 'withdraw'
+                          ? 'Retiro'
+                          : 'Inversión'}
                       </p>
+                      {item.status && <p className="text-xs text-slate-400">Estado: {item.status}</p>}
                       <p className="text-xs text-slate-400">{item.description || ''}</p>
                     </div>
                     <div className="text-right">
