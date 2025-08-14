@@ -11,13 +11,18 @@ import { useAuth } from '@/contexts/AuthContext';
 
 const DataContext = createContext(null);
 
-// ========================
-// Provider
-// ========================
+// Utilidad
+const ensureArray = (v) => (Array.isArray(v) ? v : []);
+
 export function DataProvider({ children }) {
   const { user } = useAuth();
 
-  // Puedes dejar este simulador de precios hasta que conectes cotizaciones reales
+  // ======= Estado que la UI consume SINCRÓNICAMENTE =======
+  const [investments, setInvestments] = useState([]);   // []
+  const [transactions, setTransactions] = useState([]); // []
+  const [referrals, setReferrals] = useState([]);       // []
+
+  // ======= Precios (mock) =======
   const [cryptoPrices, setCryptoPrices] = useState({
     BTC: { price: 45000, change: 2.5, history: [] },
     ETH: { price: 3200, change: -1.2, history: [] },
@@ -27,7 +32,6 @@ export function DataProvider({ children }) {
   });
 
   useEffect(() => {
-    // histórico inicial
     const initialHistoryLength = 60;
     const next = JSON.parse(JSON.stringify(cryptoPrices));
     Object.keys(next).forEach((k) => {
@@ -46,12 +50,11 @@ export function DataProvider({ children }) {
     });
     setCryptoPrices(next);
 
-    // “ticks” cada 2s
     const id = setInterval(() => {
       setCryptoPrices((prev) => {
         const up = { ...prev };
         Object.keys(up).forEach((k) => {
-          const ch = (Math.random() - 0.5) * 2; // -1% a +1%
+          const ch = (Math.random() - 0.5) * 2;
           const np = Math.max(0.01, up[k].price * (1 + ch / 100));
           const nh = [...up[k].history, { time: Date.now(), value: np }].slice(
             -100
@@ -66,7 +69,6 @@ export function DataProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Planes visibles en UI (no depende de BD)
   const investmentPlans = useMemo(
     () => [
       {
@@ -109,13 +111,12 @@ export function DataProvider({ children }) {
     []
   );
 
-  // ========================
-  // Queries a Supabase
-  // ========================
-
-  // ---- INVESTMENTS (map snake_case -> camelCase) ----
-  async function getInvestments() {
-    if (!user?.id) return [];
+  // ======= Fetchers (async) que ACTUALIZAN el estado =======
+  async function refreshInvestments() {
+    if (!user?.id) {
+      setInvestments([]);
+      return;
+    }
     const { data, error } = await supabase
       .from('investments')
       .select('*')
@@ -123,13 +124,13 @@ export function DataProvider({ children }) {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('[getInvestments] error:', error);
-      return [];
+      console.error('[refreshInvestments] error:', error);
+      setInvestments([]);
+      return;
     }
 
     const now = dayjs();
-
-    return (data || []).map((inv) => {
+    const mapped = ensureArray(data).map((inv) => {
       const start = dayjs(inv.created_at);
       const duration = Number(inv.duration || 0);
       const daysElapsed = Math.min(now.diff(start, 'day'), duration);
@@ -144,14 +145,85 @@ export function DataProvider({ children }) {
         duration,
         createdAt: inv.created_at,
         status: inv.status,
-        currency: inv.currency_input, // 'USDT' | 'BTC' | 'ETH'
+        currency: inv.currency_input,
         daysElapsed,
         earnings,
       };
     });
+
+    setInvestments(mapped);
   }
 
-  // Crear inversión en BD (opcional, si la UI lo usa)
+  async function refreshTransactions() {
+    if (!user?.id) {
+      setTransactions([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('wallet_transactions')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[refreshTransactions] error:', error);
+      setTransactions([]);
+      return;
+    }
+
+    const mapped = ensureArray(data).map((tx) => {
+      let type = tx.type;
+      if (type === 'plan_purchase') type = 'investment';
+      return {
+        id: tx.id,
+        type,
+        status: tx.status,
+        amount: Number(tx.amount || 0),
+        currency: tx.currency || 'USDT',
+        description: tx.description || '',
+        createdAt: tx.created_at,
+        referenceType: tx.reference_type,
+        referenceId: tx.reference_id,
+      };
+    });
+
+    setTransactions(mapped);
+  }
+
+  async function refreshReferrals() {
+    if (!user?.id) {
+      setReferrals([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, email, full_name, created_at, username')
+      .eq('referred_by', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[refreshReferrals] error:', error);
+      setReferrals([]);
+      return;
+    }
+    setReferrals(ensureArray(data));
+  }
+
+  // ======= Efecto: refetch al loguear/cambiar de user =======
+  useEffect(() => {
+    // Limpio mientras carga
+    setInvestments([]);
+    setTransactions([]);
+    setReferrals([]);
+
+    // Refrescos en paralelo
+    refreshInvestments();
+    refreshTransactions();
+    refreshReferrals();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // ======= Mutaciones (insert) =======
   async function addInvestment({
     planName,
     amount,
@@ -160,7 +232,6 @@ export function DataProvider({ children }) {
     currency = 'USDT',
   }) {
     if (!user?.id) return null;
-
     const payload = {
       user_id: user.id,
       plan_name: planName,
@@ -170,7 +241,6 @@ export function DataProvider({ children }) {
       status: 'active',
       currency_input: currency,
     };
-
     const { data, error } = await supabase
       .from('investments')
       .insert(payload)
@@ -182,7 +252,9 @@ export function DataProvider({ children }) {
       return null;
     }
 
-    // normaliza al formato que espera la UI
+    // Optimista: actualizo estado local
+    await refreshInvestments();
+
     return {
       id: data.id,
       planName: data.plan_name,
@@ -197,40 +269,6 @@ export function DataProvider({ children }) {
     };
   }
 
-  // ---- TRANSACTIONS (wallet_transactions) ----
-  async function getTransactions() {
-    if (!user?.id) return [];
-    const { data, error } = await supabase
-      .from('wallet_transactions')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('[getTransactions] error:', error);
-      return [];
-    }
-
-    return (data || []).map((tx) => {
-      let type = tx.type;
-      // la UI suele agrupar compras de plan como "investment"
-      if (type === 'plan_purchase') type = 'investment';
-
-      return {
-        id: tx.id,
-        type, // 'deposit' | 'withdrawal' | 'investment' | ...
-        status: tx.status,
-        amount: Number(tx.amount || 0),
-        currency: tx.currency || 'USDT',
-        description: tx.description || '',
-        createdAt: tx.created_at,
-        referenceType: tx.reference_type,
-        referenceId: tx.reference_id,
-      };
-    });
-  }
-
-  // Crear transacción en BD (opcional, si la UI lo usa)
   async function addTransaction({
     amount,
     type,
@@ -264,6 +302,8 @@ export function DataProvider({ children }) {
       return null;
     }
 
+    await refreshTransactions();
+
     let mappedType = data.type;
     if (mappedType === 'plan_purchase') mappedType = 'investment';
 
@@ -280,35 +320,37 @@ export function DataProvider({ children }) {
     };
   }
 
-  // ---- REFERRALS (perfiles referidos por el usuario actual) ----
-  async function getReferrals() {
-    if (!user?.id) return [];
-    // profiles.referred_by -> auth.users.id (== profiles.id == auth.users.id)
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, email, full_name, created_at, username')
-      .eq('referred_by', user.id)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('[getReferrals] error:', error);
-      return [];
-    }
-    return data || [];
-  }
-
+  // ======= API pública (compat sincrónica + métodos de refresh) =======
   const value = useMemo(
     () => ({
+      // datos listos para usar sin await
+      investments,
+      transactions,
+      referrals,
+
+      // getters compatibles con tu UI actual (sincrónicos)
+      getInvestments: () => investments,
+      getTransactions: () => transactions,
+      getReferrals: () => referrals,
+
+      // acciones y refrescos
+      refreshInvestments,
+      refreshTransactions,
+      refreshReferrals,
+      addInvestment,
+      addTransaction,
+
+      // otros datos de UI
       cryptoPrices,
       investmentPlans,
-      getInvestments,
-      addInvestment,
-      getTransactions,
-      addTransaction,
-      getReferrals,
     }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cryptoPrices, investmentPlans, user?.id]
+    [
+      investments,
+      transactions,
+      referrals,
+      cryptoPrices,
+      investmentPlans,
+    ]
   );
 
   return (
@@ -316,20 +358,24 @@ export function DataProvider({ children }) {
   );
 }
 
-// ========================
-// Hook (fallback seguro)
-// ========================
+// Hook con fallback seguro
 export function useData() {
   const ctx = useContext(DataContext);
   if (!ctx) {
     return {
+      investments: [],
+      transactions: [],
+      referrals: [],
+      getInvestments: () => [],
+      getTransactions: () => [],
+      getReferrals: () => [],
+      refreshInvestments: async () => {},
+      refreshTransactions: async () => {},
+      refreshReferrals: async () => {},
+      addInvestment: async () => null,
+      addTransaction: async () => null,
       cryptoPrices: {},
       investmentPlans: [],
-      getInvestments: async () => [],
-      addInvestment: async () => null,
-      getTransactions: async () => [],
-      addTransaction: async () => null,
-      getReferrals: async () => [],
     };
   }
   return ctx;
