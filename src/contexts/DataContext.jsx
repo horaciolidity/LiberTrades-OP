@@ -138,6 +138,10 @@ export function DataProvider({ children }) {
       const earnings = dailyReturn * daysElapsed;
 
       return {
+        // compat filtros
+        user_id: inv.user_id,
+        userId: inv.user_id,
+
         id: inv.id,
         planName: inv.plan_name,
         amount: Number(inv.amount || 0),
@@ -175,6 +179,10 @@ export function DataProvider({ children }) {
       let type = tx.type;
       if (type === 'plan_purchase') type = 'investment';
       return {
+        // compat filtros
+        user_id: tx.user_id,
+        userId: tx.user_id,
+
         id: tx.id,
         type,
         status: tx.status,
@@ -211,12 +219,9 @@ export function DataProvider({ children }) {
 
   // ======= Efecto: refetch al loguear/cambiar de user =======
   useEffect(() => {
-    // Limpio mientras carga
     setInvestments([]);
     setTransactions([]);
     setReferrals([]);
-
-    // Refrescos en paralelo
     refreshInvestments();
     refreshTransactions();
     refreshReferrals();
@@ -252,10 +257,13 @@ export function DataProvider({ children }) {
       return null;
     }
 
-    // Optimista: actualizo estado local
     await refreshInvestments();
 
     return {
+      // compat filtros
+      user_id: data.user_id,
+      userId: data.user_id,
+
       id: data.id,
       planName: data.plan_name,
       amount: Number(data.amount || 0),
@@ -308,6 +316,10 @@ export function DataProvider({ children }) {
     if (mappedType === 'plan_purchase') mappedType = 'investment';
 
     return {
+      // compat filtros
+      user_id: data.user_id,
+      userId: data.user_id,
+
       id: data.id,
       type: mappedType,
       status: data.status,
