@@ -23,7 +23,7 @@ export function AuthProvider({ children }) {
   async function fetchProfile(userId) {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, username, referred_by, referral_code, role')
+      .select('id, username, referred_by, referral_code, role, full_name, email')
       .eq('id', userId)
       .maybeSingle();
     if (error) console.warn('Perfil:', error.message);
@@ -32,54 +32,61 @@ export function AuthProvider({ children }) {
   }
 
   // Crea si no existe y devuelve la fila (idempotente)
- async function fetchOrCreateBalances(userId) {
-  // 1) Intentar leer
-  const { data: existing, error: selErr } = await supabase
-    .from('balances')
-    .select('*')
-    .eq('user_id', userId)
-    .maybeSingle();
+  async function fetchOrCreateBalances(userId) {
+    // 1) Intentar leer
+    const { data: existing, error: selErr } = await supabase
+      .from('balances')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
 
-  if (selErr) {
-    console.warn('Balance (select):', selErr.message);
+    if (selErr) console.warn('Balance (select):', selErr.message);
+
+    if (existing) {
+      setBalances(existing);
+      return existing;
+    }
+
+    // 2) Si NO existe, crear con 0s (RLS debe permitirlo)
+    const { data: inserted, error: insErr } = await supabase
+      .from('balances')
+      .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 })
+      .select()
+      .single();
+
+    if (insErr) {
+      // Si falla por RLS, lo dejamos en null y avisamos suave
+      console.warn('Balance (insert):', insErr.message);
+      setBalances(null);
+      return null;
+    }
+
+    setBalances(inserted || null);
+    return inserted || null;
   }
 
-  // 2) Si existe, usarlo tal cual
-  if (existing) {
-    setBalances(existing);
-    return existing;
-  }
-
-  // 3) Si NO existe, crear con 0s (solo una vez)
-  const { data: inserted, error: insErr } = await supabase
-    .from('balances')
-    .insert({ user_id: userId, usdc: 0, eth: 0 })
-    .select()
-    .single();
-
-  if (insErr) {
-    console.warn('Balance (insert):', insErr.message);
-  }
-
-  setBalances(inserted || null);
-  return inserted || null;
-}
-
-  // Refresca solo balances (útil post-ajuste admin)
+  // Refresca solo balances (útil post-ajuste admin o RPC)
   const refreshBalances = async () => {
     if (!user?.id) return null;
     const { data, error } = await supabase
       .from('balances')
       .select('*')
       .eq('user_id', user.id)
-      .single();
-    if (!error) setBalances(data || null);
+      .maybeSingle();
+    if (error) {
+      console.warn('refreshBalances:', error.message);
+      return null;
+    }
+    setBalances(data || null);
     return data || null;
   };
 
   // carga en segundo plano — NO bloquea el loader
   function loadAllBG(userId) {
-    Promise.allSettled([fetchProfile(userId), fetchOrCreateBalances(userId)]).catch(() => {});
+    Promise.allSettled([
+      fetchProfile(userId),
+      fetchOrCreateBalances(userId),
+    ]).catch(() => {});
     setIsAuthenticated(true);
   }
 
@@ -118,7 +125,7 @@ export function AuthProvider({ children }) {
       }
     })();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_ev, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_ev, session) => {
       const u = session?.user ?? null;
       setUser(u);
       setIsAuthenticated(!!u);
@@ -134,7 +141,7 @@ export function AuthProvider({ children }) {
     return () => {
       mounted = false;
       clearTimeout(killer);
-      subscription.unsubscribe();
+      sub?.subscription?.unsubscribe?.();
     };
   }, []);
 
@@ -154,7 +161,7 @@ export function AuthProvider({ children }) {
       )
       .subscribe();
 
-    // opcional: cambios de perfil (nombre/role)
+    // cambios de perfil (username/role/etc)
     const chProfile = supabase
       .channel('rt-profiles')
       .on(
@@ -206,13 +213,25 @@ export function AuthProvider({ children }) {
       const referralCode = generateReferralCode();
 
       if (userId) {
+        // 1) perfil
         const { error: pErr } = await supabase.from('profiles').insert({
           id: userId,
           username: name || email.split('@')[0],
           referred_by: referredBy || null,
           referral_code: referralCode,
+          email,
+          full_name: name || null,
         });
         if (pErr) throw pErr;
+
+        // 2) balance inicial (para que /trading-bots vea saldo de inmediato)
+        const { error: bErr } = await supabase
+          .from('balances')
+          .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 });
+        if (bErr) {
+          // Si falla por RLS, no bloqueamos el registro
+          console.warn('Init balances (register):', bErr.message);
+        }
 
         loadAllBG(userId); // en BG
       }
@@ -250,6 +269,13 @@ export function AuthProvider({ children }) {
     toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado exitosamente' });
   };
 
+  // Helper comodín para UI que espera un único saldo USD
+  const balanceUSD = typeof balances?.usdc === 'number'
+    ? balances.usdc
+    : typeof balances?.balance === 'number'
+    ? balances.balance
+    : 0;
+
   const displayName =
     profile?.username ||
     user?.user_metadata?.full_name ||
@@ -261,6 +287,7 @@ export function AuthProvider({ children }) {
         user,
         profile,
         balances,
+        balanceUSD,     // <- helper de saldo USD
         displayName,
         isAuthenticated,
         loading,

@@ -47,6 +47,7 @@ const Layout = () => {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Estadísticas', href: '/stats', icon: BarChartHorizontalBig },
     { name: 'Depositar', href: '/deposit', icon: DollarSign },
+    { name: 'Wallet', href: '/wallet', icon: Wallet, showBalance: true }, // <-- NUEVO
     { name: 'Trading', href: '/simulator', icon: TrendingUp },
     { name: 'Bots de Trading', href: '/trading-bots', icon: Bot },
     { name: 'Planes de Inversión', href: '/plans', icon: Wallet },
@@ -150,25 +151,30 @@ const Layout = () => {
           </Button>
         </div>
         <nav className="mt-8 px-4">
-          {navigation.map((item) => {
-            const Icon = item.icon;
-            const isActive = location.pathname.startsWith(item.href);
-            return (
-              <button
-                key={item.name}
-                onClick={() => handleLinkClick(item.href)}
-                className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
-                  isActive
-                    ? 'btn-ss5 text-white'
-                    : 'text-slate-300 hover:bg-slate-700 hover:text-white'
-                }`}
-              >
-                <Icon className="h-5 w-5 mr-3" />
-                {item.name}
-              </button>
-            );
-          })}
-        </nav>
+  {navigation.map((item) => {
+    const Icon = item.icon;
+    const isActive = location.pathname.startsWith(item.href);
+    return (
+      <button
+        key={item.name}
+        onClick={() => handleLinkClick(item.href)}
+        className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
+          isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+        }`}
+      >
+        <Icon className="h-5 w-5 mr-3" />
+        <span>{item.name}</span>
+
+        {item.showBalance && (
+          <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
+            ${fmt(balances?.usdc ?? 0, 2)}
+          </span>
+        )}
+      </button>
+    );
+  })}
+</nav>
+
       </motion.div>
 
       {/* Sidebar desktop */}
@@ -180,25 +186,30 @@ const Layout = () => {
             </span>
           </div>
           <nav className="mt-8 flex-1 px-4">
-            {navigation.map((item) => {
-              const Icon = item.icon;
-              const isActive = location.pathname.startsWith(item.href);
-              return (
-                <button
-                  key={item.name}
-                  onClick={() => handleLinkClick(item.href)}
-                  className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
-                    isActive
-                      ? 'btn-ss5 text-white'
-                      : 'text-slate-300 hover:bg-slate-700 hover:text-white'
-                  }`}
-                >
-                  <Icon className="h-5 w-5 mr-3" />
-                  {item.name}
-                </button>
-              );
-            })}
-          </nav>
+  {navigation.map((item) => {
+    const Icon = item.icon;
+    const isActive = location.pathname.startsWith(item.href);
+    return (
+      <button
+        key={item.name}
+        onClick={() => handleLinkClick(item.href)}
+        className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
+          isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+        }`}
+      >
+        <Icon className="h-5 w-5 mr-3" />
+        <span>{item.name}</span>
+
+        {item.showBalance && (
+          <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
+            ${fmt(balances?.usdc ?? 0, 2)}
+          </span>
+        )}
+      </button>
+    );
+  })}
+</nav>
+
           <div className="p-4">
             <Button onClick={handleLogout} variant="outline" className="w-full justify-start">
               <LogOut className="h-4 w-4 mr-2" />

@@ -1,63 +1,133 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
+import {
+  Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter
+} from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Bot, Zap, TrendingUp, BarChart2, DollarSign, Activity, CheckCircle } from 'lucide-react';
+import {
+  Bot, Zap, TrendingUp, BarChart2, DollarSign, Activity, CheckCircle
+} from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSound } from '@/contexts/SoundContext';
 import { toast } from '@/components/ui/use-toast';
+import { useData } from '@/contexts/DataContext';
 
 const tradingBots = [
   {
-    id: 1, name: 'Bot Conservador Alfa', strategy: 'Bajo Riesgo, Ingresos Estables',
-    monthlyReturn: '~5-8%', minInvestment: 250, pairs: ['BTC/USDT', 'ETH/USDT'],
-    icon: BarChart2, color: 'text-blue-400', bgColor: 'bg-blue-500/10',
-    features: ['Stop-loss dinámico', 'Análisis de sentimiento básico', 'Rebalanceo semanal']
+    id: 1,
+    name: 'Bot Conservador Alfa',
+    strategy: 'Bajo Riesgo, Ingresos Estables',
+    monthlyReturn: '~5-8%',
+    minInvestment: 250,
+    pairs: ['BTC/USDT', 'ETH/USDT'],
+    icon: BarChart2,
+    color: 'text-blue-400',
+    bgColor: 'bg-blue-500/10',
+    features: ['Stop-loss dinámico', 'Análisis de sentimiento básico', 'Rebalanceo semanal'],
   },
   {
-    id: 2, name: 'Bot Agresivo Beta', strategy: 'Alto Riesgo, Alto Rendimiento Potencial',
-    monthlyReturn: '~15-25%', minInvestment: 1000, pairs: ['ALTCOINS/USDT', 'MEMES/USDT'],
-    icon: Zap, color: 'text-red-400', bgColor: 'bg-red-500/10',
-    features: ['Trading de alta frecuencia', 'Detección de pumps', 'Scalping en M1/M5']
+    id: 2,
+    name: 'Bot Agresivo Beta',
+    strategy: 'Alto Riesgo, Alto Rendimiento Potencial',
+    monthlyReturn: '~15-25%',
+    minInvestment: 1000,
+    pairs: ['ALTCOINS/USDT', 'MEMES/USDT'],
+    icon: Zap,
+    color: 'text-red-400',
+    bgColor: 'bg-red-500/10',
+    features: ['Trading de alta frecuencia', 'Detección de pumps', 'Scalping en M1/M5'],
   },
   {
-    id: 3, name: 'Bot Balanceado Gamma', strategy: 'Riesgo Moderado, Crecimiento Constante',
-    monthlyReturn: '~8-12%', minInvestment: 500, pairs: ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT'],
-    icon: TrendingUp, color: 'text-green-400', bgColor: 'bg-green-500/10',
-    features: ['Grid trading', 'Dollar Cost Averaging (DCA)', 'Seguimiento de tendencia']
+    id: 3,
+    name: 'Bot Balanceado Gamma',
+    strategy: 'Riesgo Moderado, Crecimiento Constante',
+    monthlyReturn: '~8-12%',
+    minInvestment: 500,
+    pairs: ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT'],
+    icon: TrendingUp,
+    color: 'text-green-400',
+    bgColor: 'bg-green-500/10',
+    features: ['Grid trading', 'Dollar Cost Averaging (DCA)', 'Seguimiento de tendencia'],
   },
 ];
 
 const TradingBotsPage = () => {
-  const { user, balances } = useAuth();
+  const { user, balances } = useAuth(); // saldo visible (opcional)
   const { playSound } = useSound();
+
+  // DataContext: RPC reales y listado de activaciones
+  const {
+    botActivations,
+    activateBot,
+    pauseBot,
+    resumeBot,
+    cancelBot,
+    refreshBotActivations,
+  } = useData();
+
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
 
-  const handleActivateBot = () => {
-    playSound('invest');
-    if (!selectedBot || !investmentAmount) {
-      toast({ title: "Error", description: "Selecciona un bot e ingresa un monto.", variant: "destructive" });
-      return;
-    }
-    const amount = parseFloat(investmentAmount);
-    if (amount < selectedBot.minInvestment) {
-      toast({ title: "Monto Insuficiente", description: `El mínimo para ${selectedBot.name} es $${selectedBot.minInvestment}.`, variant: "destructive" });
-      return;
-    }
-    if (amount > (balances?.usdc ?? 0)) {
-      toast({ title: "Saldo Insuficiente", description: "No tienes suficiente saldo en la app.", variant: "destructive" });
-      return;
-    }
+  const handleActivateBot = async () => {
+    try {
+      playSound?.('invest');
+      if (!selectedBot || !investmentAmount) {
+        toast({ title: 'Error', description: 'Selecciona un bot e ingresa un monto.', variant: 'destructive' });
+        return;
+      }
+      const amount = parseFloat(investmentAmount);
+      if (Number.isNaN(amount) || amount <= 0) {
+        toast({ title: 'Monto inválido', description: 'Ingresa un monto válido.', variant: 'destructive' });
+        return;
+      }
+      if (amount < selectedBot.minInvestment) {
+        toast({
+          title: 'Monto insuficiente',
+          description: `El mínimo para ${selectedBot.name} es $${selectedBot.minInvestment}.`,
+          variant: 'destructive',
+        });
+        return;
+      }
 
-    toast({
-      title: "Activación de Bot (Simulada)",
-      description: `Has solicitado activar ${selectedBot.name} con $${amount}. Esta función es demostrativa.`,
-    });
-    setSelectedBot(null);
-    setInvestmentAmount('');
+      // Llama RPC real; el server valida saldo y devuelve códigos
+      const res = await activateBot({
+        botId: selectedBot.id,
+        botName: selectedBot.name,
+        strategy: selectedBot.strategy,
+        amountUsd: amount,
+      });
+
+      if (res?.code === 'INSUFFICIENT_FUNDS') {
+        toast({
+          title: 'Saldo insuficiente',
+          description: `Te faltan $${Number(res.needed || 0).toFixed(2)} para activar este bot.`,
+          variant: 'destructive',
+        });
+        // acá podés redirigir a tu pantalla de depósito
+        return;
+      }
+      if (!res?.ok) {
+        toast({
+          title: 'No se pudo activar el bot',
+          description: res?.msg || 'Intenta nuevamente.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      toast({
+        title: 'Bot activado',
+        description: `${selectedBot.name} activado por $${amount.toFixed(2)}.`,
+      });
+      setSelectedBot(null);
+      setInvestmentAmount('');
+      refreshBotActivations(); // por si acaso
+    } catch (e) {
+      console.error('[handleActivateBot]', e);
+      toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
+    }
   };
 
   return (
@@ -83,7 +153,7 @@ const TradingBotsPage = () => {
               <div>
                 <p className="text-slate-400 text-sm font-medium">Saldo Disponible en App</p>
                 <p className="text-3xl font-bold text-green-400 mt-1">
-                  ${((balances?.usdc ?? 0)).toFixed(2)}
+                  ${Number(balances?.usdc ?? 0).toFixed(2)}
                 </p>
               </div>
               <div className="p-4 rounded-lg bg-green-500/10">
@@ -93,9 +163,17 @@ const TradingBotsPage = () => {
           </CardContent>
         </Card>
 
+        {/* Catálogo de bots */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {tradingBots.map((bot, index) => {
             const Icon = bot.icon;
+            const gradient =
+              bot.bgColor.includes('blue')
+                ? 'from-blue-500 to-cyan-500'
+                : bot.bgColor.includes('red')
+                ? 'from-red-500 to-pink-500'
+                : 'from-green-500 to-teal-500';
+
             return (
               <motion.div
                 key={bot.id}
@@ -120,16 +198,22 @@ const TradingBotsPage = () => {
                     </div>
                     <div className="text-sm text-slate-400">
                       <DollarSign className="inline h-4 w-4 mr-1 text-green-400" />
-                      Mínimo: <span className="font-semibold text-white">${bot.minInvestment}</span>
+                      Mínimo:{' '}
+                      <span className="font-semibold text-white">
+                        ${bot.minInvestment}
+                      </span>
                     </div>
                     <div className="text-sm text-slate-400">
                       <Activity className="inline h-4 w-4 mr-1 text-purple-400" />
-                      Pares: <span className="font-semibold text-white">{bot.pairs.join(', ')}</span>
+                      Pares:{' '}
+                      <span className="font-semibold text-white">
+                        {bot.pairs.join(', ')}
+                      </span>
                     </div>
                     <div className="pt-2">
                       <p className="text-sm font-medium text-white mb-1">Características:</p>
                       <ul className="space-y-1">
-                        {bot.features.map(feature => (
+                        {bot.features.map((feature) => (
                           <li key={feature} className="flex items-center text-xs text-slate-300">
                             <CheckCircle className="h-3 w-3 mr-2 text-green-500 shrink-0" />
                             {feature}
@@ -140,8 +224,11 @@ const TradingBotsPage = () => {
                   </CardContent>
                   <CardFooter>
                     <Button
-                      onClick={() => { playSound('click'); setSelectedBot(bot); }}
-                      className={`w-full bg-gradient-to-r ${bot.bgColor.includes('blue') ? 'from-blue-500 to-cyan-500' : bot.bgColor.includes('red') ? 'from-red-500 to-pink-500' : 'from-green-500 to-teal-500'} hover:opacity-90`}
+                      onClick={() => {
+                        playSound?.('click');
+                        setSelectedBot(bot);
+                      }}
+                      className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90`}
                     >
                       Activar Bot
                     </Button>
@@ -152,52 +239,123 @@ const TradingBotsPage = () => {
           })}
         </div>
 
-        {selectedBot && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.3 }}
-            className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-            onClick={() => setSelectedBot(null)}
-          >
-            <Card className="crypto-card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-              <CardHeader>
-                <div className="flex items-center space-x-3 mb-2">
-                  <div className={`p-2 rounded-lg ${selectedBot.bgColor}`}>
-                    <selectedBot.icon className={`h-6 w-6 ${selectedBot.color}`} />
+        {/* Modal de activación */}
+        {selectedBot && (() => {
+          const ModalIcon = selectedBot.icon; // <- importante: componente dinámico válido
+          const gradient =
+            selectedBot.bgColor.includes('blue')
+              ? 'from-blue-500 to-cyan-500'
+              : selectedBot.bgColor.includes('red')
+              ? 'from-red-500 to-pink-500'
+              : 'from-green-500 to-teal-500';
+
+          return (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.3 }}
+              className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+              onClick={() => setSelectedBot(null)}
+            >
+              <Card className="crypto-card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+                <CardHeader>
+                  <div className="flex items-center space-x-3 mb-2">
+                    <div className={`p-2 rounded-lg ${selectedBot.bgColor}`}>
+                      <ModalIcon className={`h-6 w-6 ${selectedBot.color}`} />
+                    </div>
+                    <CardTitle className={`text-xl ${selectedBot.color}`}>{selectedBot.name}</CardTitle>
                   </div>
-                  <CardTitle className={`text-xl ${selectedBot.color}`}>{selectedBot.name}</CardTitle>
-                </div>
-                <CardDescription className="text-slate-300">{selectedBot.strategy}</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <p className="text-white">
-                  Rendimiento Mensual Estimado: <span className="font-bold">{selectedBot.monthlyReturn}</span>
-                </p>
-                <p className="text-white">
-                  Inversión Mínima: <span className="font-bold">${selectedBot.minInvestment}</span>
-                </p>
-                <div className="space-y-2">
-                  <Label className="text-white">Monto a Invertir (USD)</Label>
-                  <Input
-                    type="number"
-                    value={investmentAmount}
-                    onChange={(e) => setInvestmentAmount(e.target.value)}
-                    placeholder={`Mínimo $${selectedBot.minInvestment}, Disponible: $${(balances?.usdc ?? 0).toFixed(2)}`}
-                    className="bg-slate-800 border-slate-600 text-white"
-                  />
-                </div>
-                <Button
-                  onClick={handleActivateBot}
-                  className={`w-full bg-gradient-to-r ${selectedBot.bgColor.includes('blue') ? 'from-blue-500 to-cyan-500' : selectedBot.bgColor.includes('red') ? 'from-red-500 to-pink-500' : 'from-green-500 to-teal-500'} hover:opacity-90`}
-                >
-                  Activar {selectedBot.name}
-                </Button>
-                <Button variant="outline" onClick={() => setSelectedBot(null)} className="w-full">Cancelar</Button>
-              </CardContent>
-            </Card>
-          </motion.div>
-        )}
+                  <CardDescription className="text-slate-300">{selectedBot.strategy}</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-white">
+                    Rendimiento Mensual Estimado:{' '}
+                    <span className="font-bold">{selectedBot.monthlyReturn}</span>
+                  </p>
+                  <p className="text-white">
+                    Inversión Mínima:{' '}
+                    <span className="font-bold">${selectedBot.minInvestment}</span>
+                  </p>
+                  <div className="space-y-2">
+                    <Label className="text-white">Monto a Invertir (USD)</Label>
+                    <Input
+                      type="number"
+                      value={investmentAmount}
+                      onChange={(e) => setInvestmentAmount(e.target.value)}
+                      placeholder={`Mínimo $${selectedBot.minInvestment}${typeof balances?.usdc === 'number' ? `, Disponible: $${(balances.usdc).toFixed(2)}` : ''}`}
+                      className="bg-slate-800 border-slate-600 text-white"
+                    />
+                  </div>
+                  <Button
+                    onClick={handleActivateBot}
+                    className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90`}
+                  >
+                    Activar {selectedBot.name}
+                  </Button>
+                  <Button variant="outline" onClick={() => setSelectedBot(null)} className="w-full">
+                    Cancelar
+                  </Button>
+                </CardContent>
+              </Card>
+            </motion.div>
+          );
+        })()}
+
+        {/* Mis bots (activaciones del usuario) */}
+        <div className="space-y-4">
+          <h2 className="text-xl font-bold text-white">Mis Bots</h2>
+          {botActivations.length === 0 ? (
+            <div className="opacity-60">Sin activaciones.</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {botActivations.map((a) => (
+                <Card key={a.id} className="crypto-card">
+                  <CardHeader>
+                    <CardTitle className="text-white">{a.botName}</CardTitle>
+                    <CardDescription className="text-slate-300">
+                      {a.strategy} · ${a.amountUsd} · {a.status}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex gap-2">
+                    {a.status === 'active' && (
+                      <Button
+                        variant="outline"
+                        onClick={async () => {
+                          const r = await pauseBot(a.id);
+                          if (r?.ok) toast({ title: 'Bot pausado' });
+                          else toast({ title: 'No se pudo pausar', variant: 'destructive' });
+                        }}
+                      >
+                        Pausar
+                      </Button>
+                    )}
+                    {a.status === 'paused' && (
+                      <Button
+                        onClick={async () => {
+                          const r = await resumeBot(a.id);
+                          if (r?.ok) toast({ title: 'Bot reanudado' });
+                          else toast({ title: 'No se pudo reanudar', variant: 'destructive' });
+                        }}
+                      >
+                        Reanudar
+                      </Button>
+                    )}
+                    <Button
+                      variant="destructive"
+                      onClick={async () => {
+                        const r = await cancelBot(a.id);
+                        if (r?.ok) toast({ title: 'Bot cancelado' });
+                        else toast({ title: 'No se pudo cancelar', variant: 'destructive' });
+                      }}
+                    >
+                      Cancelar
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </>
   );
