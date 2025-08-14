@@ -22,6 +22,9 @@ export function DataProvider({ children }) {
   const [transactions, setTransactions] = useState([]); // []
   const [referrals, setReferrals] = useState([]);       // []
 
+  // ======= NUEVO: Bot activations =======
+  const [botActivations, setBotActivations] = useState([]);
+
   // ======= Precios (mock) =======
   const [cryptoPrices, setCryptoPrices] = useState({
     BTC: { price: 45000, change: 2.5, history: [] },
@@ -217,14 +220,103 @@ export function DataProvider({ children }) {
     setReferrals(ensureArray(data));
   }
 
+  // ======= NUEVO: Bots =======
+  async function refreshBotActivations() {
+    if (!user?.id) { setBotActivations([]); return; }
+    const { data, error } = await supabase
+      .from('bot_activations')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) { console.error('[refreshBotActivations] error:', error); setBotActivations([]); return; }
+
+    const mapped = ensureArray(data).map((b) => ({
+      id: b.id,
+      user_id: b.user_id,
+      userId: b.user_id,
+      botId: b.bot_id,
+      botName: b.bot_name,
+      strategy: b.strategy,
+      amountUsd: Number(b.amount_usd || 0),
+      status: b.status, // active | paused | cancelled
+      createdAt: b.created_at,
+    }));
+    setBotActivations(mapped);
+  }
+
+  async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    const { data, error } = await supabase.rpc('rent_trading_bot', {
+      p_user_id: user.id,
+      p_bot_id: botId,
+      p_bot_name: botName,
+      p_strategy: strategy,
+      p_amount_usd: Number(amountUsd),
+    });
+    if (error) { console.error('[activateBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
+    if (!data?.ok) return data; // puede devolver INSUFFICIENT_FUNDS
+    await Promise.all([refreshBotActivations(), refreshTransactions()]);
+    return data;
+  }
+
+  async function pauseBot(activationId) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    const { data, error } = await supabase.rpc('pause_trading_bot', {
+      p_activation_id: activationId,
+      p_user_id: user.id,
+    });
+    if (error) { console.error('[pauseBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
+    await refreshBotActivations();
+    return data;
+  }
+
+  async function resumeBot(activationId) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    const { data, error } = await supabase.rpc('resume_trading_bot', {
+      p_activation_id: activationId,
+      p_user_id: user.id,
+    });
+    if (error) { console.error('[resumeBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
+    await refreshBotActivations();
+    return data;
+  }
+
+  async function cancelBot(activationId) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    const { data, error } = await supabase.rpc('cancel_trading_bot', {
+      p_activation_id: activationId,
+      p_user_id: user.id,
+    });
+    if (error) { console.error('[cancelBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
+    await refreshBotActivations();
+    return data;
+  }
+
+  async function creditBotProfit(activationId, amountUsd, note = null) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    const { data, error } = await supabase.rpc('credit_bot_profit', {
+      p_activation_id: activationId,
+      p_user_id: user.id,
+      p_amount_usd: Number(amountUsd),
+      p_note: note,
+    });
+    if (error) { console.error('[creditBotProfit] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
+    await refreshTransactions(); // refleja el crédito en el historial
+    return data;
+  }
+
   // ======= Efecto: refetch al loguear/cambiar de user =======
   useEffect(() => {
     setInvestments([]);
     setTransactions([]);
     setReferrals([]);
+    setBotActivations([]);
+
     refreshInvestments();
     refreshTransactions();
     refreshReferrals();
+    refreshBotActivations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
@@ -339,6 +431,7 @@ export function DataProvider({ children }) {
       investments,
       transactions,
       referrals,
+      botActivations,
 
       // getters compatibles con tu UI actual (sincrónicos)
       getInvestments: () => investments,
@@ -352,6 +445,14 @@ export function DataProvider({ children }) {
       addInvestment,
       addTransaction,
 
+      // BOTS
+      refreshBotActivations,
+      activateBot,
+      pauseBot,
+      resumeBot,
+      cancelBot,
+      creditBotProfit,
+
       // otros datos de UI
       cryptoPrices,
       investmentPlans,
@@ -360,6 +461,7 @@ export function DataProvider({ children }) {
       investments,
       transactions,
       referrals,
+      botActivations,
       cryptoPrices,
       investmentPlans,
     ]
@@ -378,6 +480,7 @@ export function useData() {
       investments: [],
       transactions: [],
       referrals: [],
+      botActivations: [],
       getInvestments: () => [],
       getTransactions: () => [],
       getReferrals: () => [],
@@ -386,6 +489,12 @@ export function useData() {
       refreshReferrals: async () => {},
       addInvestment: async () => null,
       addTransaction: async () => null,
+      refreshBotActivations: async () => {},
+      activateBot: async () => ({ ok: false }),
+      pauseBot: async () => ({ ok: false }),
+      resumeBot: async () => ({ ok: false }),
+      cancelBot: async () => ({ ok: false }),
+      creditBotProfit: async () => ({ ok: false }),
       cryptoPrices: {},
       investmentPlans: [],
     };
