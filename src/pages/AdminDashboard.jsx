@@ -27,6 +27,10 @@ const fmt = (n, dec = 2) => {
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
 };
 
+// Muestra email > username > user_id
+const txUserLabel = (tx) =>
+  tx?.profiles?.email || tx?.profiles?.username || tx?.user_id;
+
 export default function AdminDashboard() {
   const { user: authUser, refreshBalances } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -83,7 +87,7 @@ export default function AdminDashboard() {
   const fetchPending = async () => {
     const { data: dep, error: dErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, currency, type, status, created_at')
+      .select('id, user_id, amount, currency, type, status, created_at, profiles:profiles(email,username)')
       .eq('type', 'deposit')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -91,7 +95,7 @@ export default function AdminDashboard() {
 
     const { data: wit, error: wErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, currency, type, status, created_at')
+      .select('id, user_id, amount, currency, type, status, created_at, profiles:profiles(email,username)')
       .eq('type', 'withdrawal')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -445,7 +449,7 @@ export default function AdminDashboard() {
             {pendingDeposits.map(tx => (
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
-                  <p className="text-white font-medium">Usuario: {tx.user_id}</p>
+                  <p className="text-white font-medium">Usuario: {txUserLabel(tx)}</p>
                   <p className="text-slate-400">
                     Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span>
                     {tx.currency ? ` · ${tx.currency}` : ''}
@@ -477,7 +481,7 @@ export default function AdminDashboard() {
             {pendingWithdrawals.map(tx => (
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
-                  <p className="text-white font-medium">Usuario: {tx.user_id}</p>
+                  <p className="text-white font-medium">Usuario: {txUserLabel(tx)}</p>
                   <p className="text-slate-400">
                     Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span>
                     {tx.currency ? ` · ${tx.currency}` : ''}
