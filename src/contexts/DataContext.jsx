@@ -162,44 +162,59 @@ export function DataProvider({ children }) {
   }
 
   async function refreshTransactions() {
-    if (!user?.id) {
-      setTransactions([]);
-      return;
-    }
-    const { data, error } = await supabase
-      .from('wallet_transactions')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('[refreshTransactions] error:', error);
-      setTransactions([]);
-      return;
-    }
-
-    const mapped = ensureArray(data).map((tx) => {
-      let type = tx.type;
-      if (type === 'plan_purchase') type = 'investment';
-      return {
-        // compat filtros
-        user_id: tx.user_id,
-        userId: tx.user_id,
-
-        id: tx.id,
-        type,
-        status: tx.status,
-        amount: Number(tx.amount || 0),
-        currency: tx.currency || 'USDT',
-        description: tx.description || '',
-        createdAt: tx.created_at,
-        referenceType: tx.reference_type,
-        referenceId: tx.reference_id,
-      };
-    });
-
-    setTransactions(mapped);
+  if (!user?.id) {
+    setTransactions([]);
+    return;
   }
+  const { data, error } = await supabase
+    .from('wallet_transactions')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('[refreshTransactions] error:', error);
+    setTransactions([]);
+    return;
+  }
+
+  const mapped = (Array.isArray(data) ? data : []).map((tx) => {
+    // tipo base que viene de la tabla
+    let base = (tx.type || '').toLowerCase();
+
+    // normalización por compat
+    if (base === 'plan_purchase') base = 'investment';
+
+    // mapeo “amigable” si viene de bots (usa reference_type)
+    const ref = (tx.reference_type || '').toLowerCase();
+    let displayType = base;
+
+    if (ref === 'bot_activation') displayType = 'bot_activation';
+    if (ref === 'bot_profit')     displayType = 'bot_profit';
+    if (ref === 'bot_refund')     displayType = 'bot_refund';
+    if (ref === 'bot_fee')        displayType = 'bot_fee';
+
+    return {
+      // compat filtros
+      user_id: tx.user_id,
+      userId: tx.user_id,
+
+      id: tx.id,
+      type: displayType,                   // <<< usar este en la UI
+      rawType: tx.type,                    // (por si lo necesitás)
+      status: tx.status,
+      amount: Number(tx.amount || 0),
+      currency: tx.currency || 'USDT',
+      description: tx.description || '',
+      createdAt: tx.created_at,
+      referenceType: tx.reference_type,    // bot_activation | bot_profit | ...
+      referenceId: tx.reference_id,
+    };
+  });
+
+  setTransactions(mapped);
+}
+
 
   async function refreshReferrals() {
     if (!user?.id) {
