@@ -21,6 +21,7 @@ export function DataProvider({ children }) {
   const [investments, setInvestments] = useState([]);   // []
   const [transactions, setTransactions] = useState([]); // []
   const [referrals, setReferrals] = useState([]);       // []
+  
 
   // ======= NUEVO: Bot activations =======
   const [botActivations, setBotActivations] = useState([]);

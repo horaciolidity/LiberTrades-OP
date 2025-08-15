@@ -1,3 +1,4 @@
+// src/pages/Dashboard.jsx
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -9,7 +10,8 @@ import {
   DollarSign,
   BarChart3,
   PieChart,
-  Activity
+  Activity,
+  Bot,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
@@ -22,43 +24,53 @@ const fmt = (n, dec = 2) => {
 
 export default function Dashboard() {
   const { user, displayName, balances, loading } = useAuth();
-  const { cryptoPrices = {}, getInvestments, getReferrals } = useData();
+  const {
+    cryptoPrices = {},
+    getInvestments,
+    getReferrals,
+    getTransactions,
+    botActivations = [],
+  } = useData();
+
   const [investments, setInvestments] = useState([]);
   const [referrals, setReferrals] = useState([]);
+  const [transactions, setTransactions] = useState([]);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    const fetchData = async () => {
-      if (!user?.id) return;
-      try {
-        const invs = await getInvestments?.();
-        const refs = await getReferrals?.(user.id);
-        setInvestments(invs?.filter(inv => inv?.userId === user.id) || []);
-        setReferrals(refs || []);
-      } catch (err) {
-        console.error('Error cargando datos del dashboard:', err);
-        setError('No se pudieron cargar los datos.');
-      }
-    };
-    fetchData();
-  }, [user?.id, getInvestments, getReferrals]);
+    if (!user?.id) return;
+    try {
+      const invs = getInvestments?.() || [];
+      const refs = getReferrals?.() || [];
+      const txs  = getTransactions?.() || [];
+
+      const uid = user.id;
+      setInvestments(invs.filter(inv => (inv?.user_id ?? inv?.userId) === uid));
+      setReferrals(refs);
+      setTransactions(txs.filter(t => (t?.user_id ?? t?.userId) === uid));
+    } catch (err) {
+      console.error('Error cargando datos del dashboard:', err);
+      setError('No se pudieron cargar los datos.');
+    }
+  }, [user?.id, getInvestments, getReferrals, getTransactions]);
 
   if (loading) return <div className="p-8 text-white">Cargando...</div>;
   if (error) return <div className="p-8 text-red-500">{error}</div>;
   if (!user) return <div className="p-8 text-white">Iniciá sesión para ver el dashboard.</div>;
 
-  const totalInvested = (investments || []).reduce(
-    (sum, inv) => sum + Number(inv?.amount || 0), 0
-  );
+  const totalInvested = investments.reduce((sum, inv) => sum + Number(inv?.amount || 0), 0);
 
-  const totalEarnings = (investments || []).reduce((sum, inv) => {
+  const totalEarnings = investments.reduce((sum, inv) => {
     const createdAtMs = inv?.createdAt ? new Date(inv.createdAt).getTime() : Date.now();
     const daysPassed = Math.floor((Date.now() - createdAtMs) / (1000 * 60 * 60 * 24));
     const dailyReturnPct = Number(inv?.dailyReturn || 0);
     const duration = Number(inv?.duration || 0);
     const amount = Number(inv?.amount || 0);
-    return sum + (amount * (dailyReturnPct / 100)) * Math.min(daysPassed, duration);
+    return sum + amount * (dailyReturnPct / 100) * Math.min(daysPassed, duration);
   }, 0);
+
+  const activeBots = (botActivations || []).filter(b => (b?.status || '').toLowerCase() === 'active');
+  const totalInBots = activeBots.reduce((s, b) => s + Number(b?.amountUsd || 0), 0);
 
   const stats = [
     {
@@ -89,7 +101,18 @@ export default function Dashboard() {
       color: 'text-orange-400',
       bgColor: 'bg-orange-500/10',
     },
+    {
+      title: 'Bots Activos',
+      value: `${activeBots.length} (${fmt(totalInBots, 2)} USD)`,
+      icon: Bot,
+      color: 'text-cyan-400',
+      bgColor: 'bg-cyan-500/10',
+    },
   ];
+
+  const recentTx = [...transactions]
+    .sort((a, b) => new Date(b?.createdAt ?? b?.created_at ?? 0) - new Date(a?.createdAt ?? a?.created_at ?? 0))
+    .slice(0, 5);
 
   return (
     <div className="space-y-8">
@@ -101,7 +124,7 @@ export default function Dashboard() {
       </motion.div>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         {stats.map((stat, index) => {
           const Icon = stat.icon;
           return (
@@ -116,7 +139,11 @@ export default function Dashboard() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-slate-400 text-sm font-medium">{stat.title}</p>
-                      <p className="text-2xl font-bold text-white mt-1">${stat.value}</p>
+                      <p className="text-2xl font-bold text-white mt-1">
+                        {stat.title === 'Saldo Total' ? '$' : ''}
+                        {stat.value}
+                        {stat.title === 'Saldo Total' ? '' : ''}
+                      </p>
                     </div>
                     <div className={`p-3 rounded-lg ${stat.bgColor}`}>
                       <Icon className={`h-6 w-6 ${stat.color}`} />
@@ -129,7 +156,7 @@ export default function Dashboard() {
         })}
       </div>
 
-      {/* Crypto Prices */}
+      {/* Crypto Prices + Inversiones */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8, delay: 0.4 }}>
           <Card className="crypto-card">
@@ -170,7 +197,6 @@ export default function Dashboard() {
           </Card>
         </motion.div>
 
-        {/* Inversiones */}
         <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8, delay: 0.6 }}>
           <Card className="crypto-card">
             <CardHeader>
@@ -214,8 +240,64 @@ export default function Dashboard() {
         </motion.div>
       </div>
 
-      {/* Acciones rápidas */}
+      {/* Actividad reciente (incluye bots) */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.8 }}>
+        <Card className="crypto-card">
+          <CardHeader>
+            <CardTitle className="text-white">Actividad Reciente</CardTitle>
+            <CardDescription className="text-slate-300">
+              Últimos movimientos de tu cuenta (depósitos, retiros, inversiones y bots)
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {recentTx.length > 0 ? (
+              <div className="space-y-3">
+                {recentTx.map((tx) => {
+                  const type = (tx?.type || '').toLowerCase();
+                  const date = new Date(tx?.createdAt ?? tx?.created_at ?? Date.now()).toLocaleString();
+                  const label =
+                    type === 'deposit' ? 'Depósito' :
+                    type === 'withdrawal' ? 'Retiro' :
+                    type === 'investment' ? 'Inversión' :
+                    type === 'bot_activation' ? 'Bot activado' :
+                    type === 'transfer' ? 'Transferencia' : (tx?.type || 'Movimiento');
+
+                  const sign =
+                    type === 'deposit' ? '+' :
+                    (type === 'withdrawal' || type === 'bot_activation') ? '-' : '';
+
+                  const color =
+                    type === 'deposit' ? 'text-green-400' :
+                    (type === 'withdrawal' || type === 'bot_activation') ? 'text-red-400' :
+                    'text-slate-300';
+
+                  return (
+                    <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
+                      <div>
+                        <div className="text-white font-medium">{label}</div>
+                        <div className="text-slate-400 text-xs">
+                          {tx?.description || (tx?.referenceType === 'bot_activation' ? 'Activación de bot' : '')}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className={`font-semibold ${color}`}>
+                          {sign}${fmt(tx?.amount, 2)}
+                        </div>
+                        <div className="text-slate-500 text-xs">{date}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-slate-400">No hay actividad reciente.</div>
+            )}
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* Acciones rápidas */}
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 1.0 }}>
         <Card className="crypto-card">
           <CardHeader>
             <CardTitle className="text-white">Acciones Rápidas</CardTitle>

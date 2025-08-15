@@ -1,79 +1,79 @@
+// src/pages/LandingPage.jsx
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { 
-  TrendingUp, 
-  Shield, 
-  Users, 
-  Wallet, 
+import {
+  TrendingUp,
+  Shield,
+  Users,
+  Wallet,
   ArrowRight,
   MessageSquare,
+  Bot as BotIcon,
+  DollarSign,
+  Activity,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { FaTelegramPlane, FaYoutube, FaTwitter, FaFacebookF, FaInstagram, FaDiscord } from 'react-icons/fa';
 
+const features = [
+  { icon: TrendingUp, title: 'Trading Simulado', description: 'Practica con nuestro simulador de trading en tiempo real', href: '/simulator' },
+  { icon: Shield, title: 'Seguridad Avanzada', description: 'Protección de última generación para tus inversiones', href: '/login' },
+  { icon: Users, title: 'Sistema de Referidos', description: 'Gana comisiones por cada usuario que refiera', href: '/referrals' },
+  { icon: Wallet, title: 'Múltiples Criptomonedas', description: 'Invierte en BTC, ETH, USDT y más', href: '/deposit' },
+];
+
+const plans = [
+  { name: 'Básico', price: '$100 - $999', return: '1.5% diario', duration: '30 días' },
+  { name: 'Estándar', price: '$1,000 - $4,999', return: '2.0% diario', duration: '30 días' },
+  { name: 'Premium', price: '$5,000 - $19,999', return: '2.5% diario', duration: '30 días' },
+  { name: 'VIP', price: '$20,000+', return: '3.0% diario', duration: '30 días' },
+];
+
+const tradingBots = [
+  {
+    id: 1,
+    name: 'Bot Conservador Alfa',
+    strategy: 'Bajo Riesgo, Ingresos Estables',
+    monthlyReturn: '~5-8%',
+    minInvestment: 250,
+    icon: DollarSign,
+    color: 'text-blue-400',
+    bgColor: 'bg-blue-500/10',
+  },
+  {
+    id: 2,
+    name: 'Bot Agresivo Beta',
+    strategy: 'Alto Riesgo, Alto Rendimiento',
+    monthlyReturn: '~15-25%',
+    minInvestment: 1000,
+    icon: Activity,
+    color: 'text-red-400',
+    bgColor: 'bg-red-500/10',
+  },
+  {
+    id: 3,
+    name: 'Bot Balanceado Gamma',
+    strategy: 'Riesgo Moderado, Crecimiento',
+    monthlyReturn: '~8-12%',
+    minInvestment: 500,
+    icon: TrendingUp,
+    color: 'text-green-400',
+    bgColor: 'bg-green-500/10',
+  },
+];
+
+const socialLinks = [
+  { icon: FaTelegramPlane, href: '#', name: 'Telegram' },
+  { icon: FaYoutube, href: '#', name: 'YouTube' },
+  { icon: FaTwitter, href: '#', name: 'Twitter/X' },
+  { icon: FaFacebookF, href: '#', name: 'Facebook' },
+  { icon: FaInstagram, href: '#', name: 'Instagram' },
+  { icon: FaDiscord, href: '#', name: 'Discord' },
+];
 
 const LandingPage = () => {
-  const features = [
-    {
-      icon: TrendingUp,
-      title: 'Trading Simulado',
-      description: 'Practica con nuestro simulador de trading en tiempo real'
-    },
-    {
-      icon: Shield,
-      title: 'Seguridad Avanzada',
-      description: 'Protección de última generación para tus inversiones'
-    },
-    {
-      icon: Users,
-      title: 'Sistema de Referidos',
-      description: 'Gana comisiones por cada usuario que refiera'
-    },
-    {
-      icon: Wallet,
-      title: 'Múltiples Criptomonedas',
-      description: 'Invierte en BTC, ETH, USDT y más'
-    }
-  ];
-
-  const plans = [
-    {
-      name: 'Básico',
-      price: '$100 - $999',
-      return: '1.5% diario',
-      duration: '30 días'
-    },
-    {
-      name: 'Estándar',
-      price: '$1,000 - $4,999',
-      return: '2.0% diario',
-      duration: '30 días'
-    },
-    {
-      name: 'Premium',
-      price: '$5,000 - $19,999',
-      return: '2.5% diario',
-      duration: '30 días'
-    },
-    {
-      name: 'VIP',
-      price: '$20,000+',
-      return: '3.0% diario',
-      duration: '30 días'
-    }
-  ];
-
-  const socialLinks = [
-    { icon: FaTelegramPlane, href: '#', name: 'Telegram' },
-    { icon: FaYoutube, href: '#', name: 'YouTube' },
-    { icon: FaTwitter, href: '#', name: 'Twitter/X' },
-    { icon: FaFacebookF, href: '#', name: 'Facebook' },
-    { icon: FaInstagram, href: '#', name: 'Instagram' },
-    { icon: FaDiscord, href: '#', name: 'Discord' },
-  ];
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
       <nav className="fixed top-0 w-full z-50 bg-slate-900/80 backdrop-blur-xl border-b border-slate-700">
@@ -115,8 +115,8 @@ const LandingPage = () => {
               </span>
             </h1>
             <p className="text-xl text-slate-300 mb-8 max-w-3xl mx-auto">
-              Plataforma profesional de inversión en criptomonedas con planes configurables, 
-              sistema de referidos multinivel y trading simulado en tiempo real.
+              Plataforma profesional de inversión en criptomonedas con planes configurables,
+              sistema de referidos multinivel, bots de trading y simulador en tiempo real.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Link to="/register">
@@ -125,9 +125,9 @@ const LandingPage = () => {
                   <ArrowRight className="ml-2 h-5 w-5" />
                 </Button>
               </Link>
-              <Link to="/login">
+              <Link to="/trading-bots">
                 <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
-                  Ver Demo
+                  Ver Bots de Trading
                 </Button>
               </Link>
             </div>
@@ -143,12 +143,8 @@ const LandingPage = () => {
             transition={{ duration: 0.8 }}
             className="text-center mb-16"
           >
-            <h2 className="text-4xl font-bold text-white mb-4">
-              Características Principales
-            </h2>
-            <p className="text-xl text-slate-300">
-              Todo lo que necesitas para invertir de manera inteligente
-            </p>
+            <h2 className="text-4xl font-bold text-white mb-4">Características Principales</h2>
+            <p className="text-xl text-slate-300">Todo lo que necesitas para invertir de manera inteligente</p>
           </motion.div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
@@ -156,7 +152,7 @@ const LandingPage = () => {
               const Icon = feature.icon;
               return (
                 <motion.div
-                  key={index}
+                  key={feature.title}
                   initial={{ opacity: 0, y: 20 }}
                   whileInView={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.8, delay: index * 0.1 }}
@@ -168,10 +164,13 @@ const LandingPage = () => {
                       </div>
                       <CardTitle className="text-white">{feature.title}</CardTitle>
                     </CardHeader>
-                    <CardContent>
-                      <CardDescription className="text-slate-300 text-center">
+                    <CardContent className="text-center">
+                      <CardDescription className="text-slate-300 mb-4">
                         {feature.description}
                       </CardDescription>
+                      <Link to={feature.href}>
+                        <Button variant="outline" className="hover:bg-slate-800">Explorar</Button>
+                      </Link>
                     </CardContent>
                   </Card>
                 </motion.div>
@@ -189,18 +188,63 @@ const LandingPage = () => {
             transition={{ duration: 0.8 }}
             className="text-center mb-16"
           >
-            <h2 className="text-4xl font-bold text-white mb-4">
-              Planes de Inversión
-            </h2>
-            <p className="text-xl text-slate-300">
-              Elige el plan que mejor se adapte a tu perfil de inversor
-            </p>
+            <h2 className="text-4xl font-bold text-white mb-4">Bots de Trading Automatizado</h2>
+            <p className="text-xl text-slate-300">Activa estrategias listas para usar</p>
+          </motion.div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {tradingBots.map((bot, idx) => {
+              const Icon = bot.icon;
+              return (
+                <motion.div
+                  key={bot.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.8, delay: idx * 0.1 }}
+                >
+                  <Card className={`crypto-card h-full border-l-4 ${bot.bgColor.replace('bg-', 'border-')}`}>
+                    <CardHeader>
+                      <div className="flex items-center space-x-3 mb-2">
+                        <div className={`p-2 rounded-lg ${bot.bgColor}`}>
+                          <Icon className={`h-6 w-6 ${bot.color}`} />
+                        </div>
+                        <CardTitle className={`text-xl ${bot.color}`}>{bot.name}</CardTitle>
+                      </div>
+                      <CardDescription className="text-slate-300">{bot.strategy}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <p className="text-slate-300">Retorno estimado: <span className="text-white font-semibold">{bot.monthlyReturn}</span></p>
+                      <p className="text-slate-300">Mínimo: <span className="text-white font-semibold">${bot.minInvestment}</span></p>
+                      <Link to="/trading-bots">
+                        <Button className="w-full mt-2 bg-gradient-to-r from-purple-500 to-blue-500 hover:opacity-90">
+                          <BotIcon className="h-4 w-4 mr-2" /> Ver catálogo
+                        </Button>
+                      </Link>
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      <section className="py-20 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8 }}
+            className="text-center mb-16"
+          >
+            <h2 className="text-4xl font-bold text-white mb-4">Planes de Inversión</h2>
+            <p className="text-xl text-slate-300">Elige el plan que mejor se adapte a tu perfil</p>
           </motion.div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
             {plans.map((plan, index) => (
               <motion.div
-                key={index}
+                key={plan.name}
                 initial={{ opacity: 0, y: 20 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: index * 0.1 }}
@@ -217,44 +261,15 @@ const LandingPage = () => {
                       <p className="text-lg font-semibold">{plan.price}</p>
                       <p>Duración: {plan.duration}</p>
                     </div>
-                    <Button className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600">
-                      Seleccionar Plan
-                    </Button>
+                    <Link to="/plans">
+                      <Button className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600">
+                        Seleccionar Plan
+                      </Button>
+                    </Link>
                   </CardContent>
                 </Card>
               </motion.div>
             ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="py-20 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              whileInView={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.8 }}
-            >
-              <div className="text-4xl font-bold text-green-400 mb-2">10,000+</div>
-              <div className="text-slate-300">Usuarios Activos</div>
-            </motion.div>
-            <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              whileInView={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.8, delay: 0.1 }}
-            >
-              <div className="text-4xl font-bold text-blue-400 mb-2">$50M+</div>
-              <div className="text-slate-300">Volumen Invertido</div>
-            </motion.div>
-            <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              whileInView={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.8, delay: 0.2 }}
-            >
-              <div className="text-4xl font-bold text-purple-400 mb-2">99.9%</div>
-              <div className="text-slate-300">Uptime</div>
-            </motion.div>
           </div>
         </div>
       </section>
@@ -290,9 +305,9 @@ const LandingPage = () => {
             </span>
           </div>
           <div className="flex justify-center space-x-6 mb-8">
-            {socialLinks.map((social, index) => (
+            {socialLinks.map((social) => (
               <a
-                key={index}
+                key={social.name}
                 href={social.href}
                 target="_blank"
                 rel="noopener noreferrer"

@@ -1,3 +1,4 @@
+// src/pages/DepositPage.jsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -27,10 +28,13 @@ export default function DepositPage() {
   const [fiatMethod, setFiatMethod] = useState('alias');
   const [amount, setAmount] = useState('');
 
+  // Dirección ERC-20 provista por ti (sirve para USDT y ETH en Ethereum)
+  const APP_MAIN_ETH_ADDRESS = '0xBAeaDE80A2A1064E4F8f372cd2ADA9a00daB4BBE';
+
   const cryptoAddresses = {
-    USDT: '0xUSDT_DEPOSIT_ADDRESS_EXAMPLE',
-    BTC: 'bc1qBTC_DEPOSIT_ADDRESS_EXAMPLE',
-    ETH: '0xETH_DEPOSIT_ADDRESS_EXAMPLE',
+    USDT: APP_MAIN_ETH_ADDRESS, // USDT (ERC-20)
+    ETH: APP_MAIN_ETH_ADDRESS,  // ETH (ERC-20)
+    BTC: 'bc1qBTC_DEPOSIT_ADDRESS_EXAMPLE', // cámbiala si tienes una real de BTC
   };
 
   const fiatAliases = {
@@ -41,35 +45,52 @@ export default function DepositPage() {
   };
 
   const handleCopy = (text) => {
-    playSound('click');
+    playSound?.('click');
     navigator.clipboard.writeText(text);
     toast({ title: 'Copiado', description: `${text} copiado al portapapeles.` });
   };
 
-  const handleDeposit = () => {
+  const handleDeposit = async () => {
     const depositAmount = Number(amount);
     if (!depositAmount || depositAmount <= 0) {
-      playSound('error');
+      playSound?.('error');
       toast({ title: 'Error', description: 'Ingresa un monto válido.', variant: 'destructive' });
       return;
     }
 
-    addTransaction?.({
-      userId: user?.id,
-      type: 'deposit',
+    const isCrypto = depositMethod === 'crypto';
+    const currency = isCrypto ? cryptoCurrency : null; // evita fallo de FK si no tienes 'USD' en public.currencies
+    const details = isCrypto
+      ? `Depósito ${cryptoCurrency} a ${cryptoAddresses[cryptoCurrency]}`
+      : `Depósito fiat vía ${fiatMethod}`;
+
+    await addTransaction?.({
       amount: depositAmount,
-      currency: depositMethod === 'crypto' ? cryptoCurrency : 'USD', // fiat: USD equivalente
-      description: `Depósito vía ${depositMethod === 'crypto' ? cryptoCurrency : fiatMethod}`,
+      type: 'deposit',
+      currency,
+      description: details,
+      referenceType: 'deposit_request',
+      referenceId: null,
       status: 'pending',
     });
 
-    playSound('success');
+    playSound?.('success');
     toast({
       title: 'Solicitud enviada',
-      description: `Tu depósito de ${fmt(depositAmount, 2)} quedó pendiente de confirmación.`,
+      description: `Tu depósito de ${fmt(depositAmount, 2)} quedó pendiente para aprobación del admin.`,
     });
     setAmount('');
   };
+
+  const renderNetworkHint = () => {
+    if (cryptoCurrency === 'USDT' || cryptoCurrency === 'ETH') {
+      return <p className="text-xs text-slate-400">Red: Ethereum (ERC-20)</p>;
+    }
+    if (cryptoCurrency === 'BTC') {
+      return <p className="text-xs text-slate-400">Red: Bitcoin</p>;
+    }
+    return null;
+    };
 
   return (
     <div className="space-y-8">
@@ -100,7 +121,6 @@ export default function DepositPage() {
               <TabsTrigger value="fiat" className="text-white">Dinero Fiat</TabsTrigger>
             </TabsList>
 
-            {/* Crypto */}
             <TabsContent value="crypto" className="mt-6">
               <Card className="bg-slate-800/50 border-slate-700">
                 <CardHeader>
@@ -132,10 +152,15 @@ export default function DepositPage() {
                         value={cryptoAddresses[cryptoCurrency]}
                         className="bg-slate-700 border-slate-600 text-slate-300"
                       />
-                      <Button variant="outline" size="icon" onClick={() => handleCopy(cryptoAddresses[cryptoCurrency])}>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => handleCopy(cryptoAddresses[cryptoCurrency])}
+                      >
                         <Copy className="h-4 w-4" />
                       </Button>
                     </div>
+                    {renderNetworkHint()}
                   </div>
 
                   <div className="flex justify-center">
@@ -143,11 +168,10 @@ export default function DepositPage() {
                       variant="ghost"
                       size="icon"
                       onClick={() => {
-                        playSound('click');
+                        playSound?.('click');
                         toast({
-                          title: 'Función no implementada',
-                          description: '🚧 Mostrar QR aún no está implementado.',
-                          variant: 'destructive',
+                          title: 'QR no disponible',
+                          description: 'Puedes copiar la dirección y pegarla en tu wallet.',
                         });
                       }}
                     >
@@ -158,15 +182,14 @@ export default function DepositPage() {
                   <div className="flex items-start space-x-2 p-3 bg-blue-900/30 rounded-lg border border-blue-700">
                     <Info className="h-5 w-5 text-blue-400 mt-1 shrink-0" />
                     <p className="text-sm text-blue-300">
-                      Asegúrate de enviar <span className="font-bold">{cryptoCurrency}</span> únicamente a esta dirección.
-                      Enviar otra criptomoneda puede resultar en pérdida del depósito. Las transacciones suelen confirmarse en minutos.
+                      Para USDT y ETH usa <span className="font-bold">Ethereum (ERC-20)</span>. Enviar a otra red puede
+                      resultar en pérdida del depósito. La confirmación puede tardar algunos minutos.
                     </p>
                   </div>
                 </CardContent>
               </Card>
             </TabsContent>
 
-            {/* Fiat */}
             <TabsContent value="fiat" className="mt-6">
               <Card className="bg-slate-800/50 border-slate-700">
                 <CardHeader>
@@ -194,7 +217,7 @@ export default function DepositPage() {
                       <Label className="text-white">Alias de Envío (Selecciona tu país)</Label>
                       <Select
                         onValueChange={(value) => {
-                          playSound('click');
+                          playSound?.('click');
                           handleCopy(fiatAliases[value]);
                           toast({ title: 'Alias Copiado', description: `Alias para ${value} copiado.` });
                         }}
@@ -214,8 +237,8 @@ export default function DepositPage() {
                       <div className="flex items-start space-x-2 p-3 bg-yellow-900/30 rounded-lg border border-yellow-700">
                         <Info className="h-5 w-5 text-yellow-400 mt-1 shrink-0" />
                         <p className="text-sm text-yellow-300">
-                          Realiza la transferencia al alias correspondiente. Luego informa el depósito en
-                          “Notificar Pago” (próximamente). La acreditación puede demorar hasta 24hs.
+                          Realiza la transferencia al alias correspondiente. Luego notifica el depósito.
+                          La acreditación puede demorar hasta 24hs tras la verificación del admin.
                         </p>
                       </div>
                     </div>
@@ -251,7 +274,7 @@ export default function DepositPage() {
             Notificar Depósito
           </Button>
           <p className="text-xs text-center text-slate-400">
-            Al hacer clic en "Notificar Depósito", tu transacción quedará pendiente de confirmación por nuestro equipo.
+            Tu transacción quedará <b>pendiente</b> hasta que un administrador la verifique y apruebe.
           </p>
         </CardContent>
       </Card>
