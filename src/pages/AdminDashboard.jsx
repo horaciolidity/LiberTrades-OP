@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 
 const TX_TABLE = 'wallet_transactions';
+const DEFAULT_CCY = 'USDC'; // Estándar del sitio
 
 const fmt = (n, dec = 2) => {
   const num = Number(n);
@@ -27,11 +28,11 @@ const fmt = (n, dec = 2) => {
 };
 
 export default function AdminDashboard() {
-  const { user: authUser, refreshBalances } = useAuth(); // 👈 para reflejar saldo al instante
+  const { user: authUser, refreshBalances } = useAuth();
   const [loading, setLoading] = useState(true);
 
   // data
-  const [users, setUsers] = useState([]); // {id, username, role, balance, demo_balance, created_at}
+  const [users, setUsers] = useState([]); // {id, username, role, email, balance, demo_balance, created_at}
   const [pendingDeposits, setPendingDeposits] = useState([]);
   const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
 
@@ -48,25 +49,33 @@ export default function AdminDashboard() {
     activeUsers30d: 0,
   });
 
+  // ------- helpers -------
+  const ensureBalanceRow = async (userId) => {
+    const { error } = await supabase
+      .from('balances')
+      .upsert({ user_id: userId }, { onConflict: 'user_id', ignoreDuplicates: true });
+    if (error) throw error;
+  };
+
   // ------- fetchers -------
   const fetchUsers = async () => {
     const { data: profs, error: pErr } = await supabase
       .from('profiles')
-      .select('id, username, role, created_at')
+      .select('id, username, role, email, created_at')
       .order('created_at', { ascending: false });
     if (pErr) throw pErr;
 
     const { data: bals, error: bErr } = await supabase
       .from('balances')
-      .select('user_id, usdc, demo_balance');
+      .select('user_id, usdc, demo_balance, eth');
     if (bErr) throw bErr;
 
     const balMap = Object.fromEntries((bals || []).map(b => [b.user_id, b]));
     const merged = (profs || []).map(p => ({
       ...p,
-      email: '', // no existe columna email en profiles
       balance: Number(balMap[p.id]?.usdc ?? 0),
       demo_balance: Number(balMap[p.id]?.demo_balance ?? 0),
+      eth_balance: Number(balMap[p.id]?.eth ?? 0),
     }));
     setUsers(merged);
   };
@@ -74,7 +83,7 @@ export default function AdminDashboard() {
   const fetchPending = async () => {
     const { data: dep, error: dErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, type, status, created_at')
+      .select('id, user_id, amount, currency, type, status, created_at')
       .eq('type', 'deposit')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -82,7 +91,7 @@ export default function AdminDashboard() {
 
     const { data: wit, error: wErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, type, status, created_at')
+      .select('id, user_id, amount, currency, type, status, created_at')
       .eq('type', 'withdrawal')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -145,6 +154,9 @@ export default function AdminDashboard() {
       return;
     }
     try {
+      await ensureBalanceRow(userId);
+
+      // Leer saldo actual (USDC por defecto)
       const { data: row, error: gErr } = await supabase
         .from('balances')
         .select('usdc')
@@ -152,23 +164,36 @@ export default function AdminDashboard() {
         .single();
       if (gErr) throw gErr;
 
-      const newUsdc = Number(row?.usdc || 0) + delta;
+      const current = Number(row?.usdc || 0);
+      const next = current + delta;
+      if (next < 0) {
+        toast({ title: 'Saldo insuficiente', description: 'El ajuste dejaría el saldo negativo.', variant: 'destructive' });
+        return;
+      }
+
+      // Actualizar balance
       const { error: uErr } = await supabase
         .from('balances')
-        .update({ usdc: newUsdc })
+        .update({ usdc: next, updated_at: new Date().toISOString() })
         .eq('user_id', userId);
       if (uErr) throw uErr;
 
-      await supabase.from(TX_TABLE).insert({
+      // Registrar transacción (tipos válidos)
+      const isCredit = delta >= 0;
+      const txType = isCredit ? 'admin_credit' : 'transfer';
+      const { error: tErr } = await supabase.from(TX_TABLE).insert({
         user_id: userId,
-        type: delta >= 0 ? 'admin_credit' : 'admin_debit',
+        type: txType,
         amount: Math.abs(delta),
         status: 'completed',
+        currency: DEFAULT_CCY,
+        description: isCredit ? 'Admin credit adjustment' : 'Admin debit adjustment',
+        reference_type: 'admin_adjustment'
       });
+      if (tErr) throw tErr;
 
-      toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(newUsdc)}` });
-
-      await maybeRefreshSelf(userId); // 👈 refresco inmediato si tocaste tu propio saldo
+      toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(next)}` });
+      await maybeRefreshSelf(userId);
       await reloadAll();
       setAdjustValues(v => ({ ...v, [userId]: '' }));
     } catch (e) {
@@ -179,29 +204,42 @@ export default function AdminDashboard() {
 
   const approveDeposit = async (tx) => {
     try {
+      await ensureBalanceRow(tx.user_id);
+
+      // Marcar tx como completed SOLO si estaba pending
+      const { data: updated, error: tErr } = await supabase
+        .from(TX_TABLE)
+        .update({ status: 'completed', updated_at: new Date().toISOString() })
+        .eq('id', tx.id)
+        .eq('status', 'pending')
+        .select('id, user_id, amount, currency')
+        .single();
+      if (tErr) throw tErr;
+
+      const amt = Number(updated.amount || 0);
+      const ccy = String(updated.currency || DEFAULT_CCY).toUpperCase();
+      const col = ccy === 'ETH' ? 'eth' : 'usdc';
+
+      // Leer saldo actual
       const { data: balRow, error: gErr } = await supabase
         .from('balances')
-        .select('usdc')
-        .eq('user_id', tx.user_id)
+        .select('usdc, eth')
+        .eq('user_id', updated.user_id)
         .single();
       if (gErr) throw gErr;
 
-      const newUsdc = Number(balRow?.usdc || 0) + Number(tx.amount || 0);
-      const { error: bErr } = await supabase
+      const current = Number(balRow?.[col] || 0);
+      const updateObj = { updated_at: new Date().toISOString() };
+      updateObj[col] = current + amt;
+
+      const { error: uErr } = await supabase
         .from('balances')
-        .update({ usdc: newUsdc })
-        .eq('user_id', tx.user_id);
-      if (bErr) throw bErr;
+        .update(updateObj)
+        .eq('user_id', updated.user_id);
+      if (uErr) throw uErr;
 
-      const { error: tErr } = await supabase
-        .from(TX_TABLE)
-        .update({ status: 'completed' })
-        .eq('id', tx.id);
-      if (tErr) throw tErr;
-
-      toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
-
-      await maybeRefreshSelf(tx.user_id); // 👈 si es tuyo, actualiza saldo del contexto
+      toast({ title: 'Depósito aprobado', description: `Acreditado ${ccy} ${fmt(amt)}` });
+      await maybeRefreshSelf(updated.user_id);
       await reloadAll();
     } catch (e) {
       console.error(e);
@@ -211,35 +249,47 @@ export default function AdminDashboard() {
 
   const approveWithdrawal = async (tx) => {
     try {
+      await ensureBalanceRow(tx.user_id);
+
+      const ccy = String(tx.currency || DEFAULT_CCY).toUpperCase();
+      const col = ccy === 'ETH' ? 'eth' : 'usdc';
+      const amt = Number(tx.amount || 0);
+
+      // Leer saldo actual
       const { data: balRow, error: gErr } = await supabase
         .from('balances')
-        .select('usdc')
+        .select('usdc, eth')
         .eq('user_id', tx.user_id)
         .single();
       if (gErr) throw gErr;
 
-      const current = Number(balRow?.usdc || 0);
-      const amt = Number(tx.amount || 0);
+      const current = Number(balRow?.[col] || 0);
       if (current < amt) {
-        toast({ title: 'Saldo insuficiente', description: 'No alcanza para aprobar', variant: 'destructive' });
+        toast({ title: 'Saldo insuficiente', description: `No alcanza para aprobar ${ccy} ${fmt(amt)}.`, variant: 'destructive' });
         return;
       }
 
+      // Debitar saldo
+      const updateObj = { updated_at: new Date().toISOString() };
+      updateObj[col] = current - amt;
+
       const { error: bErr } = await supabase
         .from('balances')
-        .update({ usdc: current - amt })
+        .update(updateObj)
         .eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
+      // Marcar withdrawal como completado (solo si estaba pending)
       const { error: tErr } = await supabase
         .from(TX_TABLE)
-        .update({ status: 'completed' })
-        .eq('id', tx.id);
+        .update({ status: 'completed', updated_at: new Date().toISOString() })
+        .eq('id', tx.id)
+        .eq('type', 'withdrawal')
+        .eq('status', 'pending');
       if (tErr) throw tErr;
 
-      toast({ title: 'Retiro aprobado', description: `Debitado $${fmt(tx.amount)}` });
-
-      await maybeRefreshSelf(tx.user_id); // 👈 idem
+      toast({ title: 'Retiro aprobado', description: `Debitado ${ccy} ${fmt(amt)}` });
+      await maybeRefreshSelf(tx.user_id);
       await reloadAll();
     } catch (e) {
       console.error(e);
@@ -249,12 +299,20 @@ export default function AdminDashboard() {
 
   const rejectTx = async (tx) => {
     try {
+      // Estados válidos por CHECK: pending/completed/failed/reversed/cancelled/other
+      const status =
+        tx.type === 'deposit' ? 'failed' :
+        tx.type === 'withdrawal' ? 'cancelled' :
+        'other';
+
       const { error } = await supabase
         .from(TX_TABLE)
-        .update({ status: 'rejected' })
-        .eq('id', tx.id);
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq('id', tx.id)
+        .eq('status', 'pending');
       if (error) throw error;
-      toast({ title: 'Solicitud rechazada' });
+
+      toast({ title: 'Solicitud actualizada', description: `Marcado como ${status}.` });
       await reloadAll();
     } catch (e) {
       console.error(e);
@@ -333,7 +391,7 @@ export default function AdminDashboard() {
                   <th className="text-left py-2">Usuario</th>
                   <th className="text-left py-2">Email</th>
                   <th className="text-left py-2">Rol</th>
-                  <th className="text-right py-2">Saldo</th>
+                  <th className="text-right py-2">Saldo (USDC)</th>
                   <th className="text-right py-2">Ajustar</th>
                 </tr>
               </thead>
@@ -388,7 +446,10 @@ export default function AdminDashboard() {
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
                   <p className="text-white font-medium">Usuario: {tx.user_id}</p>
-                  <p className="text-slate-400">Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span></p>
+                  <p className="text-slate-400">
+                    Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span>
+                    {tx.currency ? ` · ${tx.currency}` : ''}
+                  </p>
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" onClick={() => approveDeposit(tx)} className="bg-green-600 hover:bg-green-700">
@@ -417,7 +478,10 @@ export default function AdminDashboard() {
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
                   <p className="text-white font-medium">Usuario: {tx.user_id}</p>
-                  <p className="text-slate-400">Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span></p>
+                  <p className="text-slate-400">
+                    Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span>
+                    {tx.currency ? ` · ${tx.currency}` : ''}
+                  </p>
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" onClick={() => approveWithdrawal(tx)} className="bg-blue-600 hover:bg-blue-700">

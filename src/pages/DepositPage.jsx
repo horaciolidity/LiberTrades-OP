@@ -12,6 +12,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
 import { toast } from '@/components/ui/use-toast';
 import { useSound } from '@/contexts/SoundContext';
+import { supabase } from '@/lib/supabaseClient';
 
 const fmt = (n, dec = 2) => {
   const num = Number(n);
@@ -20,21 +21,22 @@ const fmt = (n, dec = 2) => {
 
 export default function DepositPage() {
   const { user, balances } = useAuth();
-  const { addTransaction } = useData();
+  const { addTransaction, refreshTransactions } = useData();
   const { playSound } = useSound();
 
   const [depositMethod, setDepositMethod] = useState('crypto');
   const [cryptoCurrency, setCryptoCurrency] = useState('USDT');
   const [fiatMethod, setFiatMethod] = useState('alias');
   const [amount, setAmount] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  // Dirección ERC-20 provista por ti (sirve para USDT y ETH en Ethereum)
+  // Dirección ERC-20 provista por ti (USDT/ETH en Ethereum)
   const APP_MAIN_ETH_ADDRESS = '0xBAeaDE80A2A1064E4F8f372cd2ADA9a00daB4BBE';
 
   const cryptoAddresses = {
     USDT: APP_MAIN_ETH_ADDRESS, // USDT (ERC-20)
     ETH: APP_MAIN_ETH_ADDRESS,  // ETH (ERC-20)
-    BTC: 'bc1qBTC_DEPOSIT_ADDRESS_EXAMPLE', // cámbiala si tienes una real de BTC
+    BTC: 'bc1qBTC_DEPOSIT_ADDRESS_EXAMPLE', // reemplazar por real si usas BTC
   };
 
   const fiatAliases = {
@@ -45,13 +47,32 @@ export default function DepositPage() {
   };
 
   const handleCopy = (text) => {
-    playSound?.('click');
-    navigator.clipboard.writeText(text);
-    toast({ title: 'Copiado', description: `${text} copiado al portapapeles.` });
+    try {
+      playSound?.('click');
+      navigator.clipboard.writeText(text);
+      toast({ title: 'Copiado', description: `${text} copiado al portapapeles.` });
+    } catch {
+      toast({ title: 'No se pudo copiar', description: 'Cópialo manualmente.', variant: 'destructive' });
+    }
+  };
+
+  const ensureCurrency = async (code) => {
+    if (!code) return;
+    // idempotente: crea si no existe; si existe no hace nada
+    const { error } = await supabase.from('currencies').upsert({ code }, { onConflict: 'code' });
+    if (error) {
+      console.warn('[DepositPage] ensureCurrency error:', error.message);
+      // no bloqueamos el flujo por un warning de upsert; el FK validará igual
+    }
   };
 
   const handleDeposit = async () => {
     const depositAmount = Number(amount);
+    if (!user?.id) {
+      playSound?.('error');
+      toast({ title: 'Inicia sesión', description: 'Necesitas estar autenticado para depositar.', variant: 'destructive' });
+      return;
+    }
     if (!depositAmount || depositAmount <= 0) {
       playSound?.('error');
       toast({ title: 'Error', description: 'Ingresa un monto válido.', variant: 'destructive' });
@@ -59,27 +80,46 @@ export default function DepositPage() {
     }
 
     const isCrypto = depositMethod === 'crypto';
-    const currency = isCrypto ? cryptoCurrency : null; // evita fallo de FK si no tienes 'USD' en public.currencies
+    // Política: para FIAT registramos como USDT (consistente con acreditación a balances.usdc)
+    const currency = isCrypto ? String(cryptoCurrency || '').toUpperCase() : 'USDT';
+
     const details = isCrypto
-      ? `Depósito ${cryptoCurrency} a ${cryptoAddresses[cryptoCurrency]}`
+      ? `Depósito ${currency} a ${cryptoAddresses[currency] ?? 'N/A'}`
       : `Depósito fiat vía ${fiatMethod}`;
 
-    await addTransaction?.({
-      amount: depositAmount,
-      type: 'deposit',
-      currency,
-      description: details,
-      referenceType: 'deposit_request',
-      referenceId: null,
-      status: 'pending',
-    });
+    try {
+      setSubmitting(true);
 
-    playSound?.('success');
-    toast({
-      title: 'Solicitud enviada',
-      description: `Tu depósito de ${fmt(depositAmount, 2)} quedó pendiente para aprobación del admin.`,
-    });
-    setAmount('');
+      // Evita choque de FK: asegura existencia del código de moneda
+      await ensureCurrency(currency);
+
+      await addTransaction?.({
+        amount: depositAmount,
+        type: 'deposit',
+        currency, // FK -> public.currencies(code)
+        description: details,
+        referenceType: 'deposit_request',
+        referenceId: null,
+        status: 'pending',
+      });
+
+      // Refresca listado para que aparezca la transacción pendiente en la UI
+      await refreshTransactions?.();
+
+      playSound?.('success');
+      toast({
+        title: 'Solicitud enviada',
+        description: `Tu depósito de ${fmt(depositAmount, 2)} quedó pendiente para aprobación del admin.`,
+      });
+      setAmount('');
+    } catch (e) {
+      console.error('[DepositPage] handleDeposit error:', e);
+      playSound?.('error');
+      const msg = e?.message || 'No se pudo registrar el depósito.';
+      toast({ title: 'Error al notificar', description: msg, variant: 'destructive' });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const renderNetworkHint = () => {
@@ -90,7 +130,7 @@ export default function DepositPage() {
       return <p className="text-xs text-slate-400">Red: Bitcoin</p>;
     }
     return null;
-    };
+  };
 
   return (
     <div className="space-y-8">
@@ -260,6 +300,8 @@ export default function DepositPage() {
             <Input
               id="amount"
               type="number"
+              min="0"
+              step="0.01"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="Ej: 100"
@@ -269,9 +311,10 @@ export default function DepositPage() {
 
           <Button
             onClick={handleDeposit}
-            className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600"
+            disabled={submitting}
+            className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 disabled:opacity-60"
           >
-            Notificar Depósito
+            {submitting ? 'Enviando…' : 'Notificar Depósito'}
           </Button>
           <p className="text-xs text-center text-slate-400">
             Tu transacción quedará <b>pendiente</b> hasta que un administrador la verifique y apruebe.
