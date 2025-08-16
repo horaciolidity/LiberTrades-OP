@@ -27,10 +27,6 @@ const fmt = (n, dec = 2) => {
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
 };
 
-// Muestra email > username > user_id
-const txUserLabel = (tx) =>
-  tx?.profiles?.email || tx?.profiles?.username || tx?.user_id;
-
 export default function AdminDashboard() {
   const { user: authUser, refreshBalances } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -87,7 +83,9 @@ export default function AdminDashboard() {
   const fetchPending = async () => {
     const { data: dep, error: dErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, currency, type, status, created_at, profiles:profiles(email,username)')
+      .select(
+        'id, user_id, amount, currency, type, status, created_at, profiles:profiles!wallet_transactions_user_id_fkey(email,username)'
+      )
       .eq('type', 'deposit')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -95,7 +93,9 @@ export default function AdminDashboard() {
 
     const { data: wit, error: wErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, currency, type, status, created_at, profiles:profiles(email,username)')
+      .select(
+        'id, user_id, amount, currency, type, status, created_at, profiles:profiles!wallet_transactions_user_id_fkey(email,username)'
+      )
       .eq('type', 'withdrawal')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -143,6 +143,20 @@ export default function AdminDashboard() {
   useEffect(() => {
     fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {});
   }, [users, pendingDeposits, pendingWithdrawals]);
+
+  // Mapa para fallback: id -> { email, username }
+  const usersById = useMemo(
+    () => Object.fromEntries(users.map(u => [u.id, { email: u.email, username: u.username }])),
+    [users]
+  );
+
+  // Label: embed -> mapa -> UUID
+  const userLabelFromTx = (tx) =>
+    tx?.profiles?.email
+    || usersById[tx.user_id]?.email
+    || tx?.profiles?.username
+    || usersById[tx.user_id]?.username
+    || tx.user_id;
 
   // ------- acciones admin -------
   const maybeRefreshSelf = async (affectedUserId) => {
@@ -449,7 +463,7 @@ export default function AdminDashboard() {
             {pendingDeposits.map(tx => (
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
-                  <p className="text-white font-medium">Usuario: {txUserLabel(tx)}</p>
+                  <p className="text-white font-medium">Usuario: {userLabelFromTx(tx)}</p>
                   <p className="text-slate-400">
                     Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span>
                     {tx.currency ? ` · ${tx.currency}` : ''}
@@ -460,7 +474,7 @@ export default function AdminDashboard() {
                     <Check className="h-4 w-4 mr-1" /> Aprobar
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => rejectTx(tx)}>
-                    <XIcon className="h-4 w-4 mr-1" /> Rechazar
+                    <X className="h-4 w-4 mr-1" /> Rechazar
                   </Button>
                 </div>
               </div>
@@ -481,7 +495,7 @@ export default function AdminDashboard() {
             {pendingWithdrawals.map(tx => (
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
-                  <p className="text-white font-medium">Usuario: {txUserLabel(tx)}</p>
+                  <p className="text-white font-medium">Usuario: {userLabelFromTx(tx)}</p>
                   <p className="text-slate-400">
                     Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span>
                     {tx.currency ? ` · ${tx.currency}` : ''}
@@ -492,7 +506,7 @@ export default function AdminDashboard() {
                     <Check className="h-4 w-4 mr-1" /> Aprobar
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => rejectTx(tx)}>
-                    <XIcon className="h-4 w-4 mr-1" /> Rechazar
+                    <X className="h-4 w-4 mr-1" /> Rechazar
                   </Button>
                 </div>
               </div>
