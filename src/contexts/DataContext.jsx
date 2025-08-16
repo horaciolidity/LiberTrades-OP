@@ -1,3 +1,4 @@
+// src/contexts/DataContext.jsx
 import React, {
   createContext,
   useContext,
@@ -21,9 +22,8 @@ export function DataProvider({ children }) {
   const [investments, setInvestments] = useState([]);   // []
   const [transactions, setTransactions] = useState([]); // []
   const [referrals, setReferrals] = useState([]);       // []
-  
 
-  // ======= NUEVO: Bot activations =======
+  // ======= Bot activations =======
   const [botActivations, setBotActivations] = useState([]);
 
   // ======= Precios (mock) =======
@@ -60,9 +60,7 @@ export function DataProvider({ children }) {
         Object.keys(up).forEach((k) => {
           const ch = (Math.random() - 0.5) * 2;
           const np = Math.max(0.01, up[k].price * (1 + ch / 100));
-          const nh = [...up[k].history, { time: Date.now(), value: np }].slice(
-            -100
-          );
+          const nh = [...up[k].history, { time: Date.now(), value: np }].slice(-100);
           up[k] = { price: np, change: ch, history: nh };
         });
         return up;
@@ -75,42 +73,10 @@ export function DataProvider({ children }) {
 
   const investmentPlans = useMemo(
     () => [
-      {
-        id: 1,
-        name: 'Plan Básico',
-        minAmount: 100,
-        maxAmount: 999,
-        dailyReturn: 1.5,
-        duration: 30,
-        description: 'Perfecto para principiantes',
-      },
-      {
-        id: 2,
-        name: 'Plan Estándar',
-        minAmount: 1000,
-        maxAmount: 4999,
-        dailyReturn: 2.0,
-        duration: 30,
-        description: 'Para inversores intermedios',
-      },
-      {
-        id: 3,
-        name: 'Plan Premium',
-        minAmount: 5000,
-        maxAmount: 19999,
-        dailyReturn: 2.5,
-        duration: 30,
-        description: 'Para inversores avanzados',
-      },
-      {
-        id: 4,
-        name: 'Plan VIP',
-        minAmount: 20000,
-        maxAmount: 100000,
-        dailyReturn: 3.0,
-        duration: 30,
-        description: 'Para grandes inversores',
-      },
+      { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
+      { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
+      { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para inversores avanzados' },
+      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
     ],
     []
   );
@@ -163,59 +129,56 @@ export function DataProvider({ children }) {
   }
 
   async function refreshTransactions() {
-  if (!user?.id) {
-    setTransactions([]);
-    return;
+    if (!user?.id) {
+      setTransactions([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('wallet_transactions')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[refreshTransactions] error:', error);
+      setTransactions([]);
+      return;
+    }
+
+    const mapped = (Array.isArray(data) ? data : []).map((tx) => {
+      let base = (tx.type || '').toLowerCase();
+
+      // normalización por compat
+      if (base === 'plan_purchase') base = 'investment';
+
+      // mapeo por reference_type
+      const ref = (tx.reference_type || '').toLowerCase();
+      let displayType = base;
+      if (ref === 'bot_activation') displayType = 'bot_activation';
+      if (ref === 'bot_profit')     displayType = 'bot_profit';
+      if (ref === 'bot_refund')     displayType = 'bot_refund';
+      if (ref === 'bot_fee')        displayType = 'bot_fee';
+
+      return {
+        // compat filtros
+        user_id: tx.user_id,
+        userId: tx.user_id,
+
+        id: tx.id,
+        type: displayType,                   // usar en UI
+        rawType: tx.type,                    // original
+        status: tx.status,
+        amount: Number(tx.amount || 0),
+        currency: tx.currency || 'USDT',
+        description: tx.description || '',
+        createdAt: tx.created_at,
+        referenceType: tx.reference_type,
+        referenceId: tx.reference_id,
+      };
+    });
+
+    setTransactions(mapped);
   }
-  const { data, error } = await supabase
-    .from('wallet_transactions')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.error('[refreshTransactions] error:', error);
-    setTransactions([]);
-    return;
-  }
-
-  const mapped = (Array.isArray(data) ? data : []).map((tx) => {
-    // tipo base que viene de la tabla
-    let base = (tx.type || '').toLowerCase();
-
-    // normalización por compat
-    if (base === 'plan_purchase') base = 'investment';
-
-    // mapeo “amigable” si viene de bots (usa reference_type)
-    const ref = (tx.reference_type || '').toLowerCase();
-    let displayType = base;
-
-    if (ref === 'bot_activation') displayType = 'bot_activation';
-    if (ref === 'bot_profit')     displayType = 'bot_profit';
-    if (ref === 'bot_refund')     displayType = 'bot_refund';
-    if (ref === 'bot_fee')        displayType = 'bot_fee';
-
-    return {
-      // compat filtros
-      user_id: tx.user_id,
-      userId: tx.user_id,
-
-      id: tx.id,
-      type: displayType,                   // <<< usar este en la UI
-      rawType: tx.type,                    // (por si lo necesitás)
-      status: tx.status,
-      amount: Number(tx.amount || 0),
-      currency: tx.currency || 'USDT',
-      description: tx.description || '',
-      createdAt: tx.created_at,
-      referenceType: tx.reference_type,    // bot_activation | bot_profit | ...
-      referenceId: tx.reference_id,
-    };
-  });
-
-  setTransactions(mapped);
-}
-
 
   async function refreshReferrals() {
     if (!user?.id) {
@@ -236,7 +199,7 @@ export function DataProvider({ children }) {
     setReferrals(ensureArray(data));
   }
 
-  // ======= NUEVO: Bots =======
+  // ======= Bots =======
   async function refreshBotActivations() {
     if (!user?.id) { setBotActivations([]); return; }
     const { data, error } = await supabase
@@ -336,6 +299,12 @@ export function DataProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
+  // ======= Utilidad moneda para FK =======
+  async function ensureCurrency(code) {
+    if (!code) return;
+    await supabase.from('currencies').upsert({ code: String(code).toUpperCase() }, { onConflict: 'code' });
+  }
+
   // ======= Mutaciones (insert) =======
   async function addInvestment({
     planName,
@@ -396,6 +365,8 @@ export function DataProvider({ children }) {
   }) {
     if (!user?.id) return null;
 
+    await ensureCurrency(currency);
+
     const payload = {
       user_id: user.id,
       amount: Number(amount),
@@ -440,6 +411,19 @@ export function DataProvider({ children }) {
     };
   }
 
+  // Nueva helper: solicitud de retiro pendiente
+  async function requestWithdrawal({ amount, currency = 'USDT', description = '' }) {
+    return addTransaction({
+      amount,
+      type: 'withdrawal',
+      currency,
+      description,
+      status: 'pending',
+      referenceType: 'withdrawal_request',
+      referenceId: null,
+    });
+  }
+
   // ======= API pública (compat sincrónica + métodos de refresh) =======
   const value = useMemo(
     () => ({
@@ -460,6 +444,7 @@ export function DataProvider({ children }) {
       refreshReferrals,
       addInvestment,
       addTransaction,
+      requestWithdrawal,
 
       // BOTS
       refreshBotActivations,
@@ -505,6 +490,7 @@ export function useData() {
       refreshReferrals: async () => {},
       addInvestment: async () => null,
       addTransaction: async () => null,
+      requestWithdrawal: async () => null,
       refreshBotActivations: async () => {},
       activateBot: async () => ({ ok: false }),
       pauseBot: async () => ({ ok: false }),

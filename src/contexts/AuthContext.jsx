@@ -50,7 +50,7 @@ export function AuthProvider({ children }) {
     // 2) Si NO existe, crear con 0s (RLS debe permitirlo)
     const { data: inserted, error: insErr } = await supabase
       .from('balances')
-      .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 })
+      .insert({ user_id: userId, usdc: 0, eth: 0 })
       .select()
       .single();
 
@@ -227,7 +227,7 @@ export function AuthProvider({ children }) {
         // 2) balance inicial (para que /trading-bots vea saldo de inmediato)
         const { error: bErr } = await supabase
           .from('balances')
-          .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 });
+          .insert({ user_id: userId, usdc: 0, eth: 0 });
         if (bErr) {
           // Si falla por RLS, no bloqueamos el registro
           console.warn('Init balances (register):', bErr.message);

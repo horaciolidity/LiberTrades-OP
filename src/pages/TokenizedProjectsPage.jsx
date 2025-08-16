@@ -1,3 +1,4 @@
+// src/pages/TokenizedProjectsPage.jsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,6 +8,16 @@ import { Label } from '@/components/ui/label';
 import { Coins, Rocket, TrendingUp, Zap, Calendar, Users, DollarSign, Eye } from 'lucide-react';
 import { useSound } from '@/contexts/SoundContext';
 import { toast } from '@/components/ui/use-toast';
+import { useAuth } from '@/contexts/AuthContext';
+import { useData } from '@/contexts/DataContext';
+import { supabase } from '@/lib/supabaseClient';
+
+const fmt = (n, dec = 2) => {
+  const num = Number(n);
+  return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
+};
+
+const DEFAULT_CCY = 'USDC';
 
 const upcomingProjects = [
   { 
@@ -31,21 +42,101 @@ const upcomingProjects = [
 
 const TokenizedProjectsPage = () => {
   const { playSound } = useSound();
+  const { user, balances } = useAuth();
+  const { addTransaction, refreshTransactions } = useData();
+
   const [selectedProject, setSelectedProject] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
 
   const handleViewDetails = (project) => {
-    playSound('navigation');
+    playSound?.('navigation');
     setSelectedProject(project);
   };
 
-  const handleInvest = () => {
+  const ensureCurrency = async (code) => {
+    try {
+      await supabase.from('currencies').upsert({ code }, { onConflict: 'code', ignoreDuplicates: true });
+    } catch {
+      /* noop: si falla por RLS/duplicado, ignoramos */
+    }
+  };
+
+  const handleInvest = async () => {
     if (!selectedProject) return;
-    playSound('invest');
-    toast({
-      title: "Función Próximamente",
-      description: `🚧 La inversión en ${selectedProject.name} estará disponible pronto. ¡Mantente atento! 🚀`,
-    });
+    const amt = Number(investmentAmount);
+
+    if (!amt || amt < selectedProject.minInvestment) {
+      playSound?.('error');
+      toast({
+        title: 'Monto inválido',
+        description: `El mínimo para ${selectedProject.symbol} es $${fmt(selectedProject.minInvestment)}.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const available = Number(balances?.usdc ?? 0);
+    if (amt > available) {
+      playSound?.('error');
+      toast({
+        title: 'Saldo insuficiente',
+        description: `Tu saldo USDC disponible es $${fmt(available)}.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      playSound?.('invest');
+
+      // Asegura moneda registrada para FK
+      await ensureCurrency(DEFAULT_CCY);
+
+      // 1) Inserta solicitud de inversión en proyecto (queda 'pending' para mantener consistencia con RLS/flujo)
+      const { data: ins, error: iErr } = await supabase
+        .from('project_investments')
+        .insert({
+          user_id: user?.id,
+          project_symbol: selectedProject.symbol,
+          project_name: selectedProject.name,
+          amount_usd: amt,
+          status: 'pending', // admin o backend pueden activarla y hacer el débito real
+        })
+        .select('id')
+        .single();
+
+      if (iErr) throw iErr;
+
+      // 2) Crea una transacción de wallet relacionada (pendiente)
+      await addTransaction?.({
+        amount: amt,
+        type: 'transfer', // transferencia de wallet hacia inversión de proyecto
+        currency: DEFAULT_CCY,
+        description: `Inversión en ${selectedProject.name} (${selectedProject.symbol})`,
+        referenceType: 'project_investment',
+        referenceId: ins?.id ?? null,
+        status: 'pending',
+      });
+
+      await refreshTransactions?.();
+
+      playSound?.('success');
+      toast({
+        title: 'Solicitud enviada',
+        description: `Tu inversión en ${selectedProject.symbol} quedó pendiente de confirmación.`,
+      });
+
+      setInvestmentAmount('');
+      setSelectedProject(null);
+    } catch (e) {
+      console.error(e);
+      playSound?.('error');
+      toast({
+        title: 'Error al invertir',
+        description: e?.message ?? 'No se pudo registrar la inversión.',
+        variant: 'destructive',
+      });
+    }
   };
 
   return (
@@ -62,6 +153,9 @@ const TokenizedProjectsPage = () => {
           </h1>
           <p className="text-slate-300">
             Descubre e invierte en los próximos grandes proyectos tokenizados.
+          </p>
+          <p className="text-slate-400 mt-2">
+            Saldo USDC: <span className="text-green-400 font-semibold">${fmt(balances?.usdc ?? 0, 2)}</span>
           </p>
         </motion.div>
 
@@ -186,18 +280,22 @@ const TokenizedProjectsPage = () => {
                   <Label className="text-white">Monto a Invertir (USD)</Label>
                   <Input
                     type="number"
+                    min={selectedProject.minInvestment}
                     value={investmentAmount}
                     onChange={(e) => setInvestmentAmount(e.target.value)}
                     placeholder={`Mínimo $${selectedProject.minInvestment}`}
                     className="bg-slate-800 border-slate-600 text-white"
                   />
+                  <p className="text-xs text-slate-400">
+                    Disponible: <span className="text-green-400">${fmt(balances?.usdc ?? 0)}</span> USDC
+                  </p>
                 </div>
 
                 <Button
                   onClick={handleInvest}
                   className="w-full bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600"
                 >
-                  Invertir en {selectedProject.symbol} (Próximamente)
+                  Invertir en {selectedProject.symbol}
                 </Button>
                 <Button variant="outline" onClick={() => setSelectedProject(null)} className="w-full">
                   Cerrar

@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+// src/pages/ReferralSystem.jsx
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
-  Users,
+  Users as UsersIcon,
   Copy,
   DollarSign,
   TrendingUp,
@@ -17,28 +18,50 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
 import { toast } from '@/components/ui/use-toast';
 
+const fmt = (n, dec = 2) => {
+  const num = Number(n);
+  return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
+};
+
 const ReferralSystem = () => {
   const { user, profile } = useAuth();
-  const { getReferrals } = useData();
+  const { referrals, getReferrals, refreshReferrals } = useData();
 
-  const [referrals, setReferrals] = useState([]);
   const [referralLink, setReferralLink] = useState('');
 
-  const referralCode = profile?.referral_code || user?.referralCode || '';
+  const referralCode = profile?.referral_code || '';
 
+  // Traer/actualizar la data desde DataContext manteniendo el patrón del proyecto
   useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
+    refreshReferrals?.();
+  }, [user?.id, refreshReferrals]);
 
-    // getReferrals por código (coincide con el schema profiles.referral_code)
-    try {
-      const list = getReferrals?.(referralCode) || [];
-      setReferrals(list);
-    } catch {
-      setReferrals([]);
+  // Link de referido (tolerante a SSR)
+  useEffect(() => {
+    if (!referralCode) {
+      setReferralLink('');
+      return;
     }
+    if (typeof window !== 'undefined') {
+      setReferralLink(`${window.location.origin}/register?ref=${referralCode}`);
+    }
+  }, [referralCode]);
 
-    setReferralLink(`${window.location.origin}/register?ref=${referralCode}`);
-  }, [user, referralCode, getReferrals]);
+  // Lista segura (puede proveerla `referrals` o `getReferrals()`)
+  const all = Array.isArray(referrals)
+    ? referrals
+    : (Array.isArray(getReferrals?.()) ? getReferrals() : []);
+
+  // Filtrar "mis referidos" por distintos campos compatibles
+  const myReferrals = useMemo(() => {
+    if (!user?.id) return [];
+    return (all || []).filter(r =>
+      (r.referred_by ?? r.referredBy) === user.id ||
+      (r.referrer_id ?? r.referrerId) === user.id ||
+      (r.referral_code ?? r.referralCode) === referralCode
+    );
+  }, [all, user?.id, referralCode]);
 
   const copyReferralLink = () => {
     if (!referralLink) return;
@@ -54,7 +77,7 @@ const ReferralSystem = () => {
     if (navigator.share) {
       navigator.share({
         title: 'Liber Trades - Únete y gana',
-        text: '¡Únete a Liber Trades y comienza a invertir en criptomonedas!',
+        text: '¡Únete a Liber Trades y comienza a invertir!',
         url: referralLink,
       }).catch(() => {});
     } else {
@@ -62,28 +85,33 @@ const ReferralSystem = () => {
     }
   };
 
-  const totalEarnings = referrals.length * 50; // $50 por referido
-  const activeReferrals = referrals.filter(ref => {
-    const lastActivity = new Date(ref.createdAt);
-    const daysSinceActivity = (Date.now() - lastActivity.getTime()) / (1000 * 60 * 60 * 24);
-    return daysSinceActivity <= 30;
+  // Métricas (tolerante a created_at | createdAt)
+  const activeReferrals = myReferrals.filter(ref => {
+    const ts = ref.created_at ?? ref.createdAt;
+    const d = ts ? new Date(ts) : null;
+    if (!d || Number.isNaN(d.getTime())) return false;
+    const days = (Date.now() - d.getTime()) / 86400000;
+    return days <= 30;
   }).length;
+
+  const totalEarnings = myReferrals.length * 50; // regla de negocio actual
 
   const getReferralLevel = (count) => {
     if (count >= 100) return { name: 'Diamante', icon: Crown, color: 'text-purple-400', bg: 'bg-purple-500/10' };
     if (count >= 50)  return { name: 'Oro',      icon: Star,  color: 'text-yellow-400', bg: 'bg-yellow-500/10' };
     if (count >= 20)  return { name: 'Plata',    icon: TrendingUp, color: 'text-gray-400',  bg: 'bg-gray-500/10' };
     if (count >= 5)   return { name: 'Bronce',   icon: Gift,  color: 'text-orange-400', bg: 'bg-orange-500/10' };
-    return { name: 'Principiante', icon: Users, color: 'text-blue-400', bg: 'bg-blue-500/10' };
+    return { name: 'Principiante', icon: UsersIcon, color: 'text-blue-400', bg: 'bg-blue-500/10' };
   };
 
-  const currentLevel = getReferralLevel(referrals.length);
+  const currentLevel = getReferralLevel(myReferrals.length);
+  const LevelIcon = currentLevel.icon;
 
   const stats = [
-    { title: 'Total Referidos',   value: referrals.length.toString(), icon: Users,      color: 'text-blue-400',   bgColor: 'bg-blue-500/10' },
-    { title: 'Referidos Activos', value: activeReferrals.toString(),  icon: TrendingUp, color: 'text-green-400',  bgColor: 'bg-green-500/10' },
-    { title: 'Ganancias Totales', value: `$${totalEarnings.toFixed(2)}`, icon: DollarSign, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
-    { title: 'Nivel Actual',      value: currentLevel.name,           icon: currentLevel.icon, color: currentLevel.color, bgColor: currentLevel.bg },
+    { title: 'Total Referidos',   value: String(myReferrals.length), icon: UsersIcon,      color: 'text-blue-400',   bgColor: 'bg-blue-500/10' },
+    { title: 'Referidos Activos', value: String(activeReferrals),    icon: TrendingUp,     color: 'text-green-400',  bgColor: 'bg-green-500/10' },
+    { title: 'Ganancias Totales', value: `$${fmt(totalEarnings)}`,   icon: DollarSign,     color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
+    { title: 'Nivel Actual',      value: currentLevel.name,          icon: currentLevel.icon, color: currentLevel.color, bgColor: currentLevel.bg },
   ];
 
   const referralBenefits = [
@@ -93,6 +121,13 @@ const ReferralSystem = () => {
     { level: 'Oro',          referrals: '50-99 referidos', commission: '$150 por referido', bonus: 'Acceso VIP + Señales premium' },
     { level: 'Diamante',     referrals: '100+ referidos', commission: '$200 por referido', bonus: 'Todos los beneficios + Participación en ganancias' },
   ];
+
+  const nextLevelTarget =
+    currentLevel.name === 'Principiante' ? 5 :
+    currentLevel.name === 'Bronce' ? 20 :
+    currentLevel.name === 'Plata' ? 50 : 100;
+
+  const progressPct = Math.min(100, (myReferrals.length / nextLevelTarget) * 100);
 
   return (
     <>
@@ -188,7 +223,7 @@ const ReferralSystem = () => {
                 <div className="bg-slate-800/50 p-4 rounded-lg">
                   <h4 className="text-white font-semibold mb-2">Tu Código de Referido</h4>
                   <div className="flex items-center justify-between">
-                    <span className="text-2xl font-bold text-green-400">{referralCode}</span>
+                    <span className="text-2xl font-bold text-green-400">{referralCode || '—'}</span>
                     <Button
                       size="sm"
                       onClick={() => {
@@ -227,13 +262,13 @@ const ReferralSystem = () => {
               <CardContent className="space-y-6">
                 <div className="text-center">
                   <div className={`inline-flex items-center px-4 py-2 rounded-full ${currentLevel.bg} mb-4`}>
-                    <currentLevel.icon className={`h-5 w-5 mr-2 ${currentLevel.color}`} />
+                    <LevelIcon className={`h-5 w-5 mr-2 ${currentLevel.color}`} />
                     <span className={`font-semibold ${currentLevel.color}`}>
                       Nivel {currentLevel.name}
                     </span>
                   </div>
                   <p className="text-slate-300">
-                    {referrals.length} referidos totales
+                    {myReferrals.length} referidos totales
                   </p>
                 </div>
 
@@ -242,22 +277,13 @@ const ReferralSystem = () => {
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-400">Progreso al siguiente nivel</span>
                       <span className="text-white">
-                        {referrals.length}/
-                        {currentLevel.name === 'Principiante' ? 5 :
-                         currentLevel.name === 'Bronce' ? 20 :
-                         currentLevel.name === 'Plata' ? 50 : 100}
+                        {myReferrals.length}/{nextLevelTarget}
                       </span>
                     </div>
                     <div className="w-full bg-slate-700 rounded-full h-2">
                       <div
                         className="bg-gradient-to-r from-green-500 to-blue-500 h-2 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${Math.min(100, (referrals.length / (
-                            currentLevel.name === 'Principiante' ? 5 :
-                            currentLevel.name === 'Bronce' ? 20 :
-                            currentLevel.name === 'Plata' ? 50 : 100
-                          )) * 100)}%`
-                        }}
+                        style={{ width: `${progressPct}%` }}
                       />
                     </div>
                   </div>
@@ -344,26 +370,35 @@ const ReferralSystem = () => {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {referrals.length > 0 ? (
+              {myReferrals.length > 0 ? (
                 <div className="space-y-4">
-                  {referrals.map((referral) => (
-                    <div key={referral.id} className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg">
-                      <div>
-                        <p className="text-white font-medium">{referral.name}</p>
-                        <p className="text-slate-400 text-sm">
-                          Registrado: {new Date(referral.createdAt).toLocaleDateString()}
-                        </p>
+                  {myReferrals.map((referral) => {
+                    const name =
+                      referral.username ||
+                      referral.full_name ||
+                      referral.name ||
+                      referral.email ||
+                      (referral.id ? `${referral.id.slice(0, 6)}…` : 'Usuario');
+                    const created = referral.created_at ?? referral.createdAt ?? null;
+                    return (
+                      <div key={referral.id ?? name} className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg">
+                        <div>
+                          <p className="text-white font-medium">{name}</p>
+                          <p className="text-slate-400 text-sm">
+                            Registrado: {created ? new Date(created).toLocaleDateString() : '—'}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-green-400 font-semibold">+$50.00</p>
+                          <p className="text-slate-400 text-sm">Comisión ganada</p>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <p className="text-green-400 font-semibold">+$50.00</p>
-                        <p className="text-slate-400 text-sm">Comisión ganada</p>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-center py-8">
-                  <Users className="h-12 w-12 text-slate-600 mx-auto mb-4" />
+                  <UsersIcon className="h-12 w-12 text-slate-600 mx-auto mb-4" />
                   <p className="text-slate-400">Aún no tienes referidos</p>
                   <p className="text-slate-500 text-sm">Comparte tu enlace para comenzar a ganar</p>
                 </div>

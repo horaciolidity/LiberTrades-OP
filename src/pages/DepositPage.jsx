@@ -24,11 +24,18 @@ export default function DepositPage() {
   const { addTransaction, refreshTransactions } = useData();
   const { playSound } = useSound();
 
+  // Depósitos
   const [depositMethod, setDepositMethod] = useState('crypto');
   const [cryptoCurrency, setCryptoCurrency] = useState('USDT');
   const [fiatMethod, setFiatMethod] = useState('alias');
   const [amount, setAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Retiros
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawCurrency, setWithdrawCurrency] = useState('USDC');
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [withdrawDestination, setWithdrawDestination] = useState('');
 
   // Dirección ERC-20 provista por ti (USDT/ETH en Ethereum)
   const APP_MAIN_ETH_ADDRESS = '0xBAeaDE80A2A1064E4F8f372cd2ADA9a00daB4BBE';
@@ -58,14 +65,13 @@ export default function DepositPage() {
 
   const ensureCurrency = async (code) => {
     if (!code) return;
-    // idempotente: crea si no existe; si existe no hace nada
     const { error } = await supabase.from('currencies').upsert({ code }, { onConflict: 'code' });
     if (error) {
       console.warn('[DepositPage] ensureCurrency error:', error.message);
-      // no bloqueamos el flujo por un warning de upsert; el FK validará igual
     }
   };
 
+  // ---------- Depósito ----------
   const handleDeposit = async () => {
     const depositAmount = Number(amount);
     if (!user?.id) {
@@ -80,7 +86,7 @@ export default function DepositPage() {
     }
 
     const isCrypto = depositMethod === 'crypto';
-    // Política: para FIAT registramos como USDT (consistente con acreditación a balances.usdc)
+    // Para FIAT registramos como USDT (tu backend acredita a balances.usdc)
     const currency = isCrypto ? String(cryptoCurrency || '').toUpperCase() : 'USDT';
 
     const details = isCrypto
@@ -89,8 +95,6 @@ export default function DepositPage() {
 
     try {
       setSubmitting(true);
-
-      // Evita choque de FK: asegura existencia del código de moneda
       await ensureCurrency(currency);
 
       await addTransaction?.({
@@ -103,7 +107,6 @@ export default function DepositPage() {
         status: 'pending',
       });
 
-      // Refresca listado para que aparezca la transacción pendiente en la UI
       await refreshTransactions?.();
 
       playSound?.('success');
@@ -119,6 +122,59 @@ export default function DepositPage() {
       toast({ title: 'Error al notificar', description: msg, variant: 'destructive' });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // ---------- Retiro ----------
+  const handleWithdraw = async () => {
+    const amt = Number(withdrawAmount);
+    if (!user?.id) {
+      playSound?.('error');
+      toast({ title: 'Inicia sesión', description: 'Necesitas estar autenticado.', variant: 'destructive' });
+      return;
+    }
+    if (!amt || amt <= 0) {
+      playSound?.('error');
+      toast({ title: 'Monto inválido', description: 'Ingresa un monto mayor a 0.', variant: 'destructive' });
+      return;
+    }
+
+    const ccy = String(withdrawCurrency || 'USDC').toUpperCase();
+    const have = ccy === 'ETH' ? Number(balances?.eth ?? 0) : Number(balances?.usdc ?? 0);
+    if (amt > have) {
+      playSound?.('error');
+      toast({ title: 'Saldo insuficiente', description: `Tu saldo ${ccy} no alcanza.`, variant: 'destructive' });
+      return;
+    }
+
+    try {
+      setWithdrawing(true);
+      await ensureCurrency(ccy);
+
+      await addTransaction?.({
+        amount: amt,
+        type: 'withdrawal',
+        currency: ccy,
+        description: withdrawDestination
+          ? `Retiro solicitado (${ccy}) → ${withdrawDestination}`
+          : `Retiro solicitado (${ccy})`,
+        referenceType: 'withdraw_request',
+        referenceId: null,
+        status: 'pending', // pendiente para aprobación del admin
+      });
+
+      await refreshTransactions?.();
+
+      playSound?.('success');
+      toast({ title: 'Solicitud enviada', description: `Tu retiro de ${ccy} ${fmt(amt)} quedó pendiente.` });
+      setWithdrawAmount('');
+      setWithdrawDestination('');
+    } catch (e) {
+      console.error('[DepositPage] handleWithdraw error:', e);
+      playSound?.('error');
+      toast({ title: 'Error al solicitar retiro', description: e?.message ?? 'Intenta de nuevo.', variant: 'destructive' });
+    } finally {
+      setWithdrawing(false);
     }
   };
 
@@ -146,6 +202,7 @@ export default function DepositPage() {
         </p>
       </motion.div>
 
+      {/* Depósito */}
       <Card className="crypto-card">
         <CardHeader>
           <CardTitle className="text-white flex items-center">
@@ -318,6 +375,78 @@ export default function DepositPage() {
           </Button>
           <p className="text-xs text-center text-slate-400">
             Tu transacción quedará <b>pendiente</b> hasta que un administrador la verifique y apruebe.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Retiro */}
+      <Card className="crypto-card">
+        <CardHeader>
+          <CardTitle className="text-white">Solicitar Retiro</CardTitle>
+          <CardDescription className="text-slate-300">
+            Crea una solicitud de retiro. Un administrador la aprobará.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <Label className="text-white">Moneda</Label>
+              <Select value={withdrawCurrency} onValueChange={setWithdrawCurrency}>
+                <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-700 border-slate-600">
+                  <SelectItem value="USDC">USDC</SelectItem>
+                  <SelectItem value="ETH">ETH</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-white">Monto</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(e.target.value)}
+                placeholder="Ej: 50"
+                className="bg-slate-800 border-slate-600 text-white"
+              />
+              <p className="text-xs text-slate-400">
+                Disponible {withdrawCurrency}:{' '}
+                <span className="text-green-400">
+                  {withdrawCurrency === 'ETH'
+                    ? fmt(balances?.eth ?? 0)
+                    : fmt(balances?.usdc ?? 0)}
+                </span>
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-white">Destino (opcional)</Label>
+              <Input
+                value={withdrawDestination}
+                onChange={(e) => setWithdrawDestination(e.target.value)}
+                placeholder={withdrawCurrency === 'ETH' ? 'Dirección ERC-20' : 'Alias/Cuenta'}
+                className="bg-slate-800 border-slate-600 text-white"
+              />
+              <p className="text-xs text-slate-400">
+                Se guardará en la descripción para que el admin lo use al procesar.
+              </p>
+            </div>
+          </div>
+
+          <Button
+            onClick={handleWithdraw}
+            disabled={withdrawing}
+            className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 disabled:opacity-60"
+          >
+            {withdrawing ? 'Enviando…' : 'Solicitar Retiro'}
+          </Button>
+
+          <p className="text-xs text-center text-slate-400">
+            Tu retiro quedará <b>pendiente</b> hasta la aprobación del administrador.
           </p>
         </CardContent>
       </Card>
