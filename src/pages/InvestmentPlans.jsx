@@ -8,7 +8,7 @@ import {
   CheckCircle,
   Star,
   Zap,
-  ShoppingBag
+  ShoppingBag,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -26,11 +26,27 @@ const fmt = (n, dec = 2) => {
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
 };
 
+// Precio compatible con shapes distintos de cryptoPrices
+const getPrice = (cryptoPrices, symbol) => {
+  if (!symbol) return 0;
+  const s = String(symbol).toUpperCase();
+  if (s === 'USDC') return 1; // estable en UI
+  const v = cryptoPrices?.[s];
+  if (v == null) return 0;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'object') {
+    const cand = v.price ?? v.usd ?? v.last ?? v.value;
+    return Number(cand) || 0;
+  }
+  return 0;
+};
+
 export default function InvestmentPlans() {
   const { investmentPlans: defaultPlans, cryptoPrices } = useData();
   const { user, balances } = useAuth();
   const { playSound } = useSound();
 
+  // Compat: los planes aceptan estas monedas
   const investmentPlans = (defaultPlans || []).map((plan) => ({
     ...plan,
     currencies: ['USDC', 'BTC', 'ETH'],
@@ -45,7 +61,7 @@ export default function InvestmentPlans() {
     const a = Number(amount || 0);
     if (!a) return 0;
     if (currency === 'USDC') return a;
-    const price = Number(cryptoPrices?.[currency]?.price ?? 0);
+    const price = getPrice(cryptoPrices, currency);
     return price > 0 ? a * price : 0;
   };
 
@@ -57,11 +73,7 @@ export default function InvestmentPlans() {
     }
     if (!selectedPlan || !investmentAmount) {
       playSound('error');
-      toast({
-        title: 'Error',
-        description: 'Selecciona un plan e ingresa un monto.',
-        variant: 'destructive',
-      });
+      toast({ title: 'Error', description: 'Selecciona un plan e ingresa un monto.', variant: 'destructive' });
       return;
     }
 
@@ -74,7 +86,7 @@ export default function InvestmentPlans() {
 
     let amountInUSD = amount;
     if (selectedCurrency !== 'USDC') {
-      const price = Number(cryptoPrices?.[selectedCurrency]?.price ?? 0);
+      const price = getPrice(cryptoPrices, selectedCurrency);
       if (!price) {
         playSound('error');
         toast({
@@ -114,6 +126,7 @@ export default function InvestmentPlans() {
     playSound('invest');
 
     try {
+      // Guardar exactamente lo que eligió el usuario (BD ya acepta USDC tras la migración)
       const { error: invErr } = await supabase.from('investments').insert({
         user_id: user.id,
         plan_name: selectedPlan.name,
@@ -124,6 +137,7 @@ export default function InvestmentPlans() {
       });
       if (invErr) throw invErr;
 
+      // Debitar del saldo (USDC)
       const newUsdc = Math.max(0, currentUsdc - amountInUSD);
       const { error: balErr } = await supabase
         .from('balances')
@@ -144,7 +158,7 @@ export default function InvestmentPlans() {
       playSound('error');
       toast({
         title: 'Error de Inversión',
-        description: 'Hubo un problema al procesar tu inversión.',
+        description: error?.message || 'Hubo un problema al procesar tu inversión.',
         variant: 'destructive',
       });
     } finally {
@@ -333,11 +347,12 @@ export default function InvestmentPlans() {
                 <Label className="text-white">Monto de Inversión ({selectedCurrency})</Label>
                 <Input
                   type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="any"
                   value={investmentAmount}
                   onChange={(e) => setInvestmentAmount(e.target.value)}
-                  placeholder={`Ej: ${
-                    selectedCurrency === 'USDC' ? '100' : selectedCurrency === 'BTC' ? '0.01' : '0.1'
-                  }`}
+                  placeholder={`Ej: ${selectedCurrency === 'USDC' ? '100' : selectedCurrency === 'BTC' ? '0.01' : '0.1'}`}
                   className="bg-slate-800 border-slate-600 text-white"
                 />
                 {investmentAmount && (
@@ -367,7 +382,8 @@ export default function InvestmentPlans() {
                       $
                       {fmt(
                         calculateEquivalentValue(investmentAmount, selectedCurrency) *
-                          Number(selectedPlan.dailyReturn || 0) / 100,
+                          Number(selectedPlan.dailyReturn || 0) /
+                          100,
                         2
                       )}
                     </span>
@@ -379,7 +395,8 @@ export default function InvestmentPlans() {
                       {fmt(
                         calculateEquivalentValue(investmentAmount, selectedCurrency) *
                           Number(selectedPlan.dailyReturn || 0) *
-                          Number(selectedPlan.duration || 0) / 100,
+                          Number(selectedPlan.duration || 0) /
+                          100,
                         2
                       )}
                     </span>
