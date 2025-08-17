@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff, ArrowLeft, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -7,9 +7,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/lib/supabaseClient';
+import { toast } from '@/components/ui/use-toast';
 
 const RegisterPage = () => {
+  const { register } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -21,59 +25,56 @@ const RegisterPage = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const { register } = useAuth();
-  const navigate = useNavigate();
+
+  // Prefill referralCode desde ?ref= o ?referral=
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const ref = (params.get('ref') || params.get('referral') || '').toUpperCase().trim();
+    if (ref && !formData.referralCode) {
+      setFormData((s) => ({ ...s, referralCode: ref }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((s) => ({ ...s, [name]: value }));
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
+    if (!formData.name.trim()) {
+      toast({ title: 'Falta el nombre', description: 'Ingresa tu nombre completo.', variant: 'destructive' });
+      return;
+    }
+
+    const email = formData.email.trim().toLowerCase();
+    if (!email) {
+      toast({ title: 'Email inválido', description: 'Ingresa un email válido.', variant: 'destructive' });
+      return;
+    }
+
     if (formData.password !== formData.confirmPassword) {
-      alert('Las contraseñas no coinciden');
+      toast({ title: 'Contraseñas no coinciden', description: 'Verifica ambas contraseñas.', variant: 'destructive' });
       return;
     }
 
     setLoading(true);
-
     try {
-      let validReferredId = null;
-
-      if (formData.referralCode) {
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('referral_code', formData.referralCode.trim())
-          .single();
-
-        if (error || !data) {
-          alert('Código de referido inválido');
-          setLoading(false);
-          return;
-        }
-
-        validReferredId = data.id;
-      }
-
       await register({
-        name: formData.name,
-        email: formData.email,
+        name: formData.name.trim(),
+        email,
         password: formData.password,
-        referredBy: validReferredId
+        referralCode: (formData.referralCode || '').toUpperCase().trim() || null, // <- opcional
       });
-
       navigate('/dashboard');
     } catch (error) {
+      // AuthContext ya muestra el toast
       console.error('Register error:', error);
-      alert('Error al crear la cuenta');
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    });
   };
 
   return (
@@ -101,116 +102,122 @@ const RegisterPage = () => {
               Únete a LiberTrades y comienza a invertir
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <div className="space-y-2">
-                <Label htmlFor="name" className="text-white">Nombre Completo</Label>
+
+        <CardContent>
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div className="space-y-2">
+              <Label htmlFor="name" className="text-white">Nombre Completo</Label>
+              <Input
+                id="name"
+                name="name"
+                type="text"
+                value={formData.name}
+                onChange={handleChange}
+                placeholder="Tu nombre completo"
+                required
+                className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="email" className="text-white">Email</Label>
+              <Input
+                id="email"
+                name="email"
+                type="email"
+                value={formData.email}
+                onChange={handleChange}
+                placeholder="tu@email.com"
+                autoComplete="email"
+                required
+                className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="password" className="text-white">Contraseña</Label>
+              <div className="relative">
                 <Input
-                  id="name"
-                  name="name"
-                  type="text"
-                  value={formData.name}
+                  id="password"
+                  name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  value={formData.password}
                   onChange={handleChange}
-                  placeholder="Tu nombre completo"
+                  placeholder="••••••••"
+                  autoComplete="new-password"
                   required
-                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
+                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 pr-10"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((s) => !s)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                  aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
               </div>
+            </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="email" className="text-white">Email</Label>
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword" className="text-white">Confirmar Contraseña</Label>
+              <div className="relative">
                 <Input
-                  id="email"
-                  name="email"
-                  type="email"
-                  value={formData.email}
+                  id="confirmPassword"
+                  name="confirmPassword"
+                  type={showConfirmPassword ? 'text' : 'password'}
+                  value={formData.confirmPassword}
                   onChange={handleChange}
-                  placeholder="tu@email.com"
+                  placeholder="••••••••"
+                  autoComplete="new-password"
                   required
-                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
+                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 pr-10"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword((s) => !s)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                  aria-label={showConfirmPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                >
+                  {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
               </div>
+            </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="password" className="text-white">Contraseña</Label>
-                <div className="relative">
-                  <Input
-                    id="password"
-                    name="password"
-                    type={showPassword ? 'text' : 'password'}
-                    value={formData.password}
-                    onChange={handleChange}
-                    placeholder="••••••••"
-                    required
-                    className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-white"
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="confirmPassword" className="text-white">Confirmar Contraseña</Label>
-                <div className="relative">
-                  <Input
-                    id="confirmPassword"
-                    name="confirmPassword"
-                    type={showConfirmPassword ? 'text' : 'password'}
-                    value={formData.confirmPassword}
-                    onChange={handleChange}
-                    placeholder="••••••••"
-                    required
-                    className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-white"
-                  >
-                    {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="referralCode" className="text-white">Código de Referido (Opcional)</Label>
-                <Input
-                  id="referralCode"
-                  name="referralCode"
-                  type="text"
-                  value={formData.referralCode}
-                  onChange={handleChange}
-                  placeholder="Código de referido"
-                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
-                />
-                <p className="text-xs text-slate-400">
-                  Si tienes un código de referido, obtendrás bonos especiales
-                </p>
-              </div>
-
-              <Button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-white"
-              >
-                {loading ? 'Creando cuenta...' : 'Crear Cuenta'}
-              </Button>
-            </form>
-
-            <div className="mt-6 text-center">
-              <p className="text-slate-300">
-                ¿Ya tienes cuenta?{' '}
-                <Link to="/login" className="text-green-400 hover:text-green-300 font-medium">
-                  Inicia sesión aquí
-                </Link>
+            <div className="space-y-2">
+              <Label htmlFor="referralCode" className="text-white">Código de Referido (Opcional)</Label>
+              <Input
+                id="referralCode"
+                name="referralCode"
+                type="text"
+                value={formData.referralCode}
+                onChange={handleChange}
+                placeholder="Ingresa tu código (si tienes)"
+                className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 uppercase"
+              />
+              <p className="text-xs text-slate-400">
+                Si tienes un código de referido, ingrésalo para obtener beneficios.
               </p>
             </div>
-          </CardContent>
+
+            <Button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-white"
+            >
+              {loading ? 'Creando cuenta...' : 'Crear Cuenta'}
+            </Button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <p className="text-slate-300">
+              ¿Ya tienes cuenta?{' '}
+              <Link to="/login" className="text-green-400 hover:text-green-300 font-medium">
+                Inicia sesión aquí
+              </Link>
+            </p>
+          </div>
+        </CardContent>
         </Card>
       </motion.div>
     </div>

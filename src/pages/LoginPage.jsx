@@ -1,40 +1,28 @@
+// src/pages/LoginPage.jsx
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Eye, EyeOff, ArrowLeft, Users } from 'lucide-react';
+import { Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
-import { toast } from '@/components/ui/use-toast';
 
-const RegisterPage = () => {
-  const { register } = useAuth();
+export default function LoginPage() {
+  const { login, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    password: '',
-    confirmPassword: '',
-    referralCode: ''
-  });
+  const from = location.state?.from || '/dashboard';
 
+  const [formData, setFormData] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  // Prefill referralCode desde ?ref= o ?referral=
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const ref = (params.get('ref') || params.get('referral') || '').toUpperCase().trim();
-    if (ref && !formData.referralCode) {
-      setFormData((s) => ({ ...s, referralCode: ref }));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.search]);
+    if (isAuthenticated) navigate(from, { replace: true });
+  }, [isAuthenticated, from, navigate]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -43,37 +31,14 @@ const RegisterPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
-    if (!formData.name.trim()) {
-      toast({ title: 'Falta el nombre', description: 'Ingresa tu nombre completo.', variant: 'destructive' });
-      return;
-    }
-
-    const email = formData.email.trim().toLowerCase();
-    if (!email) {
-      toast({ title: 'Email inválido', description: 'Ingresa un email válido.', variant: 'destructive' });
-      return;
-    }
-
-    if (formData.password !== formData.confirmPassword) {
-      toast({ title: 'Contraseñas no coinciden', description: 'Verifica ambas contraseñas.', variant: 'destructive' });
-      return;
-    }
-
-    setLoading(true);
+    if (submitting) return;
+    setSubmitting(true);
     try {
-      await register({
-        name: formData.name.trim(),
-        email,
-        password: formData.password,
-        referralCode: (formData.referralCode || '').toUpperCase().trim() || null, // <- opcional
-      });
-      navigate('/dashboard');
-    } catch (error) {
-      // AuthContext ya muestra el toast
-      console.error('Register error:', error);
+      const email = formData.email.trim().toLowerCase();
+      const password = formData.password;
+      await login(email, password);
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
@@ -94,134 +59,82 @@ const RegisterPage = () => {
 
         <Card className="crypto-card">
           <CardHeader className="text-center">
-            <div className="mx-auto w-16 h-16 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4">
-              <Users className="h-8 w-8 text-white" />
+            <div className="mx-auto w-16 h-16 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4 overflow-hidden">
+              <img
+                alt="LiberTrades logo"
+                src="https://images.unsplash.com/photo-1639916909400-40d53a2edd72"
+                className="w-full h-full object-cover"
+              />
             </div>
-            <CardTitle className="text-2xl text-white">Crear Cuenta</CardTitle>
+            <CardTitle className="text-2xl text-white">Iniciar Sesión</CardTitle>
             <CardDescription className="text-slate-300">
-              Únete a LiberTrades y comienza a invertir
+              Accede a tu cuenta de LiberTrades
             </CardDescription>
           </CardHeader>
 
-        <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="space-y-2">
-              <Label htmlFor="name" className="text-white">Nombre Completo</Label>
-              <Input
-                id="name"
-                name="name"
-                type="text"
-                value={formData.name}
-                onChange={handleChange}
-                placeholder="Tu nombre completo"
-                required
-                className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="email" className="text-white">Email</Label>
-              <Input
-                id="email"
-                name="email"
-                type="email"
-                value={formData.email}
-                onChange={handleChange}
-                placeholder="tu@email.com"
-                autoComplete="email"
-                required
-                className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="password" className="text-white">Contraseña</Label>
-              <div className="relative">
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="email" className="text-white">Email</Label>
                 <Input
-                  id="password"
-                  name="password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={formData.password}
+                  id="email"
+                  name="email"
+                  type="email"
+                  value={formData.email}
                   onChange={handleChange}
-                  placeholder="••••••••"
-                  autoComplete="new-password"
+                  placeholder="tu@email.com"
+                  autoComplete="email"
                   required
-                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 pr-10"
+                  autoFocus
+                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((s) => !s)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-                  aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
               </div>
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="confirmPassword" className="text-white">Confirmar Contraseña</Label>
-              <div className="relative">
-                <Input
-                  id="confirmPassword"
-                  name="confirmPassword"
-                  type={showConfirmPassword ? 'text' : 'password'}
-                  value={formData.confirmPassword}
-                  onChange={handleChange}
-                  placeholder="••••••••"
-                  autoComplete="new-password"
-                  required
-                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirmPassword((s) => !s)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-                  aria-label={showConfirmPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
-                >
-                  {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
+              <div className="space-y-2">
+                <Label htmlFor="password" className="text-white">Contraseña</Label>
+                <div className="relative">
+                  <Input
+                    id="password"
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={formData.password}
+                    onChange={handleChange}
+                    placeholder="••••••••"
+                    autoComplete="current-password"
+                    required
+                    className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((s) => !s)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                    aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="referralCode" className="text-white">Código de Referido (Opcional)</Label>
-              <Input
-                id="referralCode"
-                name="referralCode"
-                type="text"
-                value={formData.referralCode}
-                onChange={handleChange}
-                placeholder="Ingresa tu código (si tienes)"
-                className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 uppercase"
-              />
-              <p className="text-xs text-slate-400">
-                Si tienes un código de referido, ingrésalo para obtener beneficios.
+              <Button
+                type="submit"
+                disabled={submitting || !formData.email || !formData.password}
+                className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-white disabled:opacity-60"
+              >
+                {submitting ? 'Iniciando sesión…' : 'Iniciar Sesión'}
+              </Button>
+            </form>
+
+            <div className="mt-6 text-center">
+              <p className="text-slate-300">
+                ¿No tienes cuenta?{' '}
+                <Link to="/register" className="text-green-400 hover:text-green-300 font-medium">
+                  Regístrate aquí
+                </Link>
               </p>
             </div>
-
-            <Button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-white"
-            >
-              {loading ? 'Creando cuenta...' : 'Crear Cuenta'}
-            </Button>
-          </form>
-
-          <div className="mt-6 text-center">
-            <p className="text-slate-300">
-              ¿Ya tienes cuenta?{' '}
-              <Link to="/login" className="text-green-400 hover:text-green-300 font-medium">
-                Inicia sesión aquí
-              </Link>
-            </p>
-          </div>
-        </CardContent>
+          </CardContent>
         </Card>
       </motion.div>
     </div>
   );
-};
-
-export default RegisterPage;
+}
