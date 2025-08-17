@@ -16,6 +16,7 @@ import {
   Search,
   Check,
   X as XIcon,
+  Layers as LayersIcon,
 } from 'lucide-react';
 
 const TX_TABLE = 'wallet_transactions';
@@ -40,6 +41,7 @@ export default function AdminDashboard() {
   const [users, setUsers] = useState([]); // {id, username, role, email, balance, demo_balance, created_at}
   const [pendingDeposits, setPendingDeposits] = useState([]);
   const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
+  const [pendingProjectInvs, setPendingProjectInvs] = useState([]);
 
   // ui
   const [search, setSearch] = useState('');
@@ -55,7 +57,7 @@ export default function AdminDashboard() {
   });
 
   // ------- helpers -------
-// TODO: si balances tiene más columnas con DEFAULTs, incluirlas en el upsert.
+  // TODO: si balances tiene más columnas con DEFAULTs, incluirlas en el upsert.
   const ensureBalanceRow = async (userId) => {
     const { error } = await supabase
       .from('balances')
@@ -64,7 +66,7 @@ export default function AdminDashboard() {
   };
 
   // ------- fetchers -------
-// TODO: mantener shape esperado por otras pantallas si agregas/renombras campos.
+  // TODO: mantener shape esperado por otras pantallas si agregas/renombras campos.
   const fetchUsers = async () => {
     const { data: profs, error: pErr } = await supabase
       .from('profiles')
@@ -77,8 +79,8 @@ export default function AdminDashboard() {
       .select('user_id, usdc, demo_balance, eth');
     if (bErr) throw bErr;
 
-    const balMap = Object.fromEntries((bals || []).map(b => [b.user_id, b]));
-    const merged = (profs || []).map(p => ({
+    const balMap = Object.fromEntries((bals || []).map((b) => [b.user_id, b]));
+    const merged = (profs || []).map((p) => ({
       ...p,
       balance: Number(balMap[p.id]?.usdc ?? 0),
       demo_balance: Number(balMap[p.id]?.demo_balance ?? 0),
@@ -112,6 +114,32 @@ export default function AdminDashboard() {
     setPendingWithdrawals(wit || []);
   };
 
+  // NUEVO: inversiones de proyectos pendientes (status = 'pending')
+  const fetchPendingProjectInvs = async () => {
+    const { data, error } = await supabase
+      .from('project_investments')
+      .select(
+        [
+          'id',
+          'user_id',
+          'project_id',
+          'project_symbol',
+          'project_name',
+          'amount_usd',
+          'status',
+          'created_at',
+          // Embeds opcionales (si FKs están nombradas distinto, el embed puede fallar; mantenemos fallback por usersById):
+          'profiles:profiles!project_investments_user_id_fkey(email,username)',
+          'project:tokenized_projects!project_investments_project_id_fkey(symbol,name)',
+        ].join(', ')
+      )
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    setPendingProjectInvs(Array.isArray(data) ? data : []);
+  };
+
   const fetchMetrics = async (usersList, depList, witList) => {
     const fromISO = new Date(Date.now() - 30 * 864e5).toISOString();
     const { data: tx30, error } = await supabase
@@ -122,8 +150,8 @@ export default function AdminDashboard() {
     if (error) throw error;
 
     const volume30d = (tx30 || []).reduce((sum, t) => sum + Number(t.amount || 0), 0);
-    const activeUserIds = new Set((tx30 || []).map(t => t.user_id));
-    const activeUsers30d = usersList.filter(u => activeUserIds.has(u.id)).length;
+    const activeUserIds = new Set((tx30 || []).map((t) => t.user_id));
+    const activeUsers30d = usersList.filter((u) => activeUserIds.has(u.id)).length;
 
     setMetrics({
       totalUsers: usersList.length,
@@ -137,7 +165,10 @@ export default function AdminDashboard() {
   const reloadAll = async () => {
     setLoading(true);
     try {
-      await Promise.all([fetchUsers(), fetchPending()]);
+      // Serializado para no saturar conexiones en navegadores con límites estrictos.
+      await fetchUsers();
+      await fetchPending();
+      await fetchPendingProjectInvs();
     } catch (e) {
       console.error(e);
       toast({ title: 'Error cargando datos', description: e.message, variant: 'destructive' });
@@ -146,27 +177,39 @@ export default function AdminDashboard() {
     }
   };
 
-  useEffect(() => { reloadAll(); }, []);
+  useEffect(() => {
+    reloadAll();
+  }, []);
   useEffect(() => {
     fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {});
   }, [users, pendingDeposits, pendingWithdrawals]);
 
   // Mapa para fallback: id -> { email, username }
   const usersById = useMemo(
-    () => Object.fromEntries(users.map(u => [u.id, { email: u.email, username: u.username }])),
+    () => Object.fromEntries(users.map((u) => [u.id, { email: u.email, username: u.username }])),
     [users]
   );
 
   // Label: embed -> mapa -> UUID
   const userLabelFromTx = (tx) =>
-    tx?.profiles?.email
-    || usersById[tx.user_id]?.email
-    || tx?.profiles?.username
-    || usersById[tx.user_id]?.username
-    || tx.user_id;
+    tx?.profiles?.email ||
+    usersById[tx.user_id]?.email ||
+    tx?.profiles?.username ||
+    usersById[tx.user_id]?.username ||
+    tx.user_id;
+
+  const userLabelFromProjectInv = (pi) =>
+    pi?.profiles?.email ||
+    usersById[pi.user_id]?.email ||
+    pi?.profiles?.username ||
+    usersById[pi.user_id]?.username ||
+    pi.user_id;
+
+  const projectLabel = (pi) =>
+    pi?.project?.name || pi?.project_name || pi?.project_symbol || 'Proyecto';
 
   // ------- acciones admin -------
-// TODO: si refreshBalances hace más que balances, considerar refrescar también DataContext.
+  // TODO: si refreshBalances hace más que balances, considerar refrescar también DataContext.
   const maybeRefreshSelf = async (affectedUserId) => {
     if (authUser?.id && authUser.id === affectedUserId && typeof refreshBalances === 'function') {
       await refreshBalances();
@@ -193,7 +236,11 @@ export default function AdminDashboard() {
       const current = Number(row?.usdc || 0);
       const next = current + delta;
       if (next < 0) {
-        toast({ title: 'Saldo insuficiente', description: 'El ajuste dejaría el saldo negativo.', variant: 'destructive' });
+        toast({
+          title: 'Saldo insuficiente',
+          description: 'El ajuste dejaría el saldo negativo.',
+          variant: 'destructive',
+        });
         return;
       }
 
@@ -214,14 +261,14 @@ export default function AdminDashboard() {
         status: 'completed',
         currency: DEFAULT_CCY,
         description: isCredit ? 'Admin credit adjustment' : 'Admin debit adjustment',
-        reference_type: 'admin_adjustment'
+        reference_type: 'admin_adjustment',
       });
       if (tErr) throw tErr;
 
       toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(next)}` });
       await maybeRefreshSelf(userId);
       await reloadAll();
-      setAdjustValues(v => ({ ...v, [userId]: '' }));
+      setAdjustValues((v) => ({ ...v, [userId]: '' }));
     } catch (e) {
       console.error(e);
       toast({ title: 'Error ajustando balance', description: e.message, variant: 'destructive' });
@@ -258,10 +305,7 @@ export default function AdminDashboard() {
       const updateObj = { updated_at: new Date().toISOString() };
       updateObj[col] = current + amt;
 
-      const { error: uErr } = await supabase
-        .from('balances')
-        .update(updateObj)
-        .eq('user_id', updated.user_id);
+      const { error: uErr } = await supabase.from('balances').update(updateObj).eq('user_id', updated.user_id);
       if (uErr) throw uErr;
 
       toast({ title: 'Depósito aprobado', description: `Acreditado ${displayCcy(ccy)} ${fmt(amt)}` });
@@ -292,7 +336,11 @@ export default function AdminDashboard() {
 
       const current = Number(balRow?.[col] || 0);
       if (current < amt) {
-        toast({ title: 'Saldo insuficiente', description: `No alcanza para aprobar ${ccy} ${fmt(amt)}.`, variant: 'destructive' });
+        toast({
+          title: 'Saldo insuficiente',
+          description: `No alcanza para aprobar ${ccy} ${fmt(amt)}.`,
+          variant: 'destructive',
+        });
         return;
       }
 
@@ -300,10 +348,7 @@ export default function AdminDashboard() {
       const updateObj = { updated_at: new Date().toISOString() };
       updateObj[col] = current - amt;
 
-      const { error: bErr } = await supabase
-        .from('balances')
-        .update(updateObj)
-        .eq('user_id', tx.user_id);
+      const { error: bErr } = await supabase.from('balances').update(updateObj).eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
       // Marcar withdrawal como completado (solo si estaba pending)
@@ -327,10 +372,7 @@ export default function AdminDashboard() {
   const rejectTx = async (tx) => {
     try {
       // Estados válidos por CHECK: pending/completed/failed/reversed/cancelled/other
-      const status =
-        tx.type === 'deposit' ? 'failed' :
-        tx.type === 'withdrawal' ? 'cancelled' :
-        'other';
+      const status = tx.type === 'deposit' ? 'failed' : tx.type === 'withdrawal' ? 'cancelled' : 'other';
 
       const { error } = await supabase
         .from(TX_TABLE)
@@ -347,12 +389,117 @@ export default function AdminDashboard() {
     }
   };
 
+  // ------- acciones admin: proyectos tokenizados -------
+  const approveProjectInvestment = async (pi) => {
+    try {
+      // 1) Intentar RPC (recomendado)
+      const { error: rpcErr } = await supabase.rpc('approve_project_investment', {
+        p_investment_id: pi.id,
+        p_admin_id: authUser?.id ?? null,
+      });
+      if (!rpcErr) {
+        toast({ title: 'Inversión aprobada', description: `${projectLabel(pi)} por $${fmt(pi.amount_usd)}` });
+        await maybeRefreshSelf(pi.user_id);
+        await reloadAll();
+        return;
+      }
+
+      // 2) Fallback SIN RPC (no transaccional) // TODO: reemplazar por RPC SECURITY DEFINER
+      await ensureBalanceRow(pi.user_id);
+
+      // Leer saldo actual
+      const { data: balRow, error: gErr } = await supabase
+        .from('balances')
+        .select('usdc')
+        .eq('user_id', pi.user_id)
+        .single();
+      if (gErr) throw gErr;
+
+      const current = Number(balRow?.usdc || 0);
+      const amt = Number(pi.amount_usd || 0);
+      if (current < amt) {
+        toast({
+          title: 'Saldo insuficiente',
+          description: `El usuario no posee USDC suficientes para aprobar $${fmt(amt)}.`,
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      // Debitar saldo
+      const { error: uErr } = await supabase
+        .from('balances')
+        .update({ usdc: current - amt, updated_at: new Date().toISOString() })
+        .eq('user_id', pi.user_id);
+      if (uErr) throw uErr;
+
+      // Marcar inversión aprobada
+      const { error: iErr } = await supabase
+        .from('project_investments')
+        .update({ status: 'approved', updated_at: new Date().toISOString() })
+        .eq('id', pi.id)
+        .eq('status', 'pending');
+      if (iErr) throw iErr;
+
+      // Completar transacción relacionada (si existe)
+      await supabase
+        .from(TX_TABLE)
+        .update({ status: 'completed', updated_at: new Date().toISOString() })
+        .eq('reference_type', 'project_investment')
+        .eq('reference_id', pi.id)
+        .eq('status', 'pending');
+
+      toast({ title: 'Inversión aprobada', description: `${projectLabel(pi)} por $${fmt(amt)}` });
+      await maybeRefreshSelf(pi.user_id);
+      await reloadAll();
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'Error aprobando inversión', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const rejectProjectInvestment = async (pi) => {
+    try {
+      // 1) RPC recomendado
+      const { error: rpcErr } = await supabase.rpc('reject_project_investment', {
+        p_investment_id: pi.id,
+        p_admin_id: authUser?.id ?? null,
+      });
+      if (!rpcErr) {
+        toast({ title: 'Inversión rechazada', description: projectLabel(pi) });
+        await reloadAll();
+        return;
+      }
+
+      // 2) Fallback sin RPC // TODO: reemplazar por RPC SECURITY DEFINER
+      const { error: iErr } = await supabase
+        .from('project_investments')
+        .update({ status: 'rejected', updated_at: new Date().toISOString() })
+        .eq('id', pi.id)
+        .eq('status', 'pending');
+      if (iErr) throw iErr;
+
+      await supabase
+        .from(TX_TABLE)
+        .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+        .eq('reference_type', 'project_investment')
+        .eq('reference_id', pi.id)
+        .eq('status', 'pending');
+
+      toast({ title: 'Inversión rechazada', description: projectLabel(pi) });
+      await reloadAll();
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'Error rechazando inversión', description: e.message, variant: 'destructive' });
+    }
+  };
+
   // ------- filtros -------
   const filteredUsers = useMemo(() => {
     if (!search) return users;
     const q = search.toLowerCase();
     return users.filter(
-      u =>
+      (u) =>
         (u.email || '').toLowerCase().includes(q) ||
         (u.username || '').toLowerCase().includes(q) ||
         (u.id || '').toLowerCase().includes(q)
@@ -423,12 +570,16 @@ export default function AdminDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {filteredUsers.map(u => (
+                {filteredUsers.map((u) => (
                   <tr key={u.id} className="border-b border-slate-800/60">
                     <td className="py-2 text-white">{u.username || '—'}</td>
                     <td className="py-2 text-slate-300">{u.email || '—'}</td>
                     <td className="py-2">
-                      <span className={`px-2 py-1 rounded text-xs ${u.role === 'admin' ? 'bg-purple-500/20 text-purple-300' : 'bg-slate-700 text-slate-300'}`}>
+                      <span
+                        className={`px-2 py-1 rounded text-xs ${
+                          u.role === 'admin' ? 'bg-purple-500/20 text-purple-300' : 'bg-slate-700 text-slate-300'
+                        }`}
+                      >
                         {u.role || 'user'}
                       </span>
                     </td>
@@ -438,7 +589,7 @@ export default function AdminDashboard() {
                         <Input
                           placeholder="+100 o -50"
                           value={adjustValues[u.id] ?? ''}
-                          onChange={(e) => setAdjustValues(v => ({ ...v, [u.id]: e.target.value }))}
+                          onChange={(e) => setAdjustValues((v) => ({ ...v, [u.id]: e.target.value }))}
                           className="w-28 bg-slate-800 border-slate-600 text-white"
                         />
                         <Button
@@ -453,7 +604,11 @@ export default function AdminDashboard() {
                   </tr>
                 ))}
                 {filteredUsers.length === 0 && (
-                  <tr><td colSpan="5" className="py-6 text-center text-slate-400">Sin resultados.</td></tr>
+                  <tr>
+                    <td colSpan="5" className="py-6 text-center text-slate-400">
+                      Sin resultados.
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>
@@ -464,12 +619,14 @@ export default function AdminDashboard() {
       {/* Depósitos pendientes */}
       <Card className="crypto-card">
         <CardHeader>
-          <CardTitle className="text-white flex items-center"><Download className="h-5 w-5 mr-2 text-green-400" /> Depósitos pendientes</CardTitle>
+          <CardTitle className="text-white flex items-center">
+            <Download className="h-5 w-5 mr-2 text-green-400" /> Depósitos pendientes
+          </CardTitle>
           <CardDescription className="text-slate-300">Aprueba o rechaza las solicitudes.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {pendingDeposits.map(tx => (
+            {pendingDeposits.map((tx) => (
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
                   <p className="text-white font-medium">Usuario: {userLabelFromTx(tx)}</p>
@@ -496,12 +653,14 @@ export default function AdminDashboard() {
       {/* Retiros pendientes */}
       <Card className="crypto-card">
         <CardHeader>
-          <CardTitle className="text-white flex items-center"><Upload className="h-5 w-5 mr-2 text-yellow-400" /> Retiros pendientes</CardTitle>
+          <CardTitle className="text-white flex items-center">
+            <Upload className="h-5 w-5 mr-2 text-yellow-400" /> Retiros pendientes
+          </CardTitle>
           <CardDescription className="text-slate-300">Aprueba o rechaza las solicitudes.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {pendingWithdrawals.map(tx => (
+            {pendingWithdrawals.map((tx) => (
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
                   <p className="text-white font-medium">Usuario: {userLabelFromTx(tx)}</p>
@@ -521,6 +680,51 @@ export default function AdminDashboard() {
               </div>
             ))}
             {pendingWithdrawals.length === 0 && <p className="text-slate-400">No hay retiros pendientes.</p>}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* NUEVO: Inversiones de proyectos pendientes */}
+      <Card className="crypto-card">
+        <CardHeader>
+          <CardTitle className="text-white flex items-center">
+            <LayersIcon className="h-5 w-5 mr-2 text-pink-400" /> Inversiones de proyectos pendientes
+          </CardTitle>
+          <CardDescription className="text-slate-300">
+            Aprueba o rechaza las solicitudes de <span className="font-semibold">project_investments</span>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {pendingProjectInvs.map((pi) => (
+              <div key={pi.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
+                <div className="text-sm">
+                  <p className="text-white font-medium">Usuario: {userLabelFromProjectInv(pi)}</p>
+                  <p className="text-slate-400">
+                    Proyecto:{' '}
+                    <span className="text-slate-200 font-medium">
+                      {projectLabel(pi)}
+                      {pi?.project_symbol ? ` (${pi.project_symbol})` : ''}
+                    </span>
+                  </p>
+                  <p className="text-slate-400">
+                    Monto:{' '}
+                    <span className="text-cyan-300 font-semibold">
+                      ${fmt(pi.amount_usd)} · USDC
+                    </span>
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => approveProjectInvestment(pi)} className="bg-green-600 hover:bg-green-700">
+                    <Check className="h-4 w-4 mr-1" /> Aprobar
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => rejectProjectInvestment(pi)}>
+                    <XIcon className="h-4 w-4 mr-1" /> Rechazar
+                  </Button>
+                </div>
+              </div>
+            ))}
+            {pendingProjectInvs.length === 0 && <p className="text-slate-400">No hay inversiones pendientes.</p>}
           </div>
         </CardContent>
       </Card>
