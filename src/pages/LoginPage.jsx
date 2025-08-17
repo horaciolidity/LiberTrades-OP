@@ -1,147 +1,329 @@
-import React, { useState, useEffect } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Eye, EyeOff, ArrowLeft } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { useAuth } from '@/contexts/AuthContext';
+// src/contexts/AuthContext.jsx
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+} from 'react';
+import { toast } from '@/components/ui/use-toast';
+import { supabase } from '@/lib/supabaseClient';
 
-export default function LoginPage() {
-  const { login, isAuthenticated } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
+const AuthContext = createContext();
 
-  // si ProtectedRoute te mandó a /login, trae el destino original
-  const from = location.state?.from || '/dashboard';
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within an AuthProvider');
+  return ctx;
+}
 
-  const [formData, setFormData] = useState({ email: '', password: '' });
-  const [showPassword, setShowPassword] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);         // auth user
+  const [profile, setProfile] = useState(null);   // public.profiles
+  const [balances, setBalances] = useState(null); // public.balances
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  // Redirige automáticamente cuando el contexto confirme sesión
-  useEffect(() => {
-    if (isAuthenticated) navigate(from, { replace: true });
-  }, [isAuthenticated, from, navigate]);
+  const SAFE_TIMEOUT = 2500; // ms: evita loaders eternos
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData((s) => ({ ...s, [name]: value }));
+  // ------- helpers -------
+  async function fetchProfile(userId) {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, username, referred_by, referral_code, role, full_name, email')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error) console.warn('Perfil:', error.message);
+    setProfile(data || null);
+    return data || null;
+  }
+
+  // Crea si no existe y devuelve la fila (idempotente)
+  async function fetchOrCreateBalances(userId) {
+    // 1) Intentar leer
+    const { data: existing, error: selErr } = await supabase
+      .from('balances')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (selErr) console.warn('Balance (select):', selErr.message);
+
+    if (existing) {
+      setBalances(existing);
+      return existing;
+    }
+
+    // 2) Si NO existe, crear con 0s (RLS debe permitirlo)
+    const { data: inserted, error: insErr } = await supabase
+      .from('balances')
+      .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 })
+      .select()
+      .single();
+
+    if (insErr) {
+      // Si falla por RLS, lo dejamos en null y avisamos suave
+      console.warn('Balance (insert):', insErr.message);
+      setBalances(null);
+      return null;
+    }
+
+    setBalances(inserted || null);
+    return inserted || null;
+  }
+
+  // Refresca solo balances (útil post-ajuste admin o RPC)
+  const refreshBalances = async () => {
+    if (!user?.id) return null;
+    const { data, error } = await supabase
+      .from('balances')
+      .select('*')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (error) {
+      console.warn('refreshBalances:', error.message);
+      return null;
+    }
+    setBalances(data || null);
+    return data || null;
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (submitting) return;
-    setSubmitting(true);
+  // carga en segundo plano — NO bloquea el loader
+  function loadAllBG(userId) {
+    Promise.allSettled([
+      fetchProfile(userId),
+      fetchOrCreateBalances(userId),
+    ]).catch(() => {});
+    setIsAuthenticated(true);
+  }
+
+  // ------- bootstrap + listener de auth -------
+  useEffect(() => {
+    let mounted = true;
+    const killer = setTimeout(() => mounted && setLoading(false), SAFE_TIMEOUT);
+
+    (async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) console.warn('getSession error:', error.message);
+
+        const session = data?.session ?? null;
+        if (!mounted) return;
+
+        setUser(session?.user ?? null);
+        setIsAuthenticated(!!session?.user);
+
+        if (session?.user) {
+          loadAllBG(session.user.id); // en BG
+        } else {
+          setProfile(null);
+          setBalances(null);
+        }
+      } catch (e) {
+        console.error('Error inesperado al cargar la sesión:', e);
+        if (mounted) {
+          setUser(null);
+          setProfile(null);
+          setBalances(null);
+          setIsAuthenticated(false);
+        }
+      } finally {
+        if (mounted) setLoading(false); // soltar loader ya
+      }
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_ev, session) => {
+      const u = session?.user ?? null;
+      setUser(u);
+      setIsAuthenticated(!!u);
+      if (u) {
+        loadAllBG(u.id); // en BG
+      } else {
+        setProfile(null);
+        setBalances(null);
+      }
+      setLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+      clearTimeout(killer);
+      sub?.subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  // ------- listeners Realtime (balances + profiles) -------
+  useEffect(() => {
+    if (!user?.id) return;
+
+    // balances del usuario logueado
+    const chBalances = supabase
+      .channel('rt-balances')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'balances', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          if (payload?.new) setBalances(payload.new);
+        }
+      )
+      .subscribe();
+
+    // cambios de perfil (username/role/etc)
+    const chProfile = supabase
+      .channel('rt-profiles')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
+        (payload) => {
+          if (payload?.new) setProfile(payload.new);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(chBalances);
+      supabase.removeChannel(chProfile);
+    };
+  }, [user?.id]);
+
+  // ------- actions -------
+  const generateReferralCode = () =>
+    Math.random().toString(36).substring(2, 8).toUpperCase();
+
+  const login = async (email, password) => {
+    setLoading(true);
     try {
-      const email = formData.email.trim().toLowerCase();
-      const password = formData.password; // no trim si permitís espacios
-      await login(email, password); // el toast de error lo maneja AuthContext
-      // NO navegamos acá; el useEffect hace la redirección usando "from"
-    } catch {
-      /* ya hay toast en login() */
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      if (data?.user?.id) loadAllBG(data.user.id);
+      toast({ title: '¡Bienvenido!', description: 'Has iniciado sesión exitosamente' });
+      return data.user ?? null;
+    } catch (error) {
+      toast({ title: 'Error de autenticación', description: error.message, variant: 'destructive' });
+      throw error;
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
   };
 
+  // >>> REGISTRO con referido obligatorio <<<
+  const register = async ({ email, password, name, referralCode }) => {
+    setLoading(true);
+    try {
+      // 1) Validar que venga un código
+      const code = (referralCode || '').toUpperCase().trim();
+      if (!code) {
+        throw new Error('Se requiere un código de referido.');
+      }
+
+      // 2) Resolver el código -> id del referente
+      const { data: refProfile, error: refErr } = await supabase
+        .from('profiles')
+        .select('id, referral_code, username, email')
+        .eq('referral_code', code)
+        .maybeSingle();
+      if (refErr) throw refErr;
+      if (!refProfile?.id) {
+        throw new Error('Código de referido inválido.');
+      }
+
+      // 3) Crear cuenta auth
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { full_name: name || null } },
+      });
+      if (error) throw error;
+
+      const userId = data?.user?.id;
+      const myReferralCode = generateReferralCode();
+
+      if (userId) {
+        // 4) Insertar perfil con el "referred_by" del referente
+        const { error: pErr } = await supabase.from('profiles').insert({
+          id: userId,
+          username: name || email.split('@')[0],
+          referred_by: refProfile.id,        // <- enforzado
+          referral_code: myReferralCode,
+          email,
+          full_name: name || null,
+        });
+        if (pErr) throw pErr;
+
+        // 5) Balance inicial (idempotente)
+        const { error: bErr } = await supabase
+          .from('balances')
+          .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 });
+        if (bErr) {
+          // Si falla por RLS, no bloqueamos el registro
+          console.warn('Init balances (register):', bErr.message);
+        }
+
+        loadAllBG(userId); // en BG
+      }
+
+      toast({ title: '¡Registro exitoso!', description: 'Tu cuenta ha sido creada correctamente.' });
+      return data.user ?? null;
+    } catch (err) {
+      toast({ title: 'Error de registro', description: err.message, variant: 'destructive' });
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const logout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setProfile(null);
+    setBalances(null);
+    setIsAuthenticated(false);
+    toast({ title: 'Sesión cerrada', description: 'Has cerrado sesión exitosamente' });
+  };
+
+  const updateUser = async (updatedData) => {
+    if (!user?.id) {
+      toast({ title: 'Sin sesión', description: 'No hay usuario para actualizar', variant: 'destructive' });
+      return;
+    }
+    const { error } = await supabase.from('profiles').update(updatedData).eq('id', user.id);
+    if (error) {
+      toast({ title: 'Error al actualizar usuario', description: error.message, variant: 'destructive' });
+      return;
+    }
+    fetchProfile(user.id); // refresh en BG
+    toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado exitosamente' });
+  };
+
+  // Helper comodín para UI que espera un único saldo USD
+  const balanceUSD = typeof balances?.usdc === 'number'
+    ? balances.usdc
+    : typeof balances?.balance === 'number'
+    ? balances.balance
+    : 0;
+
+  const displayName =
+    profile?.username ||
+    user?.user_metadata?.full_name ||
+    (user?.email ? user.email.split('@')[0] : 'Usuario');
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8 }}
-        className="w-full max-w-md"
-      >
-        <div className="mb-8">
-          <Link to="/" className="inline-flex items-center text-slate-300 hover:text-white transition-colors">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Volver al inicio
-          </Link>
-        </div>
-
-        <Card className="crypto-card">
-          <CardHeader className="text-center">
-            <div className="mx-auto w-16 h-16 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4">
-              <img alt="LiberTrades logo" src="https://images.unsplash.com/photo-1639916909400-40d53a2edd72" />
-            </div>
-            <CardTitle className="text-2xl text-white">Iniciar Sesión</CardTitle>
-            <CardDescription className="text-slate-300">
-              Accede a tu cuenta de LiberTrades
-            </CardDescription>
-          </CardHeader>
-
-          <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <div className="space-y-2">
-                <Label htmlFor="email" className="text-white">Email</Label>
-                <Input
-                  id="email"
-                  name="email"
-                  type="email"
-                  value={formData.email}
-                  onChange={handleChange}
-                  placeholder="tu@email.com"
-                  autoComplete="email"
-                  required
-                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="password" className="text-white">Contraseña</Label>
-                <div className="relative">
-                  <Input
-                    id="password"
-                    name="password"
-                    type={showPassword ? 'text' : 'password'}
-                    value={formData.password}
-                    onChange={handleChange}
-                    placeholder="••••••••"
-                    autoComplete="current-password"
-                    required
-                    className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((s) => !s)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-                    aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <Button
-                type="submit"
-                disabled={submitting}
-                className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-white"
-              >
-                {submitting ? 'Iniciando sesión…' : 'Iniciar Sesión'}
-              </Button>
-            </form>
-
-            <div className="mt-6 text-center">
-              <p className="text-slate-300">
-                ¿No tienes cuenta?{' '}
-                <Link to="/register" className="text-green-400 hover:text-green-300 font-medium">
-                  Regístrate aquí
-                </Link>
-              </p>
-            </div>
-
-            <div className="mt-4 p-4 bg-slate-800/50 rounded-lg">
-              <p className="text-xs text-slate-400 mb-2">Cuentas de prueba:</p>
-              <div className="text-xs text-slate-300 space-y-1">
-                <div>Admin: admin@test.com / admin123</div>
-                <div>Usuario: user@test.com / user123</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </motion.div>
-    </div>
+    <AuthContext.Provider
+      value={{
+        user,
+        profile,
+        balances,
+        balanceUSD,
+        displayName,
+        isAuthenticated,
+        loading,
+        login,
+        register,       // <- firma nueva con { email, password, name, referralCode }
+        logout,
+        updateUser,
+        refreshBalances,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
   );
 }
