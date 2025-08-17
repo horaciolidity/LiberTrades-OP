@@ -1,5 +1,4 @@
-// src/pages/Dashboard.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -16,10 +15,51 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
+import { supabase } from '@/lib/supabaseClient';
 
 const fmt = (n, dec = 2) => {
   const num = Number(n);
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
+};
+
+// Precio robusto (distintos shapes posibles)
+const getPrice = (data) => {
+  if (data == null) return 0;
+  if (typeof data === 'number') return data;
+  return Number(data?.price ?? data?.usd ?? data?.value ?? 0);
+};
+
+// Barra de progreso minimal
+function ProgressBar({ value }) {
+  const v = Math.max(0, Math.min(100, Number(value || 0)));
+  return (
+    <div className="w-full h-2 rounded bg-slate-800 overflow-hidden">
+      <div className="h-full bg-gradient-to-r from-green-500 to-emerald-500" style={{ width: `${v}%` }} />
+    </div>
+  );
+}
+
+// Normaliza un investment {snake|camel} -> shape común
+const normInvestment = (inv) => ({
+  id: inv?.id,
+  userId: inv?.user_id ?? inv?.userId,
+  planName: inv?.plan_name ?? inv?.planName,
+  amount: Number(inv?.amount ?? 0),
+  dailyReturn: Number(inv?.daily_return ?? inv?.dailyReturn ?? 0),
+  duration: Number(inv?.duration ?? 0),
+  status: inv?.status ?? 'active',
+  createdAt: inv?.createdAt ?? inv?.created_at ?? null,
+});
+
+// Calcula progreso/ganancia acumulada
+const calcProgress = (inv, now = Date.now()) => {
+  const start = inv.createdAt ? new Date(inv.createdAt).getTime() : now;
+  const dayMs = 86_400_000;
+  const elapsedDays = Math.max(0, Math.floor((now - start) / dayMs));
+  const cappedDays = Math.min(Number(inv.duration || 0), elapsedDays);
+  const pct = Number(inv.duration || 0) > 0 ? (cappedDays / Number(inv.duration)) * 100 : 0;
+  const accrued = Number(inv.amount || 0) * (Number(inv.dailyReturn || 0) / 100) * cappedDays;
+  return { elapsedDays, cappedDays, pct, accrued };
 };
 
 export default function Dashboard() {
@@ -37,39 +77,113 @@ export default function Dashboard() {
   const [transactions, setTransactions] = useState([]);
   const [error, setError] = useState(null);
 
+  // Tick para refrescar progreso en pantalla
+  const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Carga inicial desde DataContext (compat snake/camel)
   useEffect(() => {
     if (!user?.id) return;
     try {
       const invs = getInvestments?.() || [];
       const refs = getReferrals?.() || [];
-      const txs  = getTransactions?.() || [];
-
+      const txs = getTransactions?.() || [];
       const uid = user.id;
-      setInvestments(invs.filter(inv => (inv?.user_id ?? inv?.userId) === uid));
+
+      const myInv = invs
+        .map(normInvestment)
+        .filter((inv) => inv.userId === uid);
+
+      const myTx = txs.filter((t) => (t?.user_id ?? t?.userId) === uid);
+
+      setInvestments(myInv);
       setReferrals(refs);
-      setTransactions(txs.filter(t => (t?.user_id ?? t?.userId) === uid));
+      setTransactions(myTx);
     } catch (err) {
       console.error('Error cargando datos del dashboard:', err);
       setError('No se pudieron cargar los datos.');
     }
   }, [user?.id, getInvestments, getReferrals, getTransactions]);
 
+  // Realtime: inversiones del usuario
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('dash-investments')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          setInvestments((prev) => {
+            const list = Array.isArray(prev) ? [...prev] : [];
+            if (payload.eventType === 'INSERT') {
+              const ni = normInvestment(payload.new);
+              // Evitar duplicados
+              if (!list.some((x) => x.id === ni.id)) list.unshift(ni);
+              return list;
+            }
+            if (payload.eventType === 'UPDATE') {
+              const ni = normInvestment(payload.new);
+              return list.map((x) => (x.id === ni.id ? ni : x));
+            }
+            if (payload.eventType === 'DELETE') {
+              return list.filter((x) => x.id !== payload.old?.id);
+            }
+            return list;
+          });
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [user?.id]);
+
+  // Realtime: wallet_transactions del usuario (para Actividad Reciente)
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('dash-wallet-tx')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          setTransactions((prev) => {
+            const list = Array.isArray(prev) ? [...prev] : [];
+            if (payload.eventType === 'INSERT') {
+              const nx = payload.new;
+              if (!list.some((x) => x.id === nx.id)) list.unshift(nx);
+              return list;
+            }
+            if (payload.eventType === 'UPDATE') {
+              const nx = payload.new;
+              return list.map((x) => (x.id === nx.id ? nx : x));
+            }
+            if (payload.eventType === 'DELETE') {
+              return list.filter((x) => x.id !== payload.old?.id);
+            }
+            return list;
+          });
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [user?.id]);
+
   if (loading) return <div className="p-8 text-white">Cargando...</div>;
   if (error) return <div className="p-8 text-red-500">{error}</div>;
   if (!user) return <div className="p-8 text-white">Iniciá sesión para ver el dashboard.</div>;
 
+  // Totales/ganancias usando createdAt || created_at
   const totalInvested = investments.reduce((sum, inv) => sum + Number(inv?.amount || 0), 0);
 
   const totalEarnings = investments.reduce((sum, inv) => {
-    const createdAtMs = inv?.createdAt ? new Date(inv.createdAt).getTime() : Date.now();
-    const daysPassed = Math.floor((Date.now() - createdAtMs) / (1000 * 60 * 60 * 24));
-    const dailyReturnPct = Number(inv?.dailyReturn || 0);
-    const duration = Number(inv?.duration || 0);
-    const amount = Number(inv?.amount || 0);
-    return sum + amount * (dailyReturnPct / 100) * Math.min(daysPassed, duration);
+    const { accrued } = calcProgress(inv, nowTick);
+    return sum + accrued;
   }, 0);
 
-  const activeBots = (botActivations || []).filter(b => (b?.status || '').toLowerCase() === 'active');
+  const activeBots = (botActivations || []).filter((b) => (b?.status || '').toLowerCase() === 'active');
   const totalInBots = activeBots.reduce((s, b) => s + Number(b?.amountUsd || 0), 0);
 
   const stats = [
@@ -110,9 +224,13 @@ export default function Dashboard() {
     },
   ];
 
-  const recentTx = [...transactions]
-    .sort((a, b) => new Date(b?.createdAt ?? b?.created_at ?? 0) - new Date(a?.createdAt ?? a?.created_at ?? 0))
-    .slice(0, 5);
+  const recentTx = useMemo(() => {
+    const sorted = [...transactions].sort(
+      (a, b) =>
+        new Date(b?.createdAt ?? b?.created_at ?? 0) - new Date(a?.createdAt ?? a?.created_at ?? 0)
+    );
+    return sorted.slice(0, 5);
+  }, [transactions]);
 
   return (
     <div className="space-y-8">
@@ -155,7 +273,12 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8, delay: 0.4 }}>
+        {/* Precios en tiempo real */}
+        <motion.div
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.8, delay: 0.4 }}
+        >
           <Card className="crypto-card">
             <CardHeader>
               <CardTitle className="text-white flex items-center">
@@ -168,11 +291,14 @@ export default function Dashboard() {
               <div className="space-y-4">
                 {Object.entries(cryptoPrices).map(([crypto, data]) => {
                   const symbol = crypto === 'USDT' ? 'USDC' : crypto;
-                  const price = Number(data?.price ?? 0);
+                  const price = getPrice(data);
                   const change = Number(data?.change ?? 0);
                   const decimals = symbol === 'USDC' ? 4 : 2;
                   return (
-                    <div key={crypto} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
+                    <div
+                      key={crypto}
+                      className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg"
+                    >
                       <div className="flex items-center">
                         <div className="w-8 h-8 bg-gradient-to-r from-orange-500 to-yellow-500 rounded-full flex items-center justify-center mr-3">
                           <span className="text-white text-xs font-bold">{symbol}</span>
@@ -180,11 +306,17 @@ export default function Dashboard() {
                         <span className="text-white font-medium">{symbol}</span>
                       </div>
                       <div className="text-right">
-                        <div className="text-white font-semibold">
-                          ${price.toFixed(decimals)}
-                        </div>
-                        <div className={`text-sm flex items-center ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {change >= 0 ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
+                        <div className="text-white font-semibold">${price.toFixed(decimals)}</div>
+                        <div
+                          className={`text-sm flex items-center ${
+                            change >= 0 ? 'text-green-400' : 'text-red-400'
+                          }`}
+                        >
+                          {change >= 0 ? (
+                            <TrendingUp className="h-3 w-3 mr-1" />
+                          ) : (
+                            <TrendingDown className="h-3 w-3 mr-1" />
+                          )}
                           {Math.abs(change).toFixed(2)}%
                         </div>
                       </div>
@@ -196,7 +328,12 @@ export default function Dashboard() {
           </Card>
         </motion.div>
 
-        <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8, delay: 0.6 }}>
+        {/* Inversiones Activas con progreso */}
+        <motion.div
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.8, delay: 0.6 }}
+        >
           <Card className="crypto-card">
             <CardHeader>
               <CardTitle className="text-white flex items-center">
@@ -208,24 +345,37 @@ export default function Dashboard() {
             <CardContent>
               {(investments?.length || 0) > 0 ? (
                 <div className="space-y-4">
-                  {investments.slice(0, 5).map((investment) => (
-                    <div key={investment?.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
-                      <div>
-                        <div className="text-white font-medium">{investment?.planName || 'Plan'}</div>
-                        <div className="text-slate-400 text-sm">
-                          {investment?.createdAt ? new Date(investment.createdAt).toLocaleDateString() : '--/--/----'}
+                  {investments.slice(0, 5).map((inv) => {
+                    const progress = calcProgress(inv, nowTick);
+                    return (
+                      <div
+                        key={inv?.id}
+                        className="p-3 bg-slate-800/50 rounded-lg"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-white font-medium">{inv?.planName || 'Plan'}</div>
+                            <div className="text-slate-400 text-sm">
+                              {inv?.createdAt ? new Date(inv.createdAt).toLocaleDateString() : '--/--/----'}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-white font-semibold">${fmt(inv?.amount, 2)}</div>
+                            <div className="text-green-400 text-sm">{fmt(inv?.dailyReturn, 2)}% diario</div>
+                          </div>
+                        </div>
+                        <div className="mt-3">
+                          <ProgressBar value={progress.pct} />
+                          <div className="flex justify-between text-xs text-slate-400 mt-1">
+                            <span>
+                              Día {progress.cappedDays}/{inv?.duration}
+                            </span>
+                            <span>+${fmt(progress.accrued, 2)} ganados</span>
+                          </div>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="text-white font-semibold">
-                          ${fmt(investment?.amount, 2)}
-                        </div>
-                        <div className="text-green-400 text-sm">
-                          {fmt(investment?.dailyReturn, 2)}% diario
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-center py-8">
@@ -239,7 +389,12 @@ export default function Dashboard() {
         </motion.div>
       </div>
 
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.8 }}>
+      {/* Actividad reciente (historial) */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, delay: 0.8 }}
+      >
         <Card className="crypto-card">
           <CardHeader>
             <CardTitle className="text-white">Actividad Reciente</CardTitle>
@@ -256,26 +411,31 @@ export default function Dashboard() {
                   const label =
                     type === 'deposit' ? 'Depósito' :
                     type === 'withdrawal' ? 'Retiro' :
-                    type === 'investment' ? 'Inversión' :
+                    type === 'investment' || type === 'investment_purchase' ? 'Inversión' :
                     type === 'bot_activation' ? 'Bot activado' :
-                    type === 'transfer' ? 'Transferencia' : (tx?.type || 'Movimiento');
+                    type === 'admin_credit' ? 'Crédito admin' :
+                    type === 'transfer' ? 'Transferencia' :
+                    (tx?.type || 'Movimiento');
 
                   const sign =
                     type === 'deposit' ? '+' :
-                    (type === 'withdrawal' || type === 'bot_activation') ? '-' : '';
+                    type === 'withdrawal' || type === 'bot_activation' || type === 'investment_purchase' ? '-' :
+                    '';
 
                   const color =
                     type === 'deposit' ? 'text-green-400' :
-                    (type === 'withdrawal' || type === 'bot_activation') ? 'text-red-400' :
-                    'text-slate-300';
+                    type === 'withdrawal' || type === 'bot_activation' || type === 'investment_purchase'
+                      ? 'text-red-400'
+                      : 'text-slate-300';
+
+                  const desc = tx?.description ||
+                    ((tx?.referenceType ?? tx?.reference_type) === 'bot_activation' ? 'Activación de bot' : '');
 
                   return (
                     <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
                       <div>
                         <div className="text-white font-medium">{label}</div>
-                        <div className="text-slate-400 text-xs">
-                          {tx?.description || (tx?.referenceType === 'bot_activation' ? 'Activación de bot' : '')}
-                        </div>
+                        <div className="text-slate-400 text-xs">{desc}</div>
                       </div>
                       <div className="text-right">
                         <div className={`font-semibold ${color}`}>
@@ -304,19 +464,31 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <Link to="/plans" className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors">
+              <Link
+                to="/plans"
+                className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors"
+              >
                 <Wallet className="h-8 w-8 text-green-400 mb-2" />
                 <span className="text-white text-sm font-medium">Invertir</span>
               </Link>
-              <Link to="/simulator" className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors">
+              <Link
+                to="/simulator"
+                className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors"
+              >
                 <TrendingUp className="h-8 w-8 text-blue-400 mb-2" />
                 <span className="text-white text-sm font-medium">Trading</span>
               </Link>
-              <Link to="/referrals" className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors">
+              <Link
+                to="/referrals"
+                className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors"
+              >
                 <Users className="h-8 w-8 text-purple-400 mb-2" />
                 <span className="text-white text-sm font-medium">Referidos</span>
               </Link>
-              <Link to="/history" className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors">
+              <Link
+                to="/history"
+                className="flex flex-col items-center p-4 bg-slate-800/50 rounded-lg hover:bg-slate-700/50 transition-colors"
+              >
                 <BarChart3 className="h-8 w-8 text-orange-400 mb-2" />
                 <span className="text-white text-sm font-medium">Historial</span>
               </Link>

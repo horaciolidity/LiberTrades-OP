@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Wallet,
@@ -9,6 +9,7 @@ import {
   Star,
   Zap,
   ShoppingBag,
+  Activity,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -41,9 +42,19 @@ const getPrice = (cryptoPrices, symbol) => {
   return 0;
 };
 
+// Barra de progreso simple (evita depender de otros componentes)
+function ProgressBar({ value }) {
+  const v = Math.max(0, Math.min(100, Number(value || 0)));
+  return (
+    <div className="w-full h-2 rounded bg-slate-800 overflow-hidden">
+      <div className="h-full bg-gradient-to-r from-green-500 to-emerald-500" style={{ width: `${v}%` }} />
+    </div>
+  );
+}
+
 export default function InvestmentPlans() {
-  const { investmentPlans: defaultPlans, cryptoPrices } = useData();
-  const { user, balances } = useAuth();
+  const { investmentPlans: defaultPlans, cryptoPrices, addTransaction, addInvestment } = useData(); // TODO: si addTransaction/addInvestment no existe en DataContext, se ignora.
+  const { user, balances, refreshBalances } = useAuth();
   const { playSound } = useSound();
 
   // Compat: los planes aceptan estas monedas
@@ -56,6 +67,93 @@ export default function InvestmentPlans() {
   const [investmentAmount, setInvestmentAmount] = useState('');
   const [selectedCurrency, setSelectedCurrency] = useState('USDC');
   const [isInvesting, setIsInvesting] = useState(false);
+
+  // -------- Mis inversiones (tiempo real) --------
+  const [myInvestments, setMyInvestments] = useState([]);
+  const [nowTick, setNowTick] = useState(Date.now());
+
+  // Carga inicial
+  useEffect(() => {
+    let cancel = false;
+    const load = async () => {
+      if (!user?.id) return;
+      const { data, error } = await supabase
+        .from('investments')
+        .select('id, user_id, plan_name, amount, daily_return, duration, status, currency_input, created_at')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+      if (error) {
+        console.error(error);
+        return;
+      }
+      if (!cancel) setMyInvestments(Array.isArray(data) ? data : []);
+    };
+    load();
+    return () => { cancel = true; };
+  }, [user?.id]);
+
+  // Realtime: cambios en mis inversiones
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('investments-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          setMyInvestments((prev) => {
+            const old = Array.isArray(prev) ? prev : [];
+            switch (payload.eventType) {
+              case 'INSERT':
+                return [payload.new, ...old];
+              case 'UPDATE':
+                return old.map((r) => (r.id === payload.new.id ? payload.new : r));
+              case 'DELETE':
+                return old.filter((r) => r.id !== payload.old.id);
+              default:
+                return old;
+            }
+          });
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [user?.id]);
+
+  // Tick para actualizar progreso/ganancias en pantalla
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Helpers de cálculo por inversión
+  const dayMs = 86_400_000;
+  const calcProgressFor = (row) => {
+    const start = new Date(row?.created_at || Date.now()).getTime();
+    const elapsedDays = Math.max(0, Math.floor((nowTick - start) / dayMs));
+    const cappedDays = Math.min(Number(row?.duration || 0), elapsedDays);
+    const pct = Number(row?.duration || 0) > 0 ? (cappedDays / Number(row.duration)) * 100 : 0;
+    const accrued = Number(row?.amount || 0) * (Number(row?.daily_return || 0) / 100) * cappedDays;
+    return { elapsedDays, cappedDays, pct, accrued };
+  };
+
+  // Agregado por plan (para pintar debajo de cada card)
+  const aggByPlan = useMemo(() => {
+    const map = new Map();
+    for (const inv of myInvestments) {
+      const key = inv.plan_name || '—';
+      const prev = map.get(key) || { totalAmount: 0, totalAccrued: 0, totalDurationDays: 0, items: [] };
+      const { pct, accrued, cappedDays } = calcProgressFor(inv);
+      prev.totalAmount += Number(inv.amount || 0);
+      prev.totalAccrued += accrued;
+      prev.totalDurationDays += Number(inv.duration || 0);
+      prev.items.push({ ...inv, pct, accrued, cappedDays });
+      map.set(key, prev);
+    }
+    return map;
+  }, [myInvestments, nowTick]);
 
   const calculateEquivalentValue = (amount, currency) => {
     const a = Number(amount || 0);
@@ -126,15 +224,19 @@ export default function InvestmentPlans() {
     playSound('invest');
 
     try {
-      // Guardar exactamente lo que eligió el usuario (BD ya acepta USDC tras la migración)
-      const { error: invErr } = await supabase.from('investments').insert({
-        user_id: user.id,
-        plan_name: selectedPlan.name,
-        amount: amountInUSD,
-        daily_return: selectedPlan.dailyReturn,
-        duration: selectedPlan.duration,
-        currency_input: selectedCurrency,
-      });
+      // Guardar inversión (devolvemos fila creada)
+      const { data: inserted, error: invErr } = await supabase
+        .from('investments')
+        .insert({
+          user_id: user.id,
+          plan_name: selectedPlan.name,
+          amount: amountInUSD,
+          daily_return: selectedPlan.dailyReturn,
+          duration: selectedPlan.duration,
+          currency_input: selectedCurrency,
+        })
+        .select('id, user_id, plan_name, amount, daily_return, duration, status, currency_input, created_at')
+        .single();
       if (invErr) throw invErr;
 
       // Debitar del saldo (USDC)
@@ -145,14 +247,48 @@ export default function InvestmentPlans() {
         .eq('user_id', user.id);
       if (balErr) throw balErr;
 
+      // Registrar en historial (wallet_transactions) para que aparezca en /history y métricas del Dashboard/Estadísticas
+      const txPayload = {
+        user_id: user.id,
+        amount: amountInUSD,
+        type: 'investment_purchase',
+        status: 'completed',
+        currency: 'USDC',
+        description: `Compra de plan ${selectedPlan.name}`,
+        reference_type: 'investment',
+        reference_id: inserted?.id || null,
+      };
+      const { error: txErr } = await supabase.from('wallet_transactions').insert(txPayload);
+      if (txErr) {
+        // No rompemos el flujo por historial (RLS puede bloquear); solo avisamos en consola.
+        console.warn('wallet_transactions insert warning:', txErr?.message || txErr);
+      }
+
+      // Intentar refrescar estados globales si existen helpers
+      if (typeof addInvestment === 'function' && inserted) {
+        try { addInvestment(inserted); } catch { /* noop */ }
+      }
+      if (typeof addTransaction === 'function') {
+        try { addTransaction({ ...txPayload, created_at: new Date().toISOString() }); } catch { /* noop */ }
+      }
+      if (typeof refreshBalances === 'function') {
+        try { await refreshBalances(); } catch { /* noop */ }
+      }
+
       toast({
         title: '¡Inversión exitosa!',
         description: `Invertiste ${fmt(amount)} ${selectedCurrency} (≈ $${fmt(amountInUSD)}) en ${selectedPlan.name}.`,
       });
 
+      // Cerrar modal y limpiar
       setSelectedPlan(null);
       setInvestmentAmount('');
       setSelectedCurrency('USDC');
+
+      // Añadir inmediatamente a mi estado local (por si Realtime demora)
+      if (inserted) {
+        setMyInvestments((prev) => [inserted, ...(prev || [])]);
+      }
     } catch (error) {
       console.error('Error al invertir:', error?.message || error);
       playSound('error');
@@ -224,6 +360,21 @@ export default function InvestmentPlans() {
           const Icon = getPlanIcon(plan.name);
           const isSelected = selectedPlan?.id === plan.id;
 
+          // Datos agregados de mis inversiones de este plan
+          const agg = aggByPlan.get(plan.name);
+          const count = agg?.items?.length || 0;
+          const sumAmount = agg?.totalAmount || 0;
+          const sumAccrued = agg?.totalAccrued || 0;
+
+          // Progreso promedio (si hay varias compras del mismo plan). // TODO: ofrecer vista detallada por compra.
+          const avgPct =
+            count > 0
+              ? Math.min(
+                  100,
+                  agg.items.reduce((s, it) => s + (Number(it.pct) || 0), 0) / count
+                )
+              : 0;
+
           return (
             <motion.div
               key={plan.id || plan.name}
@@ -253,11 +404,13 @@ export default function InvestmentPlans() {
                   <CardTitle className="text-white text-xl">{plan.name}</CardTitle>
                   <CardDescription className="text-slate-300">{plan.description}</CardDescription>
                 </CardHeader>
+
                 <CardContent className="text-center space-y-4">
                   <div className="space-y-1">
                     <div className="text-3xl font-bold text-green-400">{plan.dailyReturn}%</div>
                     <p className="text-slate-400 text-sm">Retorno diario</p>
                   </div>
+
                   <div className="space-y-1">
                     <div className="flex items-center justify-center space-x-1 text-slate-300 text-sm">
                       <DollarSign className="h-4 w-4" />
@@ -270,6 +423,34 @@ export default function InvestmentPlans() {
                       <span>{plan.duration} días</span>
                     </div>
                   </div>
+
+                  {/* Bloque dinámico si tengo compras de este plan */}
+                  {count > 0 && (
+                    <div className="mt-2 p-3 rounded-lg bg-slate-800/60 text-left">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-slate-300 text-sm flex items-center gap-1">
+                          <Activity className="h-4 w-4 text-cyan-300" /> Seguimiento en tiempo real
+                        </span>
+                        <span className="text-xs text-slate-400">{count} compra{count > 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="text-sm flex justify-between">
+                        <span className="text-slate-400">Invertido total</span>
+                        <span className="text-white font-semibold">${fmt(sumAmount)}</span>
+                      </div>
+                      <div className="text-sm flex justify-between">
+                        <span className="text-slate-400">Ganancia acumulada</span>
+                        <span className="text-green-400 font-semibold">+${fmt(sumAccrued)}</span>
+                      </div>
+                      <div className="mt-2">
+                        <ProgressBar value={avgPct} />
+                        <div className="flex justify-between text-xs text-slate-400 mt-1">
+                          <span>Progreso</span>
+                          <span>{fmt(avgPct, 1)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="pt-2 space-y-1">
                     {['Retiros diarios', 'Capital protegido', 'Soporte 24/7'].map((feat) => (
                       <div key={feat} className="flex items-center justify-center space-x-1 text-green-400 text-xs">
@@ -278,6 +459,7 @@ export default function InvestmentPlans() {
                       </div>
                     ))}
                   </div>
+
                   <div className="pt-2">
                     <div className="text-slate-400 text-sm">
                       ROI Total:{' '}
@@ -286,6 +468,7 @@ export default function InvestmentPlans() {
                       </span>
                     </div>
                   </div>
+
                   <Button
                     onClick={(e) => {
                       e.stopPropagation();

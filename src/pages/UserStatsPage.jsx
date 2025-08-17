@@ -1,5 +1,4 @@
-// src/pages/UserStatsPage.jsx
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
@@ -27,6 +26,48 @@ import {
   Pie,
   Cell,
 } from 'recharts';
+import { supabase } from '@/lib/supabaseClient';
+
+// Helpers numéricos
+const num = (v, d = 2) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(d) : '0.00';
+};
+const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
+
+// Normalizaciones suaves (snake/camel)
+const normInvestment = (inv) => ({
+  id: inv?.id,
+  user_id: inv?.user_id ?? inv?.userId,
+  plan_name: inv?.plan_name ?? inv?.planName,
+  amount: Number(inv?.amount ?? 0),
+  daily_return: Number(inv?.daily_return ?? inv?.dailyReturn ?? 0),
+  duration: Number(inv?.duration ?? 0),
+  status: inv?.status ?? 'active',
+  currency_input: inv?.currency_input ?? inv?.currencyInput ?? 'USDC',
+  created_at: inv?.created_at ?? inv?.createdAt ?? null,
+});
+
+const normTx = (t) => ({
+  ...t,
+  id: t?.id,
+  user_id: t?.user_id ?? t?.userId,
+  type: (t?.type || '').toLowerCase(),
+  status: (t?.status || '').toLowerCase(),
+  referenceType: (t?.referenceType ?? t?.reference_type ?? '').toLowerCase(),
+  created_at: t?.created_at ?? t?.createdAt ?? new Date().toISOString(),
+});
+
+// Progreso/ganancias por inversión
+const calcProgress = (inv, now = Date.now()) => {
+  const start = inv.created_at ? new Date(inv.created_at).getTime() : now;
+  const dayMs = 86_400_000;
+  const elapsedDays = Math.max(0, Math.floor((now - start) / dayMs));
+  const cappedDays = Math.min(Number(inv.duration || 0), elapsedDays);
+  const pct = Number(inv.duration || 0) > 0 ? (cappedDays / Number(inv.duration)) * 100 : 0;
+  const accrued = Number(inv.amount || 0) * (Number(inv.daily_return || 0) / 100) * cappedDays;
+  return { elapsedDays, cappedDays, pct, accrued };
+};
 
 const UserStatsPage = () => {
   const { user, loading, balances } = useAuth();
@@ -40,10 +81,101 @@ const UserStatsPage = () => {
     getReferrals,
   } = useData();
 
+  // Estado local reactivo para escuchar Realtime sin romper compat
+  const [liveInv, setLiveInv] = useState([]);
+  const [liveTx, setLiveTx] = useState([]);
+
+  // Tick para refrescar métricas de progreso en pantalla
+  const [nowTick, setNowTick] = useState(Date.now());
   useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Inicial: refrescos ligeros (server) y si hay Realtime, lo pisará
+  useEffect(() => {
+    if (!user?.id) return;
     refreshTransactions?.();
     refreshBotActivations?.();
-  }, []);
+  }, [user?.id, refreshTransactions, refreshBotActivations]);
+
+  // Seed local desde DataContext cuando cambie
+  useEffect(() => {
+    if (!user?.id) return;
+    const uid = user.id;
+    const invMine = (Array.isArray(investments) ? investments : [])
+      .filter((i) => (i?.user_id ?? i?.userId) === uid)
+      .map(normInvestment)
+      .sort((a, b) => new Date(b.created_at ?? 0) - new Date(a.created_at ?? 0));
+    const txMine = (Array.isArray(transactions) ? transactions : [])
+      .filter((t) => (t?.user_id ?? t?.userId) === uid)
+      .map(normTx)
+      .sort((a, b) => new Date(b.created_at ?? 0) - new Date(a.created_at ?? 0));
+    setLiveInv(invMine);
+    setLiveTx(txMine);
+  }, [investments, transactions, user?.id]);
+
+  // Realtime: investments del usuario
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('stats-investments')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          setLiveInv((prev) => {
+            const list = Array.isArray(prev) ? [...prev] : [];
+            if (payload.eventType === 'INSERT') {
+              const ni = normInvestment(payload.new);
+              if (!list.some((x) => x.id === ni.id)) list.unshift(ni);
+              return list;
+            }
+            if (payload.eventType === 'UPDATE') {
+              const ni = normInvestment(payload.new);
+              return list.map((x) => (x.id === ni.id ? ni : x));
+            }
+            if (payload.eventType === 'DELETE') {
+              return list.filter((x) => x.id !== payload.old?.id);
+            }
+            return list;
+          });
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [user?.id]);
+
+  // Realtime: wallet_transactions del usuario (para actividad mensual y tablas)
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('stats-wallet-tx')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          setLiveTx((prev) => {
+            const list = Array.isArray(prev) ? [...prev] : [];
+            if (payload.eventType === 'INSERT') {
+              const nx = normTx(payload.new);
+              if (!list.some((x) => x.id === nx.id)) list.unshift(nx);
+              return list;
+            }
+            if (payload.eventType === 'UPDATE') {
+              const nx = normTx(payload.new);
+              return list.map((x) => (x.id === nx.id ? nx : x));
+            }
+            if (payload.eventType === 'DELETE') {
+              return list.filter((x) => x.id !== payload.old?.id);
+            }
+            return list;
+          });
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [user?.id]);
 
   if (loading || !user) {
     return <div className="p-6 text-slate-300">Cargando datos del usuario…</div>;
@@ -52,54 +184,47 @@ const UserStatsPage = () => {
   const safeArr = (val) => (Array.isArray(val) ? val : val ? [val] : []);
   const referrals = safeArr(getReferrals?.(user.id));
 
-  const userInvestments = investments.filter((inv) => (inv?.user_id ?? inv?.userId) === user.id);
-  const userTx = transactions.filter((tx) => (tx?.user_id ?? tx?.userId) === user.id);
+  const userInvestments = liveInv; // ya normalizados
+  const userTx = liveTx; // ya normalizados
 
-  const num = (v, d = 2) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n.toFixed(d) : '0.00';
-  };
-  const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
-
-  const totalInvested = sum(userInvestments.map((inv) => inv?.amount ?? 0));
+  const totalInvested = sum(userInvestments.map((inv) => inv.amount));
 
   const totalEarningsFromInvestments = userInvestments.reduce((acc, inv) => {
-    const created = new Date(inv?.created_at ?? inv?.createdAt ?? Date.now());
-    const daysPassed = Math.max(0, Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)));
-    const dailyPct = Number(inv?.daily_return ?? inv?.dailyReturn ?? 0) / 100;
-    const durationDays = Number(inv?.duration ?? 0);
-    const effectiveDays = Math.min(daysPassed, durationDays);
-    return acc + Number(inv?.amount ?? 0) * dailyPct * effectiveDays;
+    const pr = calcProgress(inv, nowTick);
+    return acc + pr.accrued;
   }, 0);
 
-  const monthlyActivityData = Array.from({ length: 6 }, (_, i) => {
-    const d = new Date();
-    d.setMonth(d.getMonth() - i, 1);
-    const m = d.getMonth();
-    const y = d.getFullYear();
-    const monthLabel = d.toLocaleString('default', { month: 'short' });
+  // Serie de 6 meses (incluye 'investment' y 'investment_purchase')
+  const monthlyActivityData = useMemo(() => {
+    const data = Array.from({ length: 6 }, (_, i) => {
+      const d = new Date();
+      d.setDate(1);
+      d.setMonth(d.getMonth() - i);
+      const m = d.getMonth();
+      const y = d.getFullYear();
+      const monthLabel = d.toLocaleString('default', { month: 'short' });
 
-    const txInMonth = userTx.filter((tx) => {
-      const t = new Date(tx?.created_at ?? tx?.createdAt ?? Date.now());
-      return t.getMonth() === m && t.getFullYear() === y;
-    });
+      const txInMonth = userTx.filter((tx) => {
+        const t = new Date(tx?.created_at ?? Date.now());
+        return t.getMonth() === m && t.getFullYear() === y;
+      });
 
-    const deposits = sum(
-      txInMonth.filter((t) => (t?.type ?? '').toLowerCase() === 'deposit').map((t) => t.amount)
-    );
-    const withdrawals = sum(
-      txInMonth.filter((t) => (t?.type ?? '').toLowerCase() === 'withdrawal').map((t) => t.amount)
-    );
-    const investmentsAmt = sum(
-      txInMonth.filter((t) => (t?.type ?? '').toLowerCase() === 'investment').map((t) => t.amount)
-    );
+      const deposits = sum(txInMonth.filter((t) => t.type === 'deposit' && t.status === 'completed').map((t) => t.amount));
+      const withdrawals = sum(txInMonth.filter((t) => t.type === 'withdrawal' && t.status === 'completed').map((t) => t.amount));
+      const investmentsAmt = sum(
+        txInMonth
+          .filter((t) => ['investment', 'investment_purchase'].includes(t.type) && t.status !== 'failed')
+          .map((t) => t.amount)
+      );
 
-    return { month: monthLabel, deposits, withdrawals, investments: investmentsAmt };
-  }).reverse();
+      return { month: monthLabel, deposits, withdrawals, investments: investmentsAmt };
+    }).reverse();
+    return data;
+  }, [userTx]);
 
   const portfolioDistributionData = userInvestments.map((inv) => ({
-    name: inv?.plan_name ?? inv?.planName ?? 'Plan',
-    value: Number(inv?.amount ?? 0),
+    name: inv.plan_name ?? 'Plan',
+    value: Number(inv.amount ?? 0),
   }));
   const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
 
@@ -110,6 +235,7 @@ const UserStatsPage = () => {
     { title: 'Total Referidos', value: referrals.length, icon: Users, color: 'text-purple-400' },
   ];
 
+  // Bots
   const {
     activeCount,
     pausedCount,
@@ -128,27 +254,23 @@ const UserStatsPage = () => {
     );
 
     const botTx = userTx.filter((t) =>
-      ['bot_activation', 'bot_profit', 'bot_refund', 'bot_fee'].includes((t.referenceType || '').toLowerCase())
+      ['bot_activation', 'bot_profit', 'bot_refund', 'bot_fee'].includes(t.referenceType)
     );
 
-    const profits = botTx.filter(
-      (t) =>
-        (t.referenceType || '').toLowerCase() === 'bot_profit' &&
-        (t.status || '').toLowerCase() === 'completed'
-    );
+    const profits = botTx.filter((t) => t.referenceType === 'bot_profit' && t.status === 'completed');
 
     const now = Date.now();
     const ms30d = 30 * 24 * 60 * 60 * 1000;
 
     const p30 = sum(
       profits
-        .filter((t) => now - new Date(t.createdAt ?? t.created_at).getTime() <= ms30d)
+        .filter((t) => now - new Date(t.created_at).getTime() <= ms30d)
         .map((t) => t.amount)
     );
     const pTotal = sum(profits.map((t) => t.amount));
 
     const last = [...botTx]
-      .sort((a, b) => new Date(b.createdAt ?? b.created_at) - new Date(a.createdAt ?? a.created_at))
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
       .slice(0, 10);
 
     return {
@@ -172,6 +294,7 @@ const UserStatsPage = () => {
           <p className="text-slate-300">Un resumen detallado de tu actividad y rendimiento en la plataforma.</p>
         </motion.div>
 
+        {/* Stats generales */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {generalStats.map((stat, index) => {
             const Icon = stat.icon;
@@ -193,6 +316,7 @@ const UserStatsPage = () => {
           })}
         </div>
 
+        {/* KPIs de bots */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <Card className="crypto-card">
             <CardHeader className="flex-row items-center justify-between">
@@ -248,6 +372,7 @@ const UserStatsPage = () => {
           </Card>
         </div>
 
+        {/* Gráficos: actividad mensual y distribución */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.5, delay: 0.4 }}>
             <Card className="crypto-card">
@@ -324,6 +449,7 @@ const UserStatsPage = () => {
           </motion.div>
         </div>
 
+        {/* Tabla de bot tx */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.6 }}>
           <Card className="crypto-card">
             <CardHeader>
@@ -350,8 +476,8 @@ const UserStatsPage = () => {
                     </thead>
                     <tbody className="text-slate-200">
                       {lastBotTx.map((t) => {
-                        const d = new Date(t.createdAt ?? t.created_at);
-                        const r = (t.referenceType || '').toLowerCase();
+                        const d = new Date(t.created_at);
+                        const r = t.referenceType;
                         const nice =
                           r === 'bot_activation'
                             ? 'Activación'
@@ -380,6 +506,7 @@ const UserStatsPage = () => {
           </Card>
         </motion.div>
 
+        {/* Resumen general de actividad (incluye investment_purchase) */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.7 }}>
           <Card className="crypto-card">
             <CardHeader>
@@ -390,24 +517,42 @@ const UserStatsPage = () => {
             </CardHeader>
             <CardContent>
               {userTx.slice(0, 5).map((tx) => {
-                const date = tx?.created_at ?? tx?.createdAt ?? Date.now();
-                const type = (tx?.type ?? '').toLowerCase();
-                const desc = tx?.description ?? tx?.plan_name ?? tx?.planName ?? '';
-                const amount = Number(tx?.amount ?? 0);
+                const date = tx.created_at ?? Date.now();
+                const type = tx.type;
+                const desc = tx.description || '';
+                const amount = Number(tx.amount ?? 0);
                 const isPositive =
                   type === 'deposit' ||
-                  (type === 'investment' && (tx?.status ?? '').toLowerCase() === 'completed');
+                  type === 'admin_credit' ||
+                  (type === 'investment' && tx.status === 'completed'); // legacy
+                const isNegative =
+                  type === 'withdrawal' ||
+                  type === 'bot_activation' ||
+                  type === 'investment_purchase';
                 return (
                   <div key={tx.id} className="flex justify-between items-center p-3 mb-2 bg-slate-800/50 rounded-md">
                     <div>
                       <p className="text-white capitalize">
-                        {type === 'deposit' ? 'Depósito' : type === 'withdrawal' ? 'Retiro' : 'Movimiento'}
+                        {type === 'deposit'
+                          ? 'Depósito'
+                          : type === 'withdrawal'
+                          ? 'Retiro'
+                          : type === 'investment_purchase'
+                          ? 'Compra de plan'
+                          : type === 'investment'
+                          ? 'Inversión'
+                          : 'Movimiento'}
                       </p>
                       <p className="text-xs text-slate-400">{desc}</p>
                     </div>
                     <div className="text-right">
-                      <p className={`font-semibold ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
-                        {isPositive ? '+' : '-'}${num(amount)}
+                      <p
+                        className={`font-semibold ${
+                          isPositive ? 'text-green-400' : isNegative ? 'text-red-400' : 'text-slate-300'
+                        }`}
+                      >
+                        {isNegative ? '-' : isPositive ? '+' : ''}
+                        ${num(amount)}
                       </p>
                       <p className="text-xs text-slate-500">{new Date(date).toLocaleDateString()}</p>
                     </div>

@@ -1,5 +1,4 @@
-// src/pages/WalletPage.jsx
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
@@ -8,8 +7,27 @@ import { Card, CardContent, CardTitle, CardHeader, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/use-toast';
 import { DollarSign, Bot, ArrowRightLeft } from 'lucide-react';
+import { supabase } from '@/lib/supabaseClient';
 
-const WalletPage = () => {
+const fmt = (v, d = 2) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(d) : (0).toFixed(d);
+};
+
+// Normaliza transacción (snake/camel) a un shape consistente para la UI
+const normTx = (t) => ({
+  ...t,
+  id: t?.id,
+  user_id: t?.user_id ?? t?.userId,
+  type: (t?.type || '').toLowerCase(),
+  status: (t?.status || '').toLowerCase(),
+  referenceType: (t?.referenceType ?? t?.reference_type ?? '').toLowerCase(),
+  created_at: t?.created_at ?? t?.createdAt ?? new Date().toISOString(),
+  amount: Number(t?.amount ?? 0),
+  description: t?.description ?? '',
+});
+
+export default function WalletPage() {
   const navigate = useNavigate();
   const { user, balances, refreshBalances } = useAuth();
   const {
@@ -22,10 +40,8 @@ const WalletPage = () => {
   const [demoBalance, setDemoBalance] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const fmt = (v, d = 2) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n.toFixed(d) : (0).toFixed(d);
-  };
+  // Estado local para reflejar Realtime sin romper compat con DataContext
+  const [liveTx, setLiveTx] = useState([]);
 
   const fetchDemo = async () => {
     if (!user?.id) return;
@@ -54,22 +70,88 @@ const WalletPage = () => {
     }
   };
 
+  // Seed inicial desde el contexto + refrescos del server
   useEffect(() => {
+    if (!user?.id) return;
     fetchDemo();
     refreshTransactions?.();
     refreshBotActivations?.();
+
+    // Semilla inicial para liveTx con las del contexto
+    const uid = user.id;
+    const mine = Array.isArray(transactions)
+      ? transactions.filter((t) => (t.user_id ?? t.userId) === uid).map(normTx)
+      : [];
+    // Orden DESC por fecha
+    mine.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    setLiveTx(mine);
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // Si cambian las del contexto (por un refresh externo), sincronizamos el seed
+  useEffect(() => {
+    if (!user?.id) return;
+    const uid = user.id;
+    const mine = Array.isArray(transactions)
+      ? transactions.filter((t) => (t.user_id ?? t.userId) === uid).map(normTx)
+      : [];
+    mine.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    setLiveTx((prev) => {
+      // Si el contexto trae algo más nuevo, preferimos el contexto
+      // Evitamos sobrescribir si prev ya contiene esas ids
+      const idsPrev = new Set(prev.map((x) => x.id));
+      const union = [...mine, ...prev.filter((x) => !idsPrev.has(x.id))];
+      union.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      return union.slice(0, 100); // cap de seguridad
+    });
+  }, [transactions, user?.id]);
+
+  // Realtime: wallet_transactions del usuario (INSERT/UPDATE/DELETE)
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('wallet-page-tx')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          setLiveTx((prev) => {
+            let list = Array.isArray(prev) ? [...prev] : [];
+            if (payload.eventType === 'INSERT') {
+              const nx = normTx(payload.new);
+              if (!list.some((x) => x.id === nx.id)) {
+                list.unshift(nx);
+              }
+            } else if (payload.eventType === 'UPDATE') {
+              const nx = normTx(payload.new);
+              list = list.map((x) => (x.id === nx.id ? nx : x));
+            } else if (payload.eventType === 'DELETE') {
+              list = list.filter((x) => x.id !== payload.old?.id);
+            }
+            list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            return list.slice(0, 100);
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ch);
+    };
   }, [user?.id]);
 
   const recentTx = useMemo(() => {
     const uid = user?.id;
-    const mine = Array.isArray(transactions)
-      ? transactions.filter((t) => (t.user_id ?? t.userId) === uid)
-      : [];
-    return [...mine].sort((a, b) =>
-      new Date(b.created_at ?? b.createdAt) - new Date(a.created_at ?? a.createdAt)
-    ).slice(0, 6);
-  }, [transactions, user?.id]);
+    const base = Array.isArray(liveTx) && liveTx.length
+      ? liveTx
+      : (Array.isArray(transactions) ? transactions : []).map(normTx);
+
+    const mine = base.filter((t) => (t.user_id ?? uid) === uid);
+    return [...mine]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 6);
+  }, [liveTx, transactions, user?.id]);
 
   const myBots = useMemo(() => {
     const uid = user?.id;
@@ -88,17 +170,11 @@ const WalletPage = () => {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Tu Billetera</h1>
         <div className="flex gap-3">
-          <Button
-            onClick={() => navigate('/deposit')}
-            className="bg-blue-600 hover:bg-blue-700"
-          >
+          <Button onClick={() => navigate('/deposit')} className="bg-blue-600 hover:bg-blue-700">
             <DollarSign className="h-4 w-4 mr-2" />
             Depositar
           </Button>
-          <Button
-            onClick={() => navigate('/trading-bots')}
-            className="bg-purple-600 hover:bg-purple-700"
-          >
+          <Button onClick={() => navigate('/trading-bots')} className="bg-purple-600 hover:bg-purple-700">
             <Bot className="h-4 w-4 mr-2" />
             Bots de Trading
           </Button>
@@ -114,11 +190,7 @@ const WalletPage = () => {
           <CardContent className="space-y-2">
             <p className="text-3xl text-green-400">${fmt(realUsd)}</p>
             <p className="text-sm text-slate-400">ETH: {fmt(realEth, 6)}</p>
-            <Button
-              onClick={() => refreshBalances?.()}
-              variant="outline"
-              className="mt-2"
-            >
+            <Button onClick={() => refreshBalances?.()} variant="outline" className="mt-2">
               Actualizar balance
             </Button>
           </CardContent>
@@ -129,7 +201,7 @@ const WalletPage = () => {
             <CardTitle className="text-white">Saldo Demo</CardTitle>
             <CardDescription className="text-slate-300">Sólo para pruebas</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+        <CardContent className="space-y-4">
             <p className="text-3xl text-yellow-400">${fmt(demoBalance)}</p>
             <Button
               onClick={handleRechargeDemo}
@@ -169,11 +241,7 @@ const WalletPage = () => {
                 )}
               </span>
             </div>
-            <Button
-              onClick={() => navigate('/trading-bots')}
-              variant="outline"
-              className="mt-2"
-            >
+            <Button onClick={() => navigate('/trading-bots')} variant="outline" className="mt-2">
               Gestionar bots
             </Button>
           </CardContent>
@@ -188,7 +256,7 @@ const WalletPage = () => {
               Movimientos recientes
             </CardTitle>
             <CardDescription className="text-slate-300">
-              Depósitos, retiros, inversiones y transacciones de bots
+              Depósitos, retiros, compras de planes, inversiones y transacciones de bots
             </CardDescription>
           </div>
           <Button variant="outline" onClick={() => navigate('/history')}>Ver todo</Button>
@@ -210,25 +278,28 @@ const WalletPage = () => {
                 </thead>
                 <tbody className="text-slate-200">
                   {recentTx.map((t) => {
-                    const date = new Date(t.created_at ?? t.createdAt);
-                    const ref = (t.referenceType || '').toLowerCase();
+                    const tt = normTx(t);
+                    const date = new Date(tt.created_at);
+                    // Etiquetas amigables (contempla investment_purchase)
+                    const r = tt.referenceType;
                     const niceType =
-                      ref === 'bot_activation'
-                        ? 'Bot: activación'
-                        : ref === 'bot_profit'
-                        ? 'Bot: ganancia'
-                        : ref === 'bot_refund'
-                        ? 'Bot: reembolso'
-                        : ref === 'bot_fee'
-                        ? 'Bot: fee'
-                        : (t.type || '—');
+                      r === 'bot_activation' ? 'Bot: activación' :
+                      r === 'bot_profit'    ? 'Bot: ganancia' :
+                      r === 'bot_refund'    ? 'Bot: reembolso' :
+                      r === 'bot_fee'       ? 'Bot: fee' :
+                      tt.type === 'investment_purchase' ? 'Compra de plan' :
+                      tt.type === 'investment' ? 'Inversión' :
+                      tt.type === 'withdrawal' ? 'Retiro' :
+                      tt.type === 'deposit' ? 'Depósito' :
+                      t.type || '—';
+
                     return (
-                      <tr key={t.id} className="border-t border-slate-700/60">
+                      <tr key={tt.id} className="border-t border-slate-700/60">
                         <td className="py-2 pr-4">{date.toLocaleString()}</td>
                         <td className="py-2 pr-4 capitalize">{niceType}</td>
-                        <td className="py-2 pr-4">{t.description || ''}</td>
-                        <td className="py-2 pr-4">${fmt(t.amount)}</td>
-                        <td className="py-2 pr-4">{t.status}</td>
+                        <td className="py-2 pr-4">{tt.description}</td>
+                        <td className="py-2 pr-4">${fmt(tt.amount)}</td>
+                        <td className="py-2 pr-4 capitalize">{tt.status}</td>
                       </tr>
                     );
                   })}
@@ -240,6 +311,4 @@ const WalletPage = () => {
       </Card>
     </div>
   );
-};
-
-export default WalletPage;
+}

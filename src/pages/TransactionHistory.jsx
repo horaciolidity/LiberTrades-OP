@@ -1,15 +1,45 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import TransactionStats from '@/components/transactions/TransactionStats';
 import TransactionFilters from '@/components/transactions/TransactionFilters';
 import TransactionTabs from '@/components/transactions/TransactionTabs';
 import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
+import { supabase } from '@/lib/supabaseClient';
+
+const fmt = (n, dec = 2) => {
+  const num = Number(n);
+  return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
+};
+
+// Normaliza investment {snake|camel} -> shape consistente
+const normInvestment = (inv) => ({
+  id: inv?.id,
+  user_id: inv?.user_id ?? inv?.userId,
+  plan_name: inv?.plan_name ?? inv?.planName,
+  amount: Number(inv?.amount ?? 0),
+  daily_return: Number(inv?.daily_return ?? inv?.dailyReturn ?? 0),
+  duration: Number(inv?.duration ?? 0),
+  status: inv?.status ?? 'active',
+  currency_input: inv?.currency_input ?? inv?.currencyInput ?? 'USDC',
+  created_at: inv?.created_at ?? inv?.createdAt ?? null,
+});
+
+// Progreso/ganancia acumulada dado un investment normalizado
+const calcProgress = (inv, now = Date.now()) => {
+  const start = inv.created_at ? new Date(inv.created_at).getTime() : now;
+  const dayMs = 86_400_000;
+  const elapsedDays = Math.max(0, Math.floor((now - start) / dayMs));
+  const cappedDays = Math.min(Number(inv.duration || 0), elapsedDays);
+  const pct = Number(inv.duration || 0) > 0 ? (cappedDays / Number(inv.duration)) * 100 : 0;
+  const accrued = Number(inv.amount || 0) * (Number(inv.daily_return || 0) / 100) * cappedDays;
+  return { elapsedDays, cappedDays, pct, accrued };
+};
 
 const TransactionHistory = () => {
   const { user } = useAuth();
 
-  // ✅ Traemos arrays reactivos + refrescos desde DataContext
+  // ✅ Arrays reactivos + refrescos desde DataContext
   const {
     transactions: ctxTransactions,
     investments:  ctxInvestments,
@@ -25,14 +55,80 @@ const TransactionHistory = () => {
   const [filterType, setFilterType]     = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
 
+  // Tick para refrescar progreso en UI
+  const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   // Al montar / cambiar user -> pedimos datos al server
   useEffect(() => {
     if (!user?.id) return;
-    // Estas llamadas llenan los estados del DataContext, que a su vez
-    // dispara el efecto de abajo (que sincroniza estados locales)
     refreshTransactions?.();
     refreshInvestments?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // Realtime: wallet_transactions del usuario
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('hist-wallet-tx')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          setTransactions((prev) => {
+            const list = Array.isArray(prev) ? [...prev] : [];
+            if (payload.eventType === 'INSERT') {
+              if (!list.some((x) => x.id === payload.new.id)) list.unshift(payload.new);
+              return list;
+            }
+            if (payload.eventType === 'UPDATE') {
+              return list.map((x) => (x.id === payload.new.id ? payload.new : x));
+            }
+            if (payload.eventType === 'DELETE') {
+              return list.filter((x) => x.id !== payload.old?.id);
+            }
+            return list;
+          });
+          // Opcional: refrescar métricas de arriba si DataContext las consume // TODO
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [user?.id]);
+
+  // Realtime: investments del usuario (para ver compras en vivo y su progreso)
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('hist-investments')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          setInvestments((prev) => {
+            const list = Array.isArray(prev) ? [...prev] : [];
+            if (payload.eventType === 'INSERT') {
+              const ni = normInvestment(payload.new);
+              if (!list.some((x) => x.id === ni.id)) list.unshift(ni);
+              return list;
+            }
+            if (payload.eventType === 'UPDATE') {
+              const ni = normInvestment(payload.new);
+              return list.map((x) => (x.id === ni.id ? ni : x));
+            }
+            if (payload.eventType === 'DELETE') {
+              return list.filter((x) => x.id !== payload.old?.id);
+            }
+            return list;
+          });
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
   }, [user?.id]);
 
   // Sincroniza estados locales cuando cambian los arrays del contexto
@@ -43,17 +139,19 @@ const TransactionHistory = () => {
       setFilteredTransactions([]);
       return;
     }
-
-    // DataContext YA trae datos del usuario logueado,
-    // pero conservamos el filtro por compatibilidad si en algún
-    // momento recibís datos globales.
     const uid = user.id;
 
     const tx = Array.isArray(ctxTransactions) ? ctxTransactions : [];
     const inv = Array.isArray(ctxInvestments)  ? ctxInvestments  : [];
 
     const userTx  = tx.filter(t => (t.user_id ?? t.userId ?? uid) === uid);
-    const userInv = inv.filter(i => (i.user_id ?? i.userId ?? uid) === uid);
+    const userInv = inv
+      .filter(i => (i.user_id ?? i.userId ?? uid) === uid)
+      .map(normInvestment);
+
+    // Orden default por fecha desc
+    userTx.sort((a, b) => new Date(b?.created_at ?? b?.createdAt ?? 0) - new Date(a?.created_at ?? a?.createdAt ?? 0));
+    userInv.sort((a, b) => new Date(b?.created_at ?? 0) - new Date(a?.created_at ?? 0));
 
     setTransactions(userTx);
     setInvestments(userInv);
@@ -84,6 +182,20 @@ const TransactionHistory = () => {
 
     setFilteredTransactions(filtered);
   }, [transactions, filterType, filterStatus, searchTerm]);
+
+  // Enriquecemos inversiones con progreso/ganancias para tabs (no rompemos shape existente)
+  const investmentsEnriched = useMemo(() => {
+    return investments.map((inv) => {
+      const pr = calcProgress(inv, nowTick);
+      return {
+        ...inv,
+        progressPct: pr.pct,
+        accruedUsd: pr.accrued,
+        elapsedDays: pr.elapsedDays,
+        elapsedDaysCapped: pr.cappedDays,
+      };
+    });
+  }, [investments, nowTick]);
 
   const exportTransactions = () => {
     const rows = [
@@ -129,6 +241,7 @@ const TransactionHistory = () => {
         </motion.div>
 
         {/* Métricas rápidas */}
+        {/* Nota: TransactionStats debería tolerar tipos nuevos como 'investment_purchase' */}
         <TransactionStats transactions={transactions} />
 
         {/* Filtros + export */}
@@ -143,9 +256,11 @@ const TransactionHistory = () => {
         />
 
         {/* Tabs (Transacciones / Inversiones) */}
+        {/* Pasamos inversiones enriquecidas con progreso y ganancias acumuladas */}
         <TransactionTabs
           filteredTransactions={filteredTransactions}
-          investments={investments}
+          investments={investmentsEnriched}
+          // TODO: si TransactionTabs soporta props extra, podemos pasar nowTick para forzar re-render periódico.
         />
 
         {/* Vacío elegante */}
