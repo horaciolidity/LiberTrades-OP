@@ -26,50 +26,107 @@ export function DataProvider({ children }) {
   // ======= Bot activations =======
   const [botActivations, setBotActivations] = useState([]);
 
-  // ======= Precios (mock) =======
-  const [cryptoPrices, setCryptoPrices] = useState({
-    BTC: { price: 45000, change: 2.5, history: [] },
-    ETH: { price: 3200, change: -1.2, history: [] },
-    USDT: { price: 1.0, change: 0.1, history: [] },
-    BNB: { price: 320, change: 3.8, history: [] },
-    ADA: { price: 0.85, change: -2.1, history: [] },
-  });
+  // ======= Precios (híbrido: real + micro-ticks) =======
+const LIVE_SYMBOLS = {
+  BTC: 'BTCUSDT',
+  ETH: 'ETHUSDT',
+  BNB: 'BNBUSDT',
+  ADA: 'ADAUSDT',
+  USDT: null, // anclado a 1.0
+};
 
-  useEffect(() => {
-    const initialHistoryLength = 60;
-    const next = JSON.parse(JSON.stringify(cryptoPrices));
-    Object.keys(next).forEach((k) => {
-      let p = next[k].price;
-      const hist = [];
-      for (let i = 0; i < initialHistoryLength; i++) {
-        const ch = (Math.random() - 0.5) * 2;
-        p = Math.max(0.01, p * (1 + ch / 100));
-        hist.unshift({
-          time: Date.now() - (initialHistoryLength - i) * 2000,
-          value: p,
-        });
+const emptyBook = {
+  BTC: { price: 45000, change: 0, history: [] },
+  ETH: { price: 3200,  change: 0, history: [] },
+  USDT:{ price: 1.0,   change: 0, history: [] },
+  BNB: { price: 320,   change: 0, history: [] },
+  ADA: { price: 0.85,  change: 0, history: [] },
+};
+
+const [cryptoPrices, setCryptoPrices] = useState(emptyBook);
+
+// cache en memoria de último precio real
+const liveCacheRef = React.useRef({});
+
+useEffect(() => {
+  let mounted = true;
+  let tickTimer = null;
+  let liveTimer = null;
+
+  const seedHistory = (p, n = 60) => {
+    const now = Date.now();
+    const hist = [];
+    for (let i = n - 1; i >= 0; i--) {
+      hist.push({ time: now - i * 2000, value: p });
+    }
+    return hist;
+  };
+
+  async function fetchLiveOnce() {
+    const entries = await Promise.all(
+      Object.entries(LIVE_SYMBOLS).map(async ([sym, binSym]) => {
+        if (!binSym) return [sym, sym === 'USDT' ? 1 : null];
+        try {
+          const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${binSym}`);
+          const j = await r.json();
+          const px = Number(j?.price);
+          return [sym, Number.isFinite(px) ? px : null];
+        } catch {
+          return [sym, null];
+        }
+      })
+    );
+    const live = Object.fromEntries(entries);
+    liveCacheRef.current = { ...liveCacheRef.current, ...live };
+    return live;
+  }
+
+  // seed inicial con real y fallback a defaults
+  (async () => {
+    const live = await fetchLiveOnce();
+    if (!mounted) return;
+    setCryptoPrices(prev => {
+      const next = { ...prev };
+      for (const k of Object.keys(emptyBook)) {
+        const p = Number(live[k]) || prev[k]?.price || emptyBook[k].price;
+        next[k] = { price: p, change: 0, history: seedHistory(p) };
       }
-      next[k].history = hist;
-      next[k].price = p;
+      return next;
     });
-    setCryptoPrices(next);
+  })();
 
-    const id = setInterval(() => {
-      setCryptoPrices((prev) => {
-        const up = { ...prev };
-        Object.keys(up).forEach((k) => {
-          const ch = (Math.random() - 0.5) * 2;
-          const np = Math.max(0.01, up[k].price * (1 + ch / 100));
-          const nh = [...up[k].history, { time: Date.now(), value: np }].slice(-100);
-          up[k] = { price: np, change: ch, history: nh };
-        });
-        return up;
-      });
-    }, 2000);
+  // micro-ticks locales cada 2s, anclados al precio real (blend)
+  tickTimer = setInterval(() => {
+    setCryptoPrices(prev => {
+      const next = { ...prev };
+      for (const k of Object.keys(prev)) {
+        const last = prev[k].price;
+        const live = Number(liveCacheRef.current[k]) || last;
+        // acercamos 20% hacia el real y aplicamos jitter ±0.15%
+        const blended = last + (live - last) * 0.20;
+        const jitterPct = (Math.random() - 0.5) * 0.15 / 100;
+        const price = Math.max(0.000001, blended * (1 + jitterPct));
+        const change = ((price - last) / (last || 1)) * 100;
+        const history = [...prev[k].history, { time: Date.now(), value: price }].slice(-120);
+        next[k] = { price, change, history };
+      }
+      // USDT fijo a 1 con un toque mínimo
+      next.USDT.price = 1.0;
+      next.USDT.change = 0;
+      return next;
+    });
+  }, 2000);
 
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // refresco real cada 15s
+  liveTimer = setInterval(fetchLiveOnce, 15000);
+
+  return () => {
+    mounted = false;
+    clearInterval(tickTimer);
+    clearInterval(liveTimer);
+  };
+}, []);
+
 
   const investmentPlans = useMemo(
     () => [
