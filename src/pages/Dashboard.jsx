@@ -123,7 +123,6 @@ export default function Dashboard() {
         <p className="text-slate-300">Aquí tienes un resumen de tu actividad de inversión</p>
       </motion.div>
 
-      {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         {stats.map((stat, index) => {
           const Icon = stat.icon;
@@ -142,7 +141,6 @@ export default function Dashboard() {
                       <p className="text-2xl font-bold text-white mt-1">
                         {stat.title === 'Saldo Total' ? '$' : ''}
                         {stat.value}
-                        {stat.title === 'Saldo Total' ? '' : ''}
                       </p>
                     </div>
                     <div className={`p-3 rounded-lg ${stat.bgColor}`}>
@@ -156,7 +154,6 @@ export default function Dashboard() {
         })}
       </div>
 
-      {/* Crypto Prices + Inversiones */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.8, delay: 0.4 }}>
           <Card className="crypto-card">
@@ -170,19 +167,21 @@ export default function Dashboard() {
             <CardContent>
               <div className="space-y-4">
                 {Object.entries(cryptoPrices).map(([crypto, data]) => {
+                  const symbol = crypto === 'USDT' ? 'USDC' : crypto;
                   const price = Number(data?.price ?? 0);
                   const change = Number(data?.change ?? 0);
+                  const decimals = symbol === 'USDC' ? 4 : 2;
                   return (
                     <div key={crypto} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
                       <div className="flex items-center">
                         <div className="w-8 h-8 bg-gradient-to-r from-orange-500 to-yellow-500 rounded-full flex items-center justify-center mr-3">
-                          <span className="text-white text-xs font-bold">{crypto}</span>
+                          <span className="text-white text-xs font-bold">{symbol}</span>
                         </div>
-                        <span className="text-white font-medium">{crypto}</span>
+                        <span className="text-white font-medium">{symbol}</span>
                       </div>
                       <div className="text-right">
                         <div className="text-white font-semibold">
-                          ${price.toFixed(crypto === 'USDT' ? 4 : 2)}
+                          ${price.toFixed(decimals)}
                         </div>
                         <div className={`text-sm flex items-center ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {change >= 0 ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
@@ -240,7 +239,6 @@ export default function Dashboard() {
         </motion.div>
       </div>
 
-      {/* Actividad reciente (incluye bots) */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.8 }}>
         <Card className="crypto-card">
           <CardHeader>
@@ -296,7 +294,6 @@ export default function Dashboard() {
         </Card>
       </motion.div>
 
-      {/* Acciones rápidas */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 1.0 }}>
         <Card className="crypto-card">
           <CardHeader>
