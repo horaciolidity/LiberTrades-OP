@@ -1,3 +1,4 @@
+// src/contexts/AuthContext.jsx
 import React, {
   createContext,
   useContext,
@@ -16,15 +17,14 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);         // auth user
-  const [profile, setProfile] = useState(null);   // public.profiles
-  const [balances, setBalances] = useState(null); // public.balances
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [balances, setBalances] = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const SAFE_TIMEOUT = 2500; // ms: evita loaders eternos
+  const SAFE_TIMEOUT = 2500;
 
-  // ------- helpers -------
   async function fetchProfile(userId) {
     const { data, error } = await supabase
       .from('profiles')
@@ -36,9 +36,7 @@ export function AuthProvider({ children }) {
     return data || null;
   }
 
-  // Crea si no existe y devuelve la fila (idempotente)
   async function fetchOrCreateBalances(userId) {
-    // 1) Intentar leer
     const { data: existing, error: selErr } = await supabase
       .from('balances')
       .select('*')
@@ -52,7 +50,6 @@ export function AuthProvider({ children }) {
       return existing;
     }
 
-    // 2) Si NO existe, crear con 0s (RLS debe permitirlo)
     const { data: inserted, error: insErr } = await supabase
       .from('balances')
       .upsert({ user_id: userId, usdc: 0, eth: 0 }, { onConflict: 'user_id' })
@@ -60,7 +57,6 @@ export function AuthProvider({ children }) {
       .single();
 
     if (insErr) {
-      // Si falla por RLS, lo dejamos en null y avisamos suave
       console.warn('Balance (insert):', insErr.message);
       setBalances(null);
       return null;
@@ -70,7 +66,6 @@ export function AuthProvider({ children }) {
     return inserted || null;
   }
 
-  // Refresca solo balances (útil post-ajuste admin o RPC)
   const refreshBalances = async () => {
     if (!user?.id) return null;
     const { data, error } = await supabase
@@ -86,7 +81,6 @@ export function AuthProvider({ children }) {
     return data || null;
   };
 
-  // carga en segundo plano — NO bloquea el loader
   function loadAllBG(userId) {
     Promise.allSettled([
       fetchProfile(userId),
@@ -95,7 +89,6 @@ export function AuthProvider({ children }) {
     setIsAuthenticated(true);
   }
 
-  // ------- bootstrap + listener de auth -------
   useEffect(() => {
     let mounted = true;
     const killer = setTimeout(() => mounted && setLoading(false), SAFE_TIMEOUT);
@@ -112,7 +105,7 @@ export function AuthProvider({ children }) {
         setIsAuthenticated(!!session?.user);
 
         if (session?.user) {
-          loadAllBG(session.user.id); // en BG
+          loadAllBG(session.user.id);
         } else {
           setProfile(null);
           setBalances(null);
@@ -126,7 +119,7 @@ export function AuthProvider({ children }) {
           setIsAuthenticated(false);
         }
       } finally {
-        if (mounted) setLoading(false); // soltar loader ya
+        if (mounted) setLoading(false);
       }
     })();
 
@@ -135,7 +128,7 @@ export function AuthProvider({ children }) {
       setUser(u);
       setIsAuthenticated(!!u);
       if (u) {
-        loadAllBG(u.id); // en BG
+        loadAllBG(u.id);
       } else {
         setProfile(null);
         setBalances(null);
@@ -150,11 +143,9 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  // ------- listeners Realtime (balances + profiles) -------
   useEffect(() => {
     if (!user?.id) return;
 
-    // balances del usuario logueado
     const chBalances = supabase
       .channel('rt-balances')
       .on(
@@ -166,7 +157,6 @@ export function AuthProvider({ children }) {
       )
       .subscribe();
 
-    // cambios de perfil (username/role/etc)
     const chProfile = supabase
       .channel('rt-profiles')
       .on(
@@ -184,7 +174,6 @@ export function AuthProvider({ children }) {
     };
   }, [user?.id]);
 
-  // ------- actions -------
   const generateReferralCode = () =>
     Math.random().toString(36).substring(2, 8).toUpperCase();
 
@@ -204,29 +193,18 @@ export function AuthProvider({ children }) {
     }
   };
 
-  // >>> REGISTRO con referido OPCIONAL <<<
   const register = async ({ email, password, name, referralCode }) => {
     setLoading(true);
     try {
-      // Si llega referralCode, lo validamos y resolvemos el "referred_by"
       let referredBy = null;
       const code = (referralCode || '').toUpperCase().trim();
 
       if (code) {
-        const { data: refProfile, error: refErr } = await supabase
-          .from('profiles')
-          .select('id, referral_code')
-          .eq('referral_code', code)
-          .maybeSingle();
-
+        const { data: refId, error: refErr } = await supabase.rpc('resolve_referral_code', { p_code: code });
         if (refErr) throw refErr;
-        if (!refProfile?.id) {
-          throw new Error('Código de referido inválido.');
-        }
-        referredBy = refProfile.id;
+        referredBy = refId || null;
       }
 
-      // 1) Crear cuenta auth
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -238,30 +216,29 @@ export function AuthProvider({ children }) {
       const myReferralCode = generateReferralCode();
 
       if (userId) {
-        // 2) Insertar/actualizar perfil (idempotente para evitar 409)
-        const { error: pErr } = await supabase.from('profiles').upsert(
-          {
-            id: userId,
-            username: name || email.split('@')[0],
-            referred_by: referredBy,
-            referral_code: myReferralCode,
-            email,
-            full_name: name || null,
-          },
-          { onConflict: 'id' }
-        );
+        const { error: pErr } = await supabase
+          .from('profiles')
+          .upsert(
+            {
+              id: userId,
+              username: name || email.split('@')[0],
+              referred_by: referredBy,
+              referral_code: myReferralCode,
+              email,
+              full_name: name || null,
+            },
+            { onConflict: 'id' }
+          )
+          .select()
+          .single();
         if (pErr) throw pErr;
 
-        // 3) Balance inicial (idempotente)
         const { error: bErr } = await supabase
           .from('balances')
           .upsert({ user_id: userId, usdc: 0, eth: 0 }, { onConflict: 'user_id' });
-        if (bErr) {
-          // Si falla por RLS, no bloqueamos el registro
-          console.warn('Init balances (register):', bErr.message);
-        }
+        if (bErr) console.warn('Init balances (register):', bErr.message);
 
-        loadAllBG(userId); // en BG
+        loadAllBG(userId);
       }
 
       toast({ title: '¡Registro exitoso!', description: 'Tu cuenta ha sido creada correctamente.' });
@@ -293,11 +270,10 @@ export function AuthProvider({ children }) {
       toast({ title: 'Error al actualizar usuario', description: error.message, variant: 'destructive' });
       return;
     }
-    fetchProfile(user.id); // refresh en BG
+    fetchProfile(user.id);
     toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado exitosamente' });
   };
 
-  // Helper comodín para UI que espera un único saldo USD
   const balanceUSD = typeof balances?.usdc === 'number'
     ? balances.usdc
     : typeof balances?.balance === 'number'
@@ -315,15 +291,15 @@ export function AuthProvider({ children }) {
         user,
         profile,
         balances,
-        balanceUSD,     // <- helper de saldo USD
+        balanceUSD,
         displayName,
         isAuthenticated,
         loading,
         login,
-        register,       // <- ahora acepta referralCode opcional
+        register,
         logout,
         updateUser,
-        refreshBalances, // <- expuesto
+        refreshBalances,
       }}
     >
       {children}
