@@ -1,4 +1,3 @@
-// src/pages/AdminDashboard.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -27,6 +26,12 @@ const fmt = (n, dec = 2) => {
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
 };
 
+// Normaliza display de moneda: nunca mostrar USDT en UI
+const displayCcy = (ccy) => {
+  const s = String(ccy || DEFAULT_CCY).toUpperCase();
+  return s === 'USDT' ? 'USDC' : s;
+};
+
 export default function AdminDashboard() {
   const { user: authUser, refreshBalances } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -50,6 +55,7 @@ export default function AdminDashboard() {
   });
 
   // ------- helpers -------
+// TODO: si balances tiene más columnas con DEFAULTs, incluirlas en el upsert.
   const ensureBalanceRow = async (userId) => {
     const { error } = await supabase
       .from('balances')
@@ -58,6 +64,7 @@ export default function AdminDashboard() {
   };
 
   // ------- fetchers -------
+// TODO: mantener shape esperado por otras pantallas si agregas/renombras campos.
   const fetchUsers = async () => {
     const { data: profs, error: pErr } = await supabase
       .from('profiles')
@@ -159,6 +166,7 @@ export default function AdminDashboard() {
     || tx.user_id;
 
   // ------- acciones admin -------
+// TODO: si refreshBalances hace más que balances, considerar refrescar también DataContext.
   const maybeRefreshSelf = async (affectedUserId) => {
     if (authUser?.id && authUser.id === affectedUserId && typeof refreshBalances === 'function') {
       await refreshBalances();
@@ -256,7 +264,7 @@ export default function AdminDashboard() {
         .eq('user_id', updated.user_id);
       if (uErr) throw uErr;
 
-      toast({ title: 'Depósito aprobado', description: `Acreditado ${ccy} ${fmt(amt)}` });
+      toast({ title: 'Depósito aprobado', description: `Acreditado ${displayCcy(ccy)} ${fmt(amt)}` });
       await maybeRefreshSelf(updated.user_id);
       await reloadAll();
     } catch (e) {
@@ -269,8 +277,9 @@ export default function AdminDashboard() {
     try {
       await ensureBalanceRow(tx.user_id);
 
-      const ccy = String(tx.currency || DEFAULT_CCY).toUpperCase();
-      const col = ccy === 'ETH' ? 'eth' : 'usdc';
+      const raw = String(tx.currency || DEFAULT_CCY).toUpperCase();
+      const ccy = displayCcy(raw);
+      const col = raw === 'ETH' ? 'eth' : 'usdc';
       const amt = Number(tx.amount || 0);
 
       // Leer saldo actual
@@ -466,7 +475,7 @@ export default function AdminDashboard() {
                   <p className="text-white font-medium">Usuario: {userLabelFromTx(tx)}</p>
                   <p className="text-slate-400">
                     Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span>
-                    {tx.currency ? ` · ${tx.currency}` : ''}
+                    {tx.currency ? ` · ${displayCcy(tx.currency)}` : ''}
                   </p>
                 </div>
                 <div className="flex gap-2">
@@ -474,7 +483,7 @@ export default function AdminDashboard() {
                     <Check className="h-4 w-4 mr-1" /> Aprobar
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => rejectTx(tx)}>
-                    <X className="h-4 w-4 mr-1" /> Rechazar
+                    <XIcon className="h-4 w-4 mr-1" /> Rechazar
                   </Button>
                 </div>
               </div>
@@ -498,7 +507,7 @@ export default function AdminDashboard() {
                   <p className="text-white font-medium">Usuario: {userLabelFromTx(tx)}</p>
                   <p className="text-slate-400">
                     Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span>
-                    {tx.currency ? ` · ${tx.currency}` : ''}
+                    {tx.currency ? ` · ${displayCcy(tx.currency)}` : ''}
                   </p>
                 </div>
                 <div className="flex gap-2">
@@ -506,7 +515,7 @@ export default function AdminDashboard() {
                     <Check className="h-4 w-4 mr-1" /> Aprobar
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => rejectTx(tx)}>
-                    <X className="h-4 w-4 mr-1" /> Rechazar
+                    <XIcon className="h-4 w-4 mr-1" /> Rechazar
                   </Button>
                 </div>
               </div>
