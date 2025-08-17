@@ -26,7 +26,7 @@ export default function DepositPage() {
 
   // Depósitos
   const [depositMethod, setDepositMethod] = useState('crypto');
-  const [cryptoCurrency, setCryptoCurrency] = useState('USDT');
+  const [cryptoCurrency, setCryptoCurrency] = useState('USDC');
   const [fiatMethod, setFiatMethod] = useState('alias');
   const [amount, setAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -37,11 +37,11 @@ export default function DepositPage() {
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawDestination, setWithdrawDestination] = useState('');
 
-  // Dirección ERC-20 provista por ti (USDT/ETH en Ethereum)
+  // Dirección ERC-20 provista por ti (USDC/ETH en Ethereum)
   const APP_MAIN_ETH_ADDRESS = '0xBAeaDE80A2A1064E4F8f372cd2ADA9a00daB4BBE';
 
   const cryptoAddresses = {
-    USDT: APP_MAIN_ETH_ADDRESS, // USDT (ERC-20)
+    USDC: APP_MAIN_ETH_ADDRESS, // USDC (ERC-20)
     ETH: APP_MAIN_ETH_ADDRESS,  // ETH (ERC-20)
     BTC: 'bc1qBTC_DEPOSIT_ADDRESS_EXAMPLE', // reemplazar por real si usas BTC
   };
@@ -86,8 +86,8 @@ export default function DepositPage() {
     }
 
     const isCrypto = depositMethod === 'crypto';
-    // Para FIAT registramos como USDT (tu backend acredita a balances.usdc)
-    const currency = isCrypto ? String(cryptoCurrency || '').toUpperCase() : 'USDT';
+    // Para FIAT registramos como USDC (tu backend acredita a balances.usdc)
+    const currency = isCrypto ? String(cryptoCurrency || '').toUpperCase() : 'USDC';
 
     const details = isCrypto
       ? `Depósito ${currency} a ${cryptoAddresses[currency] ?? 'N/A'}`
@@ -100,7 +100,7 @@ export default function DepositPage() {
       await addTransaction?.({
         amount: depositAmount,
         type: 'deposit',
-        currency, // FK -> public.currencies(code)
+        currency,
         description: details,
         referenceType: 'deposit_request',
         referenceId: null,
@@ -160,7 +160,7 @@ export default function DepositPage() {
           : `Retiro solicitado (${ccy})`,
         referenceType: 'withdraw_request',
         referenceId: null,
-        status: 'pending', // pendiente para aprobación del admin
+        status: 'pending',
       });
 
       await refreshTransactions?.();
@@ -179,7 +179,7 @@ export default function DepositPage() {
   };
 
   const renderNetworkHint = () => {
-    if (cryptoCurrency === 'USDT' || cryptoCurrency === 'ETH') {
+    if (cryptoCurrency === 'USDC' || cryptoCurrency === 'ETH') {
       return <p className="text-xs text-slate-400">Red: Ethereum (ERC-20)</p>;
     }
     if (cryptoCurrency === 'BTC') {
@@ -234,7 +234,7 @@ export default function DepositPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent className="bg-slate-700 border-slate-600">
-                        <SelectItem value="USDT">USDT (Tether)</SelectItem>
+                        <SelectItem value="USDC">USDC (USD Coin)</SelectItem>
                         <SelectItem value="BTC">BTC (Bitcoin)</SelectItem>
                         <SelectItem value="ETH">ETH (Ethereum)</SelectItem>
                       </SelectContent>
@@ -279,7 +279,7 @@ export default function DepositPage() {
                   <div className="flex items-start space-x-2 p-3 bg-blue-900/30 rounded-lg border border-blue-700">
                     <Info className="h-5 w-5 text-blue-400 mt-1 shrink-0" />
                     <p className="text-sm text-blue-300">
-                      Para USDT y ETH usa <span className="font-bold">Ethereum (ERC-20)</span>. Enviar a otra red puede
+                      Para USDC y ETH usa <span className="font-bold">Ethereum (ERC-20)</span>. Enviar a otra red puede
                       resultar en pérdida del depósito. La confirmación puede tardar algunos minutos.
                     </p>
                   </div>

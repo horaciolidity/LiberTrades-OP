@@ -31,21 +31,20 @@ export default function InvestmentPlans() {
   const { user, balances } = useAuth();
   const { playSound } = useSound();
 
-  // agrego lista de monedas aceptadas por plan
   const investmentPlans = (defaultPlans || []).map((plan) => ({
     ...plan,
-    currencies: ['USDT', 'BTC', 'ETH'],
+    currencies: ['USDC', 'BTC', 'ETH'],
   }));
 
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
-  const [selectedCurrency, setSelectedCurrency] = useState('USDT');
+  const [selectedCurrency, setSelectedCurrency] = useState('USDC');
   const [isInvesting, setIsInvesting] = useState(false);
 
   const calculateEquivalentValue = (amount, currency) => {
     const a = Number(amount || 0);
     if (!a) return 0;
-    if (currency === 'USDT') return a;
+    if (currency === 'USDC') return a;
     const price = Number(cryptoPrices?.[currency]?.price ?? 0);
     return price > 0 ? a * price : 0;
   };
@@ -74,7 +73,7 @@ export default function InvestmentPlans() {
     }
 
     let amountInUSD = amount;
-    if (selectedCurrency !== 'USDT') {
+    if (selectedCurrency !== 'USDC') {
       const price = Number(cryptoPrices?.[selectedCurrency]?.price ?? 0);
       if (!price) {
         playSound('error');
@@ -115,18 +114,16 @@ export default function InvestmentPlans() {
     playSound('invest');
 
     try {
-      // 1) Insertar inversión (ajusta columnas si tu tabla difiere)
       const { error: invErr } = await supabase.from('investments').insert({
         user_id: user.id,
         plan_name: selectedPlan.name,
         amount: amountInUSD,
         daily_return: selectedPlan.dailyReturn,
         duration: selectedPlan.duration,
-        currency_input: selectedCurrency, // opcional: guarda en qué moneda invirtió
+        currency_input: selectedCurrency,
       });
       if (invErr) throw invErr;
 
-      // 2) Actualizar balance USDC
       const newUsdc = Math.max(0, currentUsdc - amountInUSD);
       const { error: balErr } = await supabase
         .from('balances')
@@ -139,10 +136,9 @@ export default function InvestmentPlans() {
         description: `Invertiste ${fmt(amount)} ${selectedCurrency} (≈ $${fmt(amountInUSD)}) en ${selectedPlan.name}.`,
       });
 
-      // reset modal
       setSelectedPlan(null);
       setInvestmentAmount('');
-      setSelectedCurrency('USDT');
+      setSelectedCurrency('USDC');
     } catch (error) {
       console.error('Error al invertir:', error?.message || error);
       playSound('error');
@@ -228,7 +224,7 @@ export default function InvestmentPlans() {
                 onClick={() => {
                   playSound('click');
                   setSelectedPlan(plan);
-                  setSelectedCurrency('USDT');
+                  setSelectedCurrency('USDC');
                   setInvestmentAmount('');
                 }}
               >
@@ -281,7 +277,7 @@ export default function InvestmentPlans() {
                       e.stopPropagation();
                       playSound('click');
                       setSelectedPlan(plan);
-                      setSelectedCurrency('USDT');
+                      setSelectedCurrency('USDC');
                       setInvestmentAmount('');
                     }}
                     className="w-full mt-2 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700"
@@ -340,7 +336,7 @@ export default function InvestmentPlans() {
                   value={investmentAmount}
                   onChange={(e) => setInvestmentAmount(e.target.value)}
                   placeholder={`Ej: ${
-                    selectedCurrency === 'USDT' ? '100' : selectedCurrency === 'BTC' ? '0.01' : '0.1'
+                    selectedCurrency === 'USDC' ? '100' : selectedCurrency === 'BTC' ? '0.01' : '0.1'
                   }`}
                   className="bg-slate-800 border-slate-600 text-white"
                 />
@@ -356,7 +352,7 @@ export default function InvestmentPlans() {
                   <div className="flex justify-between">
                     <span className="text-slate-400">Inversión ({selectedCurrency}):</span>
                     <span className="text-white">
-                      {fmt(investmentAmount, selectedCurrency === 'USDT' ? 2 : 8)}
+                      {fmt(investmentAmount, selectedCurrency === 'USDC' ? 2 : 8)}
                     </span>
                   </div>
                   <div className="flex justify-between">
@@ -371,8 +367,7 @@ export default function InvestmentPlans() {
                       $
                       {fmt(
                         calculateEquivalentValue(investmentAmount, selectedCurrency) *
-                          Number(selectedPlan.dailyReturn || 0) /
-                          100,
+                          Number(selectedPlan.dailyReturn || 0) / 100,
                         2
                       )}
                     </span>
@@ -384,8 +379,7 @@ export default function InvestmentPlans() {
                       {fmt(
                         calculateEquivalentValue(investmentAmount, selectedCurrency) *
                           Number(selectedPlan.dailyReturn || 0) *
-                          Number(selectedPlan.duration || 0) /
-                          100,
+                          Number(selectedPlan.duration || 0) / 100,
                         2
                       )}
                     </span>

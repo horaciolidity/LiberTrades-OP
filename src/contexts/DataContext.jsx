@@ -12,133 +12,127 @@ import { useAuth } from '@/contexts/AuthContext';
 
 const DataContext = createContext(null);
 
-// Utilidad
 const ensureArray = (v) => (Array.isArray(v) ? v : []);
 
 export function DataProvider({ children }) {
   const { user } = useAuth();
 
-  // ======= Estado que la UI consume SINCRÓNICAMENTE =======
-  const [investments, setInvestments] = useState([]);   // []
-  const [transactions, setTransactions] = useState([]); // []
-  const [referrals, setReferrals] = useState([]);       // []
+  const [investments, setInvestments] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [referrals, setReferrals] = useState([]);
 
-  // ======= Bot activations =======
   const [botActivations, setBotActivations] = useState([]);
 
-  // ======= Precios (híbrido: real + micro-ticks) =======
-const LIVE_SYMBOLS = {
-  BTC: 'BTCUSDT',
-  ETH: 'ETHUSDT',
-  BNB: 'BNBUSDT',
-  ADA: 'ADAUSDT',
-  USDT: null, // anclado a 1.0
-};
+  // ======= Proyectos tokenizados =======
+  const [projects, setProjects] = useState([]);
+  const [projectRaise, setProjectRaise] = useState({});
+  const [myProjectInvestments, setMyProjectInvestments] = useState([]);
 
-const emptyBook = {
-  BTC: { price: 45000, change: 0, history: [] },
-  ETH: { price: 3200,  change: 0, history: [] },
-  USDT:{ price: 1.0,   change: 0, history: [] },
-  BNB: { price: 320,   change: 0, history: [] },
-  ADA: { price: 0.85,  change: 0, history: [] },
-};
+  // ======= Precios (real + micro-ticks) =======
+  const LIVE_SYMBOLS = {
+    BTC: 'BTCUSDT',
+    ETH: 'ETHUSDT',
+    BNB: 'BNBUSDT',
+    ADA: 'ADAUSDT',
+    USDC: null, // estable
+  };
 
-const [cryptoPrices, setCryptoPrices] = useState(emptyBook);
+  const emptyBook = {
+    BTC: { price: 45000, change: 0, history: [] },
+    ETH: { price: 3200, change: 0, history: [] },
+    USDC: { price: 1.0, change: 0, history: [] },
+    BNB: { price: 320, change: 0, history: [] },
+    ADA: { price: 0.85, change: 0, history: [] },
+  };
 
-// cache en memoria de último precio real
-const liveCacheRef = React.useRef({});
+  const [cryptoPrices, setCryptoPrices] = useState(emptyBook);
+  const liveCacheRef = React.useRef({});
 
-useEffect(() => {
-  let mounted = true;
-  let tickTimer = null;
-  let liveTimer = null;
+  useEffect(() => {
+    let mounted = true;
+    let tickTimer = null;
+    let liveTimer = null;
 
-  const seedHistory = (p, n = 60) => {
-    const now = Date.now();
-    const hist = [];
-    for (let i = n - 1; i >= 0; i--) {
-      hist.push({ time: now - i * 2000, value: p });
+    const seedHistory = (p, n = 60) => {
+      const now = Date.now();
+      const hist = [];
+      for (let i = n - 1; i >= 0; i--) {
+        hist.push({ time: now - i * 2000, value: p });
+      }
+      return hist;
+    };
+
+    async function fetchLiveOnce() {
+      const entries = await Promise.all(
+        Object.entries(LIVE_SYMBOLS).map(async ([sym, binSym]) => {
+          if (!binSym) return [sym, sym === 'USDC' ? 1 : null];
+          try {
+            const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${binSym}`);
+            const j = await r.json();
+            const px = Number(j?.price);
+            return [sym, Number.isFinite(px) ? px : null];
+          } catch {
+            return [sym, null];
+          }
+        })
+      );
+      const live = Object.fromEntries(entries);
+      liveCacheRef.current = { ...liveCacheRef.current, ...live };
+      return live;
     }
-    return hist;
-  };
 
-  async function fetchLiveOnce() {
-    const entries = await Promise.all(
-      Object.entries(LIVE_SYMBOLS).map(async ([sym, binSym]) => {
-        if (!binSym) return [sym, sym === 'USDT' ? 1 : null];
-        try {
-          const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${binSym}`);
-          const j = await r.json();
-          const px = Number(j?.price);
-          return [sym, Number.isFinite(px) ? px : null];
-        } catch {
-          return [sym, null];
+    (async () => {
+      const live = await fetchLiveOnce();
+      if (!mounted) return;
+      setCryptoPrices((prev) => {
+        const next = { ...prev };
+        for (const k of Object.keys(emptyBook)) {
+          const p = Number(live[k]) || prev[k]?.price || emptyBook[k].price;
+          next[k] = { price: p, change: 0, history: seedHistory(p) };
         }
-      })
-    );
-    const live = Object.fromEntries(entries);
-    liveCacheRef.current = { ...liveCacheRef.current, ...live };
-    return live;
-  }
+        return next;
+      });
+    })();
 
-  // seed inicial con real y fallback a defaults
-  (async () => {
-    const live = await fetchLiveOnce();
-    if (!mounted) return;
-    setCryptoPrices(prev => {
-      const next = { ...prev };
-      for (const k of Object.keys(emptyBook)) {
-        const p = Number(live[k]) || prev[k]?.price || emptyBook[k].price;
-        next[k] = { price: p, change: 0, history: seedHistory(p) };
-      }
-      return next;
-    });
-  })();
+    tickTimer = setInterval(() => {
+      setCryptoPrices((prev) => {
+        const next = { ...prev };
+        for (const k of Object.keys(prev)) {
+          const last = prev[k].price;
+          const live = Number(liveCacheRef.current[k]) || last;
+          const blended = last + (live - last) * 0.2;
+          const jitterPct = (Math.random() - 0.5) * 0.15 / 100;
+          const price = Math.max(0.000001, blended * (1 + jitterPct));
+          const change = ((price - last) / (last || 1)) * 100;
+          const history = [...prev[k].history, { time: Date.now(), value: price }].slice(-120);
+          next[k] = { price, change, history };
+        }
+        next.USDC.price = 1.0;
+        next.USDC.change = 0;
+        return next;
+      });
+    }, 2000);
 
-  // micro-ticks locales cada 2s, anclados al precio real (blend)
-  tickTimer = setInterval(() => {
-    setCryptoPrices(prev => {
-      const next = { ...prev };
-      for (const k of Object.keys(prev)) {
-        const last = prev[k].price;
-        const live = Number(liveCacheRef.current[k]) || last;
-        // acercamos 20% hacia el real y aplicamos jitter ±0.15%
-        const blended = last + (live - last) * 0.20;
-        const jitterPct = (Math.random() - 0.5) * 0.15 / 100;
-        const price = Math.max(0.000001, blended * (1 + jitterPct));
-        const change = ((price - last) / (last || 1)) * 100;
-        const history = [...prev[k].history, { time: Date.now(), value: price }].slice(-120);
-        next[k] = { price, change, history };
-      }
-      // USDT fijo a 1 con un toque mínimo
-      next.USDT.price = 1.0;
-      next.USDT.change = 0;
-      return next;
-    });
-  }, 2000);
+    liveTimer = setInterval(fetchLiveOnce, 15000);
 
-  // refresco real cada 15s
-  liveTimer = setInterval(fetchLiveOnce, 15000);
-
-  return () => {
-    mounted = false;
-    clearInterval(tickTimer);
-    clearInterval(liveTimer);
-  };
-}, []);
-
+    return () => {
+      mounted = false;
+      clearInterval(tickTimer);
+      clearInterval(liveTimer);
+    };
+  }, []);
 
   const investmentPlans = useMemo(
     () => [
-      { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
-      { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
-      { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para inversores avanzados' },
-      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
+      { id: 1, name: 'Plan Básico', minAmount: 100, maxAmount: 999, dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
+      { id: 2, name: 'Plan Estándar', minAmount: 1000, maxAmount: 4999, dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
+      { id: 3, name: 'Plan Premium', minAmount: 5000, maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para inversores avanzados' },
+      { id: 4, name: 'Plan VIP', minAmount: 20000, maxAmount: 100000, dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
     ],
     []
   );
 
-  // ======= Fetchers (async) que ACTUALIZAN el estado =======
+  // ======= Fetchers =======
   async function refreshInvestments() {
     if (!user?.id) {
       setInvestments([]);
@@ -165,10 +159,8 @@ useEffect(() => {
       const earnings = dailyReturn * daysElapsed;
 
       return {
-        // compat filtros
         user_id: inv.user_id,
         userId: inv.user_id,
-
         id: inv.id,
         planName: inv.plan_name,
         amount: Number(inv.amount || 0),
@@ -204,29 +196,24 @@ useEffect(() => {
 
     const mapped = (Array.isArray(data) ? data : []).map((tx) => {
       let base = (tx.type || '').toLowerCase();
-
-      // normalización por compat
       if (base === 'plan_purchase') base = 'investment';
 
-      // mapeo por reference_type
       const ref = (tx.reference_type || '').toLowerCase();
       let displayType = base;
       if (ref === 'bot_activation') displayType = 'bot_activation';
-      if (ref === 'bot_profit')     displayType = 'bot_profit';
-      if (ref === 'bot_refund')     displayType = 'bot_refund';
-      if (ref === 'bot_fee')        displayType = 'bot_fee';
+      if (ref === 'bot_profit') displayType = 'bot_profit';
+      if (ref === 'bot_refund') displayType = 'bot_refund';
+      if (ref === 'bot_fee') displayType = 'bot_fee';
 
       return {
-        // compat filtros
         user_id: tx.user_id,
         userId: tx.user_id,
-
         id: tx.id,
-        type: displayType,                   // usar en UI
-        rawType: tx.type,                    // original
+        type: displayType,
+        rawType: tx.type,
         status: tx.status,
         amount: Number(tx.amount || 0),
-        currency: tx.currency || 'USDT',
+        currency: tx.currency || 'USDC',
         description: tx.description || '',
         createdAt: tx.created_at,
         referenceType: tx.reference_type,
@@ -256,16 +243,85 @@ useEffect(() => {
     setReferrals(ensureArray(data));
   }
 
+  // ======= Proyectos tokenizados =======
+  const refreshProjects = async () => {
+    const { data: p } = await supabase
+      .from('tokenized_projects')
+      .select('*')
+      .order('launch_date', { ascending: true });
+    setProjects(p || []);
+
+    const { data: r } = await supabase.from('project_raise_view').select('*');
+    const map = {};
+    (r || []).forEach((row) => {
+      map[row.project_id] = Number(row.raised_usd || 0);
+    });
+    setProjectRaise(map);
+  };
+
+  const refreshMyProjectInvestments = async () => {
+    if (!user?.id) {
+      setMyProjectInvestments([]);
+      return;
+    }
+    const { data } = await supabase
+      .from('project_investments')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+    setMyProjectInvestments(data || []);
+  };
+
+  useEffect(() => {
+    refreshProjects();
+  }, []);
+  useEffect(() => {
+    refreshMyProjectInvestments();
+  }, [user?.id]);
+
+  useEffect(() => {
+    const ch1 = supabase
+      .channel('rt-projects')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tokenized_projects' }, () => {
+        refreshProjects();
+      })
+      .subscribe();
+
+    let ch2 = null;
+    if (user?.id) {
+      ch2 = supabase
+        .channel('rt-project-investments')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'project_investments', filter: `user_id=eq.${user.id}` },
+          () => refreshMyProjectInvestments()
+        )
+        .subscribe();
+    }
+
+    return () => {
+      supabase.removeChannel(ch1);
+      if (ch2) supabase.removeChannel(ch2);
+    };
+  }, [user?.id]);
+
   // ======= Bots =======
   async function refreshBotActivations() {
-    if (!user?.id) { setBotActivations([]); return; }
+    if (!user?.id) {
+      setBotActivations([]);
+      return;
+    }
     const { data, error } = await supabase
       .from('bot_activations')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
-    if (error) { console.error('[refreshBotActivations] error:', error); setBotActivations([]); return; }
+    if (error) {
+      console.error('[refreshBotActivations] error:', error);
+      setBotActivations([]);
+      return;
+    }
 
     const mapped = ensureArray(data).map((b) => ({
       id: b.id,
@@ -275,7 +331,7 @@ useEffect(() => {
       botName: b.bot_name,
       strategy: b.strategy,
       amountUsd: Number(b.amount_usd || 0),
-      status: b.status, // active | paused | cancelled
+      status: b.status,
       createdAt: b.created_at,
     }));
     setBotActivations(mapped);
@@ -290,8 +346,11 @@ useEffect(() => {
       p_strategy: strategy,
       p_amount_usd: Number(amountUsd),
     });
-    if (error) { console.error('[activateBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
-    if (!data?.ok) return data; // puede devolver INSUFFICIENT_FUNDS
+    if (error) {
+      console.error('[activateBot] error:', error);
+      return { ok: false, code: 'RPC_ERROR', error };
+    }
+    if (!data?.ok) return data;
     await Promise.all([refreshBotActivations(), refreshTransactions()]);
     return data;
   }
@@ -302,7 +361,10 @@ useEffect(() => {
       p_activation_id: activationId,
       p_user_id: user.id,
     });
-    if (error) { console.error('[pauseBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
+    if (error) {
+      console.error('[pauseBot] error:', error);
+      return { ok: false, code: 'RPC_ERROR', error };
+    }
     await refreshBotActivations();
     return data;
   }
@@ -313,7 +375,10 @@ useEffect(() => {
       p_activation_id: activationId,
       p_user_id: user.id,
     });
-    if (error) { console.error('[resumeBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
+    if (error) {
+      console.error('[resumeBot] error:', error);
+      return { ok: false, code: 'RPC_ERROR', error };
+    }
     await refreshBotActivations();
     return data;
   }
@@ -324,7 +389,10 @@ useEffect(() => {
       p_activation_id: activationId,
       p_user_id: user.id,
     });
-    if (error) { console.error('[cancelBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
+    if (error) {
+      console.error('[cancelBot] error:', error);
+      return { ok: false, code: 'RPC_ERROR', error };
+    }
     await refreshBotActivations();
     return data;
   }
@@ -337,38 +405,44 @@ useEffect(() => {
       p_amount_usd: Number(amountUsd),
       p_note: note,
     });
-    if (error) { console.error('[creditBotProfit] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
-    await refreshTransactions(); // refleja el crédito en el historial
+    if (error) {
+      console.error('[creditBotProfit] error:', error);
+      return { ok: false, code: 'RPC_ERROR', error };
+    }
+    await refreshTransactions();
     return data;
   }
 
-  // ======= Efecto: refetch al loguear/cambiar de user =======
+  // ======= Efecto: refetch al loguear/cambiar user =======
   useEffect(() => {
     setInvestments([]);
     setTransactions([]);
     setReferrals([]);
     setBotActivations([]);
+    setMyProjectInvestments([]);
 
     refreshInvestments();
     refreshTransactions();
     refreshReferrals();
     refreshBotActivations();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    refreshMyProjectInvestments();
   }, [user?.id]);
 
   // ======= Utilidad moneda para FK =======
   async function ensureCurrency(code) {
     if (!code) return;
-    await supabase.from('currencies').upsert({ code: String(code).toUpperCase() }, { onConflict: 'code' });
+    await supabase
+      .from('currencies')
+      .upsert({ code: String(code).toUpperCase() }, { onConflict: 'code' });
   }
 
-  // ======= Mutaciones (insert) =======
+  // ======= Mutaciones =======
   async function addInvestment({
     planName,
     amount,
     dailyReturn,
     duration,
-    currency = 'USDT',
+    currency = 'USDC',
   }) {
     if (!user?.id) return null;
     const payload = {
@@ -394,10 +468,8 @@ useEffect(() => {
     await refreshInvestments();
 
     return {
-      // compat filtros
       user_id: data.user_id,
       userId: data.user_id,
-
       id: data.id,
       planName: data.plan_name,
       amount: Number(data.amount || 0),
@@ -414,7 +486,7 @@ useEffect(() => {
   async function addTransaction({
     amount,
     type,
-    currency = 'USDT',
+    currency = 'USDC',
     description = '',
     referenceType = null,
     referenceId = null,
@@ -427,7 +499,7 @@ useEffect(() => {
     const payload = {
       user_id: user.id,
       amount: Number(amount),
-      type, // 'deposit' | 'withdrawal' | 'plan_purchase' | ...
+      type,
       status,
       currency,
       description,
@@ -452,15 +524,13 @@ useEffect(() => {
     if (mappedType === 'plan_purchase') mappedType = 'investment';
 
     return {
-      // compat filtros
       user_id: data.user_id,
       userId: data.user_id,
-
       id: data.id,
       type: mappedType,
       status: data.status,
       amount: Number(data.amount || 0),
-      currency: data.currency || 'USDT',
+      currency: data.currency || 'USDC',
       description: data.description || '',
       createdAt: data.created_at,
       referenceType: data.reference_type,
@@ -468,8 +538,7 @@ useEffect(() => {
     };
   }
 
-  // Nueva helper: solicitud de retiro pendiente
-  async function requestWithdrawal({ amount, currency = 'USDT', description = '' }) {
+  async function requestWithdrawal({ amount, currency = 'USDC', description = '' }) {
     return addTransaction({
       amount,
       type: 'withdrawal',
@@ -481,29 +550,35 @@ useEffect(() => {
     });
   }
 
-  // ======= API pública (compat sincrónica + métodos de refresh) =======
+  // ======= API pública =======
   const value = useMemo(
     () => ({
-      // datos listos para usar sin await
       investments,
       transactions,
       referrals,
       botActivations,
 
-      // getters compatibles con tu UI actual (sincrónicos)
+      projects,
+      getProjects: () => projects,
+      getProjectRaise: (projectId) => projectRaise[projectId] || 0,
+      myProjectInvestments,
+      getMyProjectInvestments: () => myProjectInvestments,
+
       getInvestments: () => investments,
       getTransactions: () => transactions,
       getReferrals: () => referrals,
 
-      // acciones y refrescos
       refreshInvestments,
       refreshTransactions,
       refreshReferrals,
+
+      refreshProjects,
+      refreshMyProjectInvestments,
+
       addInvestment,
       addTransaction,
       requestWithdrawal,
 
-      // BOTS
       refreshBotActivations,
       activateBot,
       pauseBot,
@@ -511,7 +586,6 @@ useEffect(() => {
       cancelBot,
       creditBotProfit,
 
-      // otros datos de UI
       cryptoPrices,
       investmentPlans,
     }),
@@ -520,17 +594,17 @@ useEffect(() => {
       transactions,
       referrals,
       botActivations,
+      projects,
+      projectRaise,
+      myProjectInvestments,
       cryptoPrices,
       investmentPlans,
     ]
   );
 
-  return (
-    <DataContext.Provider value={value}>{children}</DataContext.Provider>
-  );
+  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
 
-// Hook con fallback seguro
 export function useData() {
   const ctx = useContext(DataContext);
   if (!ctx) {
@@ -539,12 +613,19 @@ export function useData() {
       transactions: [],
       referrals: [],
       botActivations: [],
+      projects: [],
+      myProjectInvestments: [],
+      getProjects: () => [],
+      getProjectRaise: () => 0,
+      getMyProjectInvestments: () => [],
       getInvestments: () => [],
       getTransactions: () => [],
       getReferrals: () => [],
       refreshInvestments: async () => {},
       refreshTransactions: async () => {},
       refreshReferrals: async () => {},
+      refreshProjects: async () => {},
+      refreshMyProjectInvestments: async () => {},
       addInvestment: async () => null,
       addTransaction: async () => null,
       requestWithdrawal: async () => null,
