@@ -1,4 +1,9 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+} from 'react';
 import { toast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -199,9 +204,29 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const register = async ({ email, password, name, referredBy }) => {
+  // >>> REGISTRO con referido OPCIONAL <<<
+  const register = async ({ email, password, name, referralCode }) => {
     setLoading(true);
     try {
+      // Si llega referralCode, lo validamos y resolvemos el "referred_by"
+      let referredBy = null;
+      const code = (referralCode || '').toUpperCase().trim();
+
+      if (code) {
+        const { data: refProfile, error: refErr } = await supabase
+          .from('profiles')
+          .select('id, referral_code')
+          .eq('referral_code', code)
+          .maybeSingle();
+
+        if (refErr) throw refErr;
+        if (!refProfile?.id) {
+          throw new Error('Código de referido inválido.');
+        }
+        referredBy = refProfile.id;
+      }
+
+      // 1) Crear cuenta auth
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -210,21 +235,21 @@ export function AuthProvider({ children }) {
       if (error) throw error;
 
       const userId = data?.user?.id;
-      const referralCode = generateReferralCode();
+      const myReferralCode = generateReferralCode();
 
       if (userId) {
-        // 1) perfil
+        // 2) Insertar perfil (si no hubo código, referred_by queda null)
         const { error: pErr } = await supabase.from('profiles').insert({
           id: userId,
           username: name || email.split('@')[0],
-          referred_by: referredBy || null,
-          referral_code: referralCode,
+          referred_by: referredBy,
+          referral_code: myReferralCode,
           email,
           full_name: name || null,
         });
         if (pErr) throw pErr;
 
-        // 2) balance inicial (para que /trading-bots vea saldo de inmediato)
+        // 3) Balance inicial (idempotente)
         const { error: bErr } = await supabase
           .from('balances')
           .insert({ user_id: userId, usdc: 0, eth: 0 });
@@ -287,15 +312,15 @@ export function AuthProvider({ children }) {
         user,
         profile,
         balances,
-        balanceUSD,     // <- helper de saldo USD
+        balanceUSD,
         displayName,
         isAuthenticated,
         loading,
         login,
-        register,
+        register,       // <- ahora acepta referralCode opcional
         logout,
         updateUser,
-        refreshBalances, // <- expuesto
+        refreshBalances,
       }}
     >
       {children}
