@@ -55,7 +55,7 @@ export function AuthProvider({ children }) {
     // 2) Si NO existe, crear con 0s (RLS debe permitirlo)
     const { data: inserted, error: insErr } = await supabase
       .from('balances')
-      .insert({ user_id: userId, usdc: 0, eth: 0 })
+      .upsert({ user_id: userId, usdc: 0, eth: 0 }, { onConflict: 'user_id' })
       .select()
       .single();
 
@@ -238,21 +238,24 @@ export function AuthProvider({ children }) {
       const myReferralCode = generateReferralCode();
 
       if (userId) {
-        // 2) Insertar perfil (si no hubo código, referred_by queda null)
-        const { error: pErr } = await supabase.from('profiles').insert({
-          id: userId,
-          username: name || email.split('@')[0],
-          referred_by: referredBy,
-          referral_code: myReferralCode,
-          email,
-          full_name: name || null,
-        });
+        // 2) Insertar/actualizar perfil (idempotente para evitar 409)
+        const { error: pErr } = await supabase.from('profiles').upsert(
+          {
+            id: userId,
+            username: name || email.split('@')[0],
+            referred_by: referredBy,
+            referral_code: myReferralCode,
+            email,
+            full_name: name || null,
+          },
+          { onConflict: 'id' }
+        );
         if (pErr) throw pErr;
 
         // 3) Balance inicial (idempotente)
         const { error: bErr } = await supabase
           .from('balances')
-          .insert({ user_id: userId, usdc: 0, eth: 0 });
+          .upsert({ user_id: userId, usdc: 0, eth: 0 }, { onConflict: 'user_id' });
         if (bErr) {
           // Si falla por RLS, no bloqueamos el registro
           console.warn('Init balances (register):', bErr.message);
@@ -312,7 +315,7 @@ export function AuthProvider({ children }) {
         user,
         profile,
         balances,
-        balanceUSD,
+        balanceUSD,     // <- helper de saldo USD
         displayName,
         isAuthenticated,
         loading,
@@ -320,7 +323,7 @@ export function AuthProvider({ children }) {
         register,       // <- ahora acepta referralCode opcional
         logout,
         updateUser,
-        refreshBalances,
+        refreshBalances, // <- expuesto
       }}
     >
       {children}
