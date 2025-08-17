@@ -29,6 +29,8 @@ export default function ReferralSystem() {
   const { referrals, getReferrals, refreshReferrals } = useData();
 
   const [referralLink, setReferralLink] = useState('');
+  const [refRows, setRefRows] = useState([]);
+  const [loading, setLoading] = useState(false);
 
   const referralCode = profile?.referral_code || '';
 
@@ -44,14 +46,18 @@ export default function ReferralSystem() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'profiles', filter: `referred_by=eq.${user.id}` },
-        () => refreshReferrals?.()
+        () => {
+          refreshReferrals?.();
+          loadDirectReferrals(); // mantiene sincronizado el fetch directo también
+        }
       )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user?.id, refreshReferrals]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   useEffect(() => {
     if (!referralCode) {
@@ -63,17 +69,56 @@ export default function ReferralSystem() {
     }
   }, [referralCode]);
 
-  const all = Array.isArray(referrals)
+  const loadDirectReferrals = async () => {
+    if (!user?.id) {
+      setRefRows([]);
+      return;
+    }
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, email, full_name, created_at, username, referred_by')
+        .eq('referred_by', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.warn('[ReferralSystem] select profiles error:', error.message);
+        setRefRows([]);
+      } else {
+        setRefRows(Array.isArray(data) ? data : []);
+      }
+    } catch (e) {
+      console.error('[ReferralSystem] loadDirectReferrals unexpected error:', e);
+      setRefRows([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDirectReferrals();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  const fallback = Array.isArray(referrals)
     ? referrals
     : (Array.isArray(getReferrals?.()) ? getReferrals() : []);
 
+  const source = refRows.length ? refRows : fallback;
+
   const myReferrals = useMemo(() => {
     if (!user?.id) return [];
-    return (all || []).filter((r) => {
-      const by = r.referred_by ?? r.referredBy ?? r.referrer_id ?? r.referrerId ?? null;
+    return (source || []).filter((r) => {
+      const by =
+        r.referred_by ??
+        r.referredBy ??
+        r.referrer_id ??
+        r.referrerId ??
+        null;
       return by === user.id;
     });
-  }, [all, user?.id]);
+  }, [source, user?.id]);
 
   const copyReferralLink = () => {
     if (!referralLink) return;
@@ -145,7 +190,6 @@ export default function ReferralSystem() {
   return (
     <>
       <div className="space-y-8">
-        {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -155,7 +199,6 @@ export default function ReferralSystem() {
           <p className="text-slate-300">Invita amigos y gana comisiones por cada referido activo</p>
         </motion.div>
 
-        {/* Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {stats.map((stat, index) => {
             const Icon = stat.icon;
@@ -184,9 +227,7 @@ export default function ReferralSystem() {
           })}
         </div>
 
-        {/* Link + Progress */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Referral Link */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
@@ -257,7 +298,6 @@ export default function ReferralSystem() {
             </Card>
           </motion.div>
 
-          {/* Referral Progress */}
           <motion.div
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
@@ -319,7 +359,6 @@ export default function ReferralSystem() {
           </motion.div>
         </div>
 
-        {/* Referral Benefits Table */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -344,7 +383,13 @@ export default function ReferralSystem() {
                     </tr>
                   </thead>
                   <tbody>
-                    {referralBenefits.map((benefit, index) => (
+                    {[
+                      { level: 'Principiante', referrals: '1-4 referidos', commission: '$50 por referido', bonus: 'Bono de bienvenida' },
+                      { level: 'Bronce', referrals: '5-19 referidos', commission: '$75 por referido', bonus: 'Acceso a webinars exclusivos' },
+                      { level: 'Plata', referrals: '20-49 referidos', commission: '$100 por referido', bonus: 'Asesoría personalizada' },
+                      { level: 'Oro', referrals: '50-99 referidos', commission: '$150 por referido', bonus: 'Acceso VIP + Señales premium' },
+                      { level: 'Diamante', referrals: '100+ referidos', commission: '$200 por referido', bonus: 'Todos los beneficios + Participación en ganancias' },
+                    ].map((benefit, index) => (
                       <tr
                         key={index}
                         className={`border-b border-slate-700/50 ${
@@ -372,7 +417,6 @@ export default function ReferralSystem() {
           </Card>
         </motion.div>
 
-        {/* Referrals List */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -386,7 +430,9 @@ export default function ReferralSystem() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {myReferrals.length > 0 ? (
+              {loading ? (
+                <div className="text-center py-8 text-slate-400">Cargando…</div>
+              ) : myReferrals.length > 0 ? (
                 <div className="space-y-4">
                   {myReferrals.map((referral) => {
                     const name =
