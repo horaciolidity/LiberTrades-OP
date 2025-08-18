@@ -1,31 +1,13 @@
-// src/hooks/useHybridLivePrices.js
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-/**
- * 100% precios reales (Binance WebSocket).
- * - Sin simulación ni ticks locales.
- * - Reconexión automática con backoff.
- * - Mantiene la misma API que tu hook anterior:
- *    - prices: { BTC: { price, change }, ... }
- *    - selectedPriceHistory: [{ time, value }]
- *
- * Parámetros (algunos se conservan por compatibilidad, aunque ya no se usan):
- *  - symbols: ['BTC','ETH','BNB','ADA', ...]
- *  - vs: 'USDT' | 'USD' (default 'USDT')
- *  - maxHist: cantidad máxima de puntos en historial (default 300)
- *  - selectedPair: ej. "BTC/USDT"
- *  - pollMs / tickMs: ignorados (compatibilidad)
- */
 export default function useHybridLivePrices({
   symbols = ['BTC', 'ETH', 'BNB', 'ADA', 'USDT'],
   vs = 'USDT',
-  pollMs = 12000, // <— ignorado (compatibilidad)
-  tickMs = 1000,  // <— ignorado (compatibilidad)
   maxHist = 300,
   selectedPair = 'BTC/USDT',
 } = {}) {
-  const [prices, setPrices] = useState({});       // { BTC: { price, change }, ... }
-  const [histories, setHistories] = useState({}); // { BTC: [{ time, value }, ...] }
+  const [prices, setPrices] = useState({});        // { BTC: { price, change } }
+  const [histories, setHistories] = useState({});  // { BTC: [{ time, value }, ...] }
 
   const wsRef = useRef(null);
   const retryRef = useRef({ tries: 0, timer: null });
@@ -42,7 +24,6 @@ export default function useHybridLivePrices({
     [histories, selectedBase]
   );
 
-  // Helpers
   const clampHist = (arr, limit = maxHist) =>
     arr.length > limit ? arr.slice(arr.length - limit) : arr;
 
@@ -59,20 +40,15 @@ export default function useHybridLivePrices({
   };
 
   useEffect(() => {
-    // Normalizamos símbolos y evitamos streamear el propio VS (USDT/USDT)
     const bases = Array.from(new Set(symbols.map((s) => String(s).toUpperCase())));
-    const streamBases = bases.filter((b) => b !== uVS); // no streameamos USDT/USDT
+    const streamBases = bases.filter((b) => b !== uVS); // evitamos USDT/USDT
 
-    // Si quieren ver el VS (USDT) en la UI, lo seteamos fijo a 1 con change 0
+    // Si incluyen USDT en la UI, lo fijamos a 1 (sin stream)
     if (bases.includes(uVS)) {
       setPrices((prev) => ({ ...prev, [uVS]: { price: 1, change: 0 } }));
       setHistories((prev) => ({ ...prev, [uVS]: prev[uVS] || [] }));
     }
-
-    // Si no hay nada para streamear, salimos
-    if (streamBases.length === 0) {
-      return;
-    }
+    if (streamBases.length === 0) return;
 
     const url = `wss://stream.binance.com:9443/stream?streams=${streamFromSymbols(streamBases)}`;
 
@@ -81,7 +57,6 @@ export default function useHybridLivePrices({
       wsRef.current = ws;
 
       ws.onopen = () => {
-        // reset backoff
         if (retryRef.current.timer) {
           clearTimeout(retryRef.current.timer);
           retryRef.current.timer = null;
@@ -92,11 +67,10 @@ export default function useHybridLivePrices({
       ws.onmessage = (evt) => {
         try {
           const msg = JSON.parse(evt.data);
-          const data = msg?.data || msg; // combined stream => {stream, data}
-
-          const s = data?.s; // e.g. "BTCUSDT"
-          const c = Number(data?.c); // last price
-          const o = Number(data?.o); // 24h open
+          const data = msg?.data || msg; // combined stream
+          const s = data?.s;               // "BTCUSDT"
+          const c = Number(data?.c);       // last price
+          const o = Number(data?.o);       // 24h open
           if (!s || !Number.isFinite(c)) return;
 
           const base = baseFromStreamSymbol(s);
@@ -104,26 +78,22 @@ export default function useHybridLivePrices({
           const price = isStable ? 1 : c;
           const change = isStable || !Number.isFinite(o) || o <= 0 ? 0 : ((c - o) / o) * 100;
 
-          // Actualizamos precios
           setPrices((prev) => ({ ...prev, [base]: { price, change } }));
 
-          // Actualizamos historial del símbolo
           setHistories((prev) => {
             const now = Date.now();
             const arr = prev[base] ? [...prev[base], { time: now, value: price }] : [{ time: now, value: price }];
             return { ...prev, [base]: clampHist(arr, maxHist) };
           });
-        } catch {
-          /* ignore parse errors */
-        }
+        } catch { /* ignore */ }
       };
 
       const scheduleReconnect = () => {
         try { ws.close(); } catch {}
-        const tries = (retryRef.current.tries || 0) + 1;
-        retryRef.current.tries = tries;
-        const wait = Math.min(30000, 500 * Math.pow(2, tries)); // backoff máx 30s
-        retryRef.current.timer = setTimeout(() => openWS(), wait);
+        const next = (retryRef.current.tries || 0) + 1;
+        retryRef.current.tries = next;
+        const wait = Math.min(30000, 500 * Math.pow(2, next)); // backoff hasta 30s
+        retryRef.current.timer = setTimeout(openWS, wait);
       };
 
       ws.onerror = scheduleReconnect;
@@ -143,8 +113,5 @@ export default function useHybridLivePrices({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(symbols), uVS, maxHist]);
 
-  return {
-    prices,                // { BTC: { price, change }, ... }
-    selectedPriceHistory,  // [{ time, value }]
-  };
+  return { prices, histories, selectedPriceHistory };
 }

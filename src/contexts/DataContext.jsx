@@ -1,3 +1,4 @@
+// src/contexts/DataContext.jsx
 import React, {
   createContext,
   useContext,
@@ -8,6 +9,7 @@ import React, {
 import dayjs from 'dayjs';
 import { supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/contexts/AuthContext';
+import useHybridLivePrices from '@/hooks/useHybridLivePrices';
 
 const DataContext = createContext(null);
 
@@ -25,52 +27,22 @@ export function DataProvider({ children }) {
   // ======= NUEVO: Bot activations =======
   const [botActivations, setBotActivations] = useState([]);
 
-  // ======= Precios (mock) =======
-  const [cryptoPrices, setCryptoPrices] = useState({
-    BTC: { price: 45000, change: 2.5, history: [] },
-    ETH: { price: 3200, change: -1.2, history: [] },
-    USDT: { price: 1.0, change: 0.1, history: [] },
-    BNB: { price: 320, change: 3.8, history: [] },
-    ADA: { price: 0.85, change: -2.1, history: [] },
+  // ======= Precios en vivo (Binance, sin simulación) =======
+  const { prices: livePrices, histories } = useHybridLivePrices({
+    symbols: ['BTC', 'ETH', 'BNB', 'ADA', 'USDT'],
+    vs: 'USDT',
+    maxHist: 600,
+    selectedPair: 'BTC/USDT',
   });
 
-  useEffect(() => {
-    const initialHistoryLength = 60;
-    const next = JSON.parse(JSON.stringify(cryptoPrices));
-    Object.keys(next).forEach((k) => {
-      let p = next[k].price;
-      const hist = [];
-      for (let i = 0; i < initialHistoryLength; i++) {
-        const ch = (Math.random() - 0.5) * 2;
-        p = Math.max(0.01, p * (1 + ch / 100));
-        hist.unshift({
-          time: Date.now() - (initialHistoryLength - i) * 2000,
-          value: p,
-        });
-      }
-      next[k].history = hist;
-      next[k].price = p;
+  const cryptoPrices = useMemo(() => {
+    const out = {};
+    Object.entries(livePrices || {}).forEach(([sym, v]) => {
+      out[sym] = { ...v, history: histories?.[sym] || [] };
     });
-    setCryptoPrices(next);
-
-    const id = setInterval(() => {
-      setCryptoPrices((prev) => {
-        const up = { ...prev };
-        Object.keys(up).forEach((k) => {
-          const ch = (Math.random() - 0.5) * 2;
-          const np = Math.max(0.01, up[k].price * (1 + ch / 100));
-          const nh = [...up[k].history, { time: Date.now(), value: np }].slice(
-            -100
-          );
-          up[k] = { price: np, change: ch, history: nh };
-        });
-        return up;
-      });
-    }, 2000);
-
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!out.USDT) out.USDT = { price: 1, change: 0, history: [] };
+    return out;
+  }, [livePrices, histories]);
 
   const investmentPlans = useMemo(
     () => [
@@ -162,59 +134,58 @@ export function DataProvider({ children }) {
   }
 
   async function refreshTransactions() {
-  if (!user?.id) {
-    setTransactions([]);
-    return;
+    if (!user?.id) {
+      setTransactions([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('wallet_transactions')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[refreshTransactions] error:', error);
+      setTransactions([]);
+      return;
+    }
+
+    const mapped = (Array.isArray(data) ? data : []).map((tx) => {
+      // tipo base que viene de la tabla
+      let base = (tx.type || '').toLowerCase();
+
+      // normalización por compat
+      if (base === 'plan_purchase') base = 'investment';
+
+      // mapeo “amigable” si viene de bots (usa reference_type)
+      const ref = (tx.reference_type || '').toLowerCase();
+      let displayType = base;
+
+      if (ref === 'bot_activation') displayType = 'bot_activation';
+      if (ref === 'bot_profit')     displayType = 'bot_profit';
+      if (ref === 'bot_refund')     displayType = 'bot_refund';
+      if (ref === 'bot_fee')        displayType = 'bot_fee';
+
+      return {
+        // compat filtros
+        user_id: tx.user_id,
+        userId: tx.user_id,
+
+        id: tx.id,
+        type: displayType,                   // <<< usar este en la UI
+        rawType: tx.type,                    // (por si lo necesitás)
+        status: tx.status,
+        amount: Number(tx.amount || 0),
+        currency: tx.currency || 'USDT',
+        description: tx.description || '',
+        createdAt: tx.created_at,
+        referenceType: tx.reference_type,    // bot_activation | bot_profit | ...
+        referenceId: tx.reference_id,
+      };
+    });
+
+    setTransactions(mapped);
   }
-  const { data, error } = await supabase
-    .from('wallet_transactions')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.error('[refreshTransactions] error:', error);
-    setTransactions([]);
-    return;
-  }
-
-  const mapped = (Array.isArray(data) ? data : []).map((tx) => {
-    // tipo base que viene de la tabla
-    let base = (tx.type || '').toLowerCase();
-
-    // normalización por compat
-    if (base === 'plan_purchase') base = 'investment';
-
-    // mapeo “amigable” si viene de bots (usa reference_type)
-    const ref = (tx.reference_type || '').toLowerCase();
-    let displayType = base;
-
-    if (ref === 'bot_activation') displayType = 'bot_activation';
-    if (ref === 'bot_profit')     displayType = 'bot_profit';
-    if (ref === 'bot_refund')     displayType = 'bot_refund';
-    if (ref === 'bot_fee')        displayType = 'bot_fee';
-
-    return {
-      // compat filtros
-      user_id: tx.user_id,
-      userId: tx.user_id,
-
-      id: tx.id,
-      type: displayType,                   // <<< usar este en la UI
-      rawType: tx.type,                    // (por si lo necesitás)
-      status: tx.status,
-      amount: Number(tx.amount || 0),
-      currency: tx.currency || 'USDT',
-      description: tx.description || '',
-      createdAt: tx.created_at,
-      referenceType: tx.reference_type,    // bot_activation | bot_profit | ...
-      referenceId: tx.reference_id,
-    };
-  });
-
-  setTransactions(mapped);
-}
-
 
   async function refreshReferrals() {
     if (!user?.id) {
@@ -229,7 +200,7 @@ export function DataProvider({ children }) {
 
     if (error) {
       console.error('[refreshReferrals] error:', error);
-      setReferrals([]);
+      setReferrals([]); 
       return;
     }
     setReferrals(ensureArray(data));
