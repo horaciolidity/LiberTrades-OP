@@ -18,8 +18,13 @@ const ensureArray = (v) => (Array.isArray(v) ? v : []);
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 const nowMs = () => Date.now();
 
+// Toggle para no pegarle a una tabla que no tenés
+const USE_PUBLIC_SETTINGS =
+  String(import.meta.env.VITE_USE_PUBLIC_SETTINGS || '').trim() === '1';
+
 // Lee una clave de la tabla pública (opcional)
 async function getSetting(key) {
+  if (!USE_PUBLIC_SETTINGS) return null;
   try {
     const { data, error } = await supabase
       .from('public_settings')
@@ -120,11 +125,9 @@ export function DataProvider({ children }) {
   useEffect(() => {
     let alive = true;
     (async () => {
-      // 1) public_settings.market_mode (si existe)
-      const dbMode = await getSetting('market_mode');
-      // 2) env fallback
+      const dbMode = await getSetting('market_mode'); // null si no usás la tabla
       const envMode = import.meta.env.VITE_MARKET_MODE_DEFAULT;
-      const nextMode = (dbMode || envMode || marketMode).toLowerCase();
+      const nextMode = (dbMode || envMode || marketMode || 'real').toLowerCase();
       if (alive) {
         const norm = nextMode === 'sim' ? 'sim' : 'real';
         setMarketMode(norm);
@@ -175,9 +178,7 @@ export function DataProvider({ children }) {
         // Precio puede venir en p o data.p
         const raw = msg?.p ?? msg?.data?.p ?? msg?.price;
         if (raw) pushPoint(symbolKey, Number(raw), 'real');
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     };
 
     ws.onclose = () => {
@@ -215,7 +216,7 @@ export function DataProvider({ children }) {
       wsRefs.current[key] = openSocket(key, stream);
     }
 
-    // USDT: congela en 1 con micro ruido cero
+    // USDT: congela en 1
     pushPoint('USDT', 1.0, 'real');
   };
 
@@ -257,7 +258,7 @@ export function DataProvider({ children }) {
           const np = clamp(old.price * (1 + step / 100), 0.0000001, 10_000_000);
           const change = old.price ? ((np - old.price) / old.price) * 100 : 0;
           const hist = [...(old.history || []), { time: nowMs(), value: np }];
-          if (hist.length > MAX_POINTS) hist.splice(0, history.length - MAX_POINTS);
+          if (hist.length > MAX_POINTS) hist.splice(0, hist.length - MAX_POINTS);
           next[key] = { price: np, change, history: hist, source: 'sim' };
         }
         return next;
@@ -414,28 +415,15 @@ export function DataProvider({ children }) {
   }
 
   async function refreshReferrals() {
-    // En tu base, referred_by es TEXT. Puede guardar id, email, username o referral_code.
-    if (!user) {
+    // En tu base, referred_by es UUID. Filtramos sólo por user.id.
+    if (!user?.id) {
       setReferrals([]);
       return;
     }
-
-    const keys = [
-      user?.id || null,
-      user?.email || null,
-      profile?.username || null,
-      profile?.referral_code || null,
-    ].filter(Boolean);
-
-    if (keys.length === 0) {
-      setReferrals([]);
-      return;
-    }
-
     const { data, error } = await supabase
       .from('profiles')
       .select('id, email, full_name, created_at, username, referred_by')
-      .in('referred_by', keys)
+      .eq('referred_by', user.id)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -446,7 +434,7 @@ export function DataProvider({ children }) {
     setReferrals(ensureArray(data));
   }
 
-  // ======= NUEVO: Bots =======
+  // ======= Bots =======
   async function refreshBotActivations() {
     if (!user?.id) { setBotActivations([]); return; }
     const { data, error } = await supabase
@@ -585,21 +573,10 @@ export function DataProvider({ children }) {
       )
       .subscribe();
 
-    // Referidos: si cambia profiles (nuevos registros), refrescamos.
-    const chRefs = supabase
-      .channel(`refs_all_${user.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'profiles' },
-        refreshReferrals
-      )
-      .subscribe();
-
     return () => {
       try { chTx.unsubscribe(); } catch {}
       try { chInv.unsubscribe(); } catch {}
       try { chBots.unsubscribe(); } catch {}
-      try { chRefs.unsubscribe(); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
