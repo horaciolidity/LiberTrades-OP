@@ -1,5 +1,5 @@
 // src/pages/TradingSimulator.jsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import TradingChart from '@/components/trading/TradingChart';
 import TradingPanel from '@/components/trading/TradingPanel';
@@ -16,9 +16,10 @@ import { Send, MessageSquare } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { toast } from '@/components/ui/use-toast';
 
-// 👉 NUEVO: feed híbrido real + ticks
+// Feed híbrido (API + ticks locales) para MODO REAL
 import useHybridLivePrices from '@/hooks/useHybridLivePrices';
 
+// ====== Utils ======
 const countryFlags = {
   US: '🇺🇸', AR: '🇦🇷', BR: '🇧🇷', CO: '🇨🇴', MX: '🇲🇽', ES: '🇪🇸',
   DE: '🇩🇪', GB: '🇬🇧', FR: '🇫🇷', JP: '🇯🇵', CN: '🇨🇳', default: '🏳️'
@@ -26,33 +27,72 @@ const countryFlags = {
 const userLevels = {
   newbie: '🌱', beginner: '🥉', intermediate: '🥈', advanced: '🥇', pro: '🏆', legend: '💎'
 };
-const fmt = (n, dec = 2) => { const num = Number(n); return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec); };
+const fmt = (n, dec = 2) => {
+  const x = Number(n);
+  return Number.isFinite(x) ? x.toFixed(dec) : (0).toFixed(dec);
+};
+
+// Normaliza cualquier historial a una grilla uniforme (1s) => [{time(epoch s), value}]
+const normalizeHistory = (raw, { max = 300, stepMs = 1000 } = {}) => {
+  const arr = (Array.isArray(raw) ? raw : [])
+    .map((p) => {
+      // flexibiliza nombres de campos comunes
+      const ts =
+        typeof p.ts === 'number' ? p.ts :
+        typeof p.time === 'number'
+          ? (p.time > 2e10 ? p.time : p.time * 1000) // si vino en segundos, pásalo a ms
+          : new Date(p.timestamp ?? p.date ?? p.t ?? p[0] ?? Date.now()).getTime();
+
+      const price = Number(p.price ?? p.value ?? p.close ?? p.c ?? p[1] ?? 0);
+      return { ts, price };
+    })
+    .filter(r => r.ts && r.price > 0)
+    .sort((a, b) => a.ts - b.ts);
+
+  if (!arr.length) return [];
+
+  const out = [];
+  let i = 0;
+  let last = arr[0].price;
+  let t = arr[0].ts - (arr[0].ts % stepMs);
+  const end = arr[arr.length - 1].ts;
+
+  while (t <= end) {
+    while (i < arr.length && arr[i].ts <= t) { last = arr[i].price; i++; }
+    out.push({ time: Math.floor(t / 1000), value: last });
+    t += stepMs;
+  }
+  return out.slice(-max);
+};
 
 const TradingSimulator = () => {
   const { user, displayName, profile } = useAuth();
   const { playSound } = useSound();
-  const tradingLogic = useTradingLogic(); // motor demo actual
+  const tradingLogic = useTradingLogic(); // motor DEMO
   const chatEndRef = useRef(null);
 
-  const [mode, setMode] = useState('demo'); // 'demo' | 'real'
-  const [chatMessages, setChatMessages] = useState([]);
-  const [newMessage, setNewMessage] = useState('');
+  // 'demo' | 'real'
+  const [mode, setMode] = useState('demo');
 
-  // ========= Feed de precios híbrido (solo lo usaremos en MODO REAL) =========
+  // ===== Feed de precios (solo lo usamos en REAL) =====
   const liveFeed = useHybridLivePrices({
     symbols: ['BTC', 'ETH', 'BNB', 'ADA', 'USDT'],
     vs: 'USDT',
-    pollMs: 12000,      // cada 12s ancla real
-    tickMs: 1000,       // cada 1s un “tick” local
+    pollMs: 12000,
+    tickMs: 1000,
     maxHist: 300,
     selectedPair: tradingLogic.selectedPair, // ej: "BTC/USDT"
   });
 
-  // ===== Datos modo real =====
+  // ====== Estado REAL ======
   const [realTrades, setRealTrades] = useState([]);
   const [realBalance, setRealBalance] = useState(0);
 
-  // ------- fetchers (modo real) -------
+  // ====== Chat global ======
+  const [chatMessages, setChatMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+
+  // ---------- Fetch REAL ----------
   const fetchRealData = async () => {
     if (!user?.id) return;
     try {
@@ -72,54 +112,80 @@ const TradingSimulator = () => {
       setRealTrades(Array.isArray(tradesData) ? tradesData : []);
     } catch (e) {
       console.error('[TradingSimulator] fetchRealData error:', e);
-      toast({ title: 'Error cargando trading real', description: e?.message ?? 'Intenta más tarde.', variant: 'destructive' });
+      toast({
+        title: 'Error cargando trading real',
+        description: e?.message ?? 'Intenta más tarde.',
+        variant: 'destructive',
+      });
     }
   };
 
-  useEffect(() => {
-    if (mode === 'real') fetchRealData();
-  }, [mode, user?.id]);
+  useEffect(() => { if (mode === 'real') fetchRealData(); }, [mode, user?.id]);
 
-  // Realtime para trades del usuario (solo en modo real)
+  // Realtime: trades del usuario en REAL
   useEffect(() => {
     if (mode !== 'real' || !user?.id) return;
-    const channel = supabase
+    const ch = supabase
       .channel('realtime-trades')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'trades', filter: `user_id=eq.${user.id}` }, () => {
         fetchRealData();
       })
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return () => { supabase.removeChannel(ch); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, user?.id]);
 
-  // ------- chat -------
-  const scrollToBottom = () => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  useEffect(scrollToBottom, [chatMessages]);
+  // ---------- Chat: carga inicial ----------
+  const loadChat = async () => {
+    const { data, error } = await supabase
+      .from('chat_messages')
+      .select('id,user_id,user_name,text,country_code,user_level,created_at')
+      .order('created_at', { ascending: true })
+      .limit(200);
+    if (!error) setChatMessages(data ?? []);
+  };
+  useEffect(() => { loadChat(); }, []);
 
-  const handleSendMessage = () => {
-    if (!newMessage.trim()) return;
-    playSound?.('click');
+  // Chat: realtime
+  useEffect(() => {
+    const ch = supabase
+      .channel('chat-room')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, (payload) => {
+        setChatMessages(prev => [...prev, payload.new]);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, []);
 
-    const msgUser = displayName || profile?.username || user?.email || 'Anónimo';
-    const message = {
-      id: chatMessages.length + 1,
-      user: msgUser,
-      text: newMessage,
-      country: profile?.countryCode || 'AR',
-      level: profile?.tradingLevel || 'beginner',
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
+  // autoscroll chat
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
 
-    setChatMessages((prev) => [...prev, message]);
-    setNewMessage('');
+  const handleSendMessage = async () => {
+    const txt = newMessage.trim();
+    if (!txt || !user?.id) return;
+    try {
+      const msgUser = displayName || profile?.username || user?.email || 'Anónimo';
+      const { error } = await supabase.from('chat_messages').insert({
+        user_id: user.id,
+        user_name: msgUser,
+        text: txt,
+        country_code: profile?.countryCode || 'AR',
+        user_level: profile?.tradingLevel || 'beginner',
+      });
+      if (error) throw error;
+      setNewMessage('');
+      playSound?.('click');
+    } catch (e) {
+      console.error('[chat] send error', e);
+      toast({ title: 'No se pudo enviar el mensaje', description: e.message, variant: 'destructive' });
+    }
   };
 
-  // ------- acciones de trading -------
+  // ---------- Trading actions ----------
   const handleTrade = async (tradeData) => {
     // tradeData: { pair, type: 'buy'|'sell', amount, price }
     if (mode === 'demo') {
-      tradingLogic.openTrade(tradeData);
+      tradingLogic.openTrade(tradeData);       // sólo estado en memoria
       return;
     }
     if (!user?.id) return;
@@ -132,7 +198,7 @@ const TradingSimulator = () => {
         amount: Number(tradeData.amount),
         price: Number(tradeData.price),
         status: 'open',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       }]);
       if (error) throw error;
       playSound?.('success');
@@ -164,9 +230,20 @@ const TradingSimulator = () => {
     }
   };
 
-  // ======= Selección de feed para la UI =======
+  // ---------- Datos para UI (precios/historial) ----------
   const pricesForUI  = mode === 'real' ? liveFeed.prices               : tradingLogic.cryptoPrices;
-  const historyForUI = mode === 'real' ? liveFeed.selectedPriceHistory : tradingLogic.priceHistory;
+  const rawHistory   = mode === 'real' ? liveFeed.selectedPriceHistory : tradingLogic.priceHistory;
+
+  const chartHistory = useMemo(
+    () => normalizeHistory(rawHistory, { max: 300, stepMs: 1000 }),
+    [rawHistory]
+  );
+
+  const realTotals = useMemo(() => ({
+    profit: (Array.isArray(realTrades) ? realTrades : []).reduce((s, t) => s + Number(t.profit || 0), 0),
+    openCount: (Array.isArray(realTrades) ? realTrades : []).filter(t => t.status === 'open').length,
+    totalCount: Array.isArray(realTrades) ? realTrades.length : 0,
+  }), [realTrades]);
 
   return (
     <>
@@ -191,25 +268,15 @@ const TradingSimulator = () => {
 
         <TradingStats
           virtualBalance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
-          totalProfit={
-            mode === 'demo'
-              ? tradingLogic.totalProfit
-              : (Array.isArray(realTrades) ? realTrades : []).reduce((sum, t) => sum + Number(t.profit || 0), 0)
-          }
-          openTradesCount={
-            mode === 'demo'
-              ? tradingLogic.openTrades.length
-              : (Array.isArray(realTrades) ? realTrades : []).filter(t => t.status === 'open').length
-          }
-          totalTradesCount={
-            mode === 'demo' ? tradingLogic.trades.length : (Array.isArray(realTrades) ? realTrades.length : 0)
-          }
+          totalProfit={mode === 'demo' ? tradingLogic.totalProfit : realTotals.profit}
+          openTradesCount={mode === 'demo' ? tradingLogic.openTrades.length : realTotals.openCount}
+          totalTradesCount={mode === 'demo' ? tradingLogic.trades.length : realTotals.totalCount}
         />
 
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
           <div className="xl:col-span-9">
             <TradingChart
-              priceHistory={historyForUI}
+              priceHistory={chartHistory}     // ← uniforme (1s)
               selectedPair={tradingLogic.selectedPair}
               cryptoPrices={pricesForUI}
             />
@@ -224,15 +291,19 @@ const TradingSimulator = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex-grow overflow-y-auto space-y-3 h-[350px]">
-                {(Array.isArray(chatMessages) ? chatMessages : []).map(msg => (
+                {(chatMessages ?? []).map((msg) => (
                   <div key={msg.id}>
                     <div className="flex items-center text-xs space-x-1 text-slate-400 mb-1">
-                      <span className="text-purple-300 font-semibold">{msg.user}</span>
-                      <span>{countryFlags[msg.country] || countryFlags.default}</span>
-                      <span>{userLevels[msg.level] || userLevels.beginner}</span>
-                      <span className="text-slate-500">{msg.time}</span>
+                      <span className="text-purple-300 font-semibold">{msg.user_name}</span>
+                      <span>{countryFlags[msg.country_code] || countryFlags.default}</span>
+                      <span>{userLevels[msg.user_level] || userLevels.beginner}</span>
+                      <span className="text-slate-500">
+                        {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
                     </div>
-                    <p className="text-sm text-slate-200 bg-slate-700 px-3 py-1.5 rounded-md">{msg.text}</p>
+                    <p className="text-sm text-slate-200 bg-slate-700 px-3 py-1.5 rounded-md">
+                      {msg.text}
+                    </p>
                   </div>
                 ))}
                 <div ref={chatEndRef} />
@@ -258,11 +329,11 @@ const TradingSimulator = () => {
         <TradingPanel
           {...tradingLogic}
           onTrade={handleTrade}
+          closeTrade={handleCloseTrade}
           balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
           mode={mode}
-          // 👉 pasamos el feed elegido para que el panel calcule precios/PnL con el mismo origen
           cryptoPrices={pricesForUI}
-          priceHistory={historyForUI}
+          priceHistory={chartHistory}
         />
 
         <TradesHistory
