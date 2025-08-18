@@ -1,9 +1,11 @@
+// src/contexts/DataContext.jsx
 import React, {
   createContext,
   useContext,
   useMemo,
   useState,
   useEffect,
+  useRef,
 } from 'react';
 import dayjs from 'dayjs';
 import { supabase } from '@/lib/supabaseClient';
@@ -11,8 +13,61 @@ import { useAuth } from '@/contexts/AuthContext';
 
 const DataContext = createContext(null);
 
-// Utilidad
+// ========= Helpers =========
 const ensureArray = (v) => (Array.isArray(v) ? v : []);
+const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
+const nowMs = () => Date.now();
+
+// Lee una clave de la tabla pública (opcional)
+async function getSetting(key) {
+  try {
+    const { data, error } = await supabase
+      .from('public_settings')
+      .select('value')
+      .eq('key', key)
+      .single();
+    if (error) return null;
+    return data?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ========= Price Feed Config =========
+const BINANCE_WS = 'wss://stream.binance.com:9443/ws';
+/**
+ * Pairs a trackear. key es el símbolo que usará la UI.
+ * stream es el stream de Binance (en minúsculas) contra USDT.
+ * USDT no tiene stream (lo mantenemos fijo/ruido muy bajo en sim).
+ */
+const DEFAULT_PAIRS = [
+  { key: 'BTC', stream: 'btcusdt' },
+  { key: 'ETH', stream: 'ethusdt' },
+  { key: 'BNB', stream: 'bnbusdt' },
+  { key: 'ADA', stream: 'adausdt' },
+  { key: 'USDT', stream: null },
+];
+
+// Semillas si no hay precio previo
+const DEFAULT_START = {
+  BTC: 45000,
+  ETH: 3200,
+  BNB: 320,
+  ADA: 0.85,
+  USDT: 1.0,
+};
+
+// Longitud del historial de precios en memoria
+const MAX_POINTS = 300;
+
+// Sim vol por activo (en % step)
+const SIM_VOL = {
+  BTC: 0.35,
+  ETH: 0.45,
+  BNB: 0.50,
+  ADA: 0.70,
+  USDT: 0.02,
+};
 
 export function DataProvider({ children }) {
   const { user } = useAuth();
@@ -21,95 +76,244 @@ export function DataProvider({ children }) {
   const [investments, setInvestments] = useState([]);   // []
   const [transactions, setTransactions] = useState([]); // []
   const [referrals, setReferrals] = useState([]);       // []
-
-  // ======= NUEVO: Bot activations =======
   const [botActivations, setBotActivations] = useState([]);
 
-  // ======= Precios (mock) =======
-  const [cryptoPrices, setCryptoPrices] = useState({
-    BTC: { price: 45000, change: 2.5, history: [] },
-    ETH: { price: 3200, change: -1.2, history: [] },
-    USDT: { price: 1.0, change: 0.1, history: [] },
-    BNB: { price: 320, change: 3.8, history: [] },
-    ADA: { price: 0.85, change: -2.1, history: [] },
+  // ======= Precio y modo de mercado =======
+  /**
+   * marketMode:
+   *  - 'real' => Binance WebSocket
+   *  - 'sim'  => simulación local (random walk)
+   */
+  const [marketMode, setMarketMode] = useState(
+    () => localStorage.getItem('market_mode') || 'real'
+  );
+
+  /**
+   * cryptoPrices estructura:
+   * {
+   *   BTC: { price: number, change: number, history: [{time, value}], source: 'real'|'sim' }
+   *   ...
+   * }
+   */
+  const [cryptoPrices, setCryptoPrices] = useState(() => {
+    const base = {};
+    for (const { key } of DEFAULT_PAIRS) {
+      base[key] = {
+        price: DEFAULT_START[key] ?? 0,
+        change: 0,
+        history: [],
+        source: 'sim',
+      };
+    }
+    return base;
   });
 
+  // Exponer lista de pares (por si a futuro querés cambiar dinámicamente)
+  const [pairs, setPairs] = useState(DEFAULT_PAIRS);
+
+  // refs para WS/intervals
+  const wsRefs = useRef({});
+  const simTimer = useRef(null);
+  const mountedRef = useRef(false);
+
+  // ======= Cargar modo de public_settings / env en arranque =======
   useEffect(() => {
-    const initialHistoryLength = 60;
-    const next = JSON.parse(JSON.stringify(cryptoPrices));
-    Object.keys(next).forEach((k) => {
-      let p = next[k].price;
-      const hist = [];
-      for (let i = 0; i < initialHistoryLength; i++) {
-        const ch = (Math.random() - 0.5) * 2;
-        p = Math.max(0.01, p * (1 + ch / 100));
-        hist.unshift({
-          time: Date.now() - (initialHistoryLength - i) * 2000,
-          value: p,
-        });
+    let alive = true;
+    (async () => {
+      // 1) public_settings.market_mode (si existe)
+      const dbMode = await getSetting('market_mode');
+      // 2) env fallback
+      const envMode = import.meta.env.VITE_MARKET_MODE_DEFAULT;
+      const nextMode = (dbMode || envMode || marketMode).toLowerCase();
+      if (alive) {
+        const norm = nextMode === 'sim' ? 'sim' : 'real';
+        setMarketMode(norm);
+        localStorage.setItem('market_mode', norm);
       }
-      next[k].history = hist;
-      next[k].price = p;
-    });
-    setCryptoPrices(next);
-
-    const id = setInterval(() => {
-      setCryptoPrices((prev) => {
-        const up = { ...prev };
-        Object.keys(up).forEach((k) => {
-          const ch = (Math.random() - 0.5) * 2;
-          const np = Math.max(0.01, up[k].price * (1 + ch / 100));
-          const nh = [...up[k].history, { time: Date.now(), value: np }].slice(
-            -100
-          );
-          up[k] = { price: np, change: ch, history: nh };
-        });
-        return up;
-      });
-    }, 2000);
-
-    return () => clearInterval(id);
+    })();
+    return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ======= Helpers de precio =======
+  const pushPoint = (key, value, source) => {
+    setCryptoPrices((prev) => {
+      const p = prev[key] ?? { price: 0, change: 0, history: [], source };
+      const last = p.price || value;
+      const price = Number(value) || last;
+      const change = ((price - last) / (last || price)) * 100;
+
+      const history = [...p.history, { time: nowMs(), value: price }];
+      if (history.length > MAX_POINTS) history.splice(0, history.length - MAX_POINTS);
+
+      return {
+        ...prev,
+        [key]: { price, change, history, source },
+      };
+    });
+  };
+
+  const resetHistory = () => {
+    setCryptoPrices((prev) => {
+      const next = {};
+      for (const k of Object.keys(prev)) {
+        next[k] = { ...prev[k], history: [] };
+      }
+      return next;
+    });
+  };
+
+  // ======= FEED: REAL (Binance WebSocket) =======
+  const openSocket = (symbolKey, streamName) => {
+    if (!streamName) return null; // USDT u otros sin stream
+    const url = `${BINANCE_WS}/${streamName}@trade`;
+    const ws = new WebSocket(url);
+
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        // Precio puede venir en p o data.p
+        const raw = msg?.p ?? msg?.data?.p ?? msg?.price;
+        if (raw) pushPoint(symbolKey, Number(raw), 'real');
+      } catch {
+        /* ignore */
+      }
+    };
+
+    ws.onclose = () => {
+      // reconectar simple
+      if (wsRefs.current[symbolKey] === ws) {
+        setTimeout(() => {
+          if (marketMode === 'real') {
+            wsRefs.current[symbolKey] = openSocket(symbolKey, streamName);
+          }
+        }, 1200);
+      }
+    };
+
+    ws.onerror = () => {
+      try { ws.close(); } catch {}
+    };
+
+    return ws;
+  };
+
+  const startRealFeed = () => {
+    // cerrar sim si estaba
+    if (simTimer.current) {
+      clearInterval(simTimer.current);
+      simTimer.current = null;
+    }
+    resetHistory();
+
+    // abrir 1 socket por par (excepto USDT)
+    for (const { key, stream } of pairs) {
+      if (!stream) continue;
+      try {
+        wsRefs.current[key]?.close?.();
+      } catch {}
+      wsRefs.current[key] = openSocket(key, stream);
+    }
+
+    // USDT: congela en 1 con micro ruido cero
+    pushPoint('USDT', 1.0, 'real');
+  };
+
+  const stopRealFeed = () => {
+    Object.values(wsRefs.current || {}).forEach((ws) => {
+      try { ws.close(); } catch {}
+    });
+    wsRefs.current = {};
+  };
+
+  // ======= FEED: SIMULADO (random walk) =======
+  const startSimFeed = () => {
+    stopRealFeed();
+    resetHistory();
+
+    // Si había precio "real" previo, lo tomamos como base; sino DEFAULT_START
+    setCryptoPrices((prev) => {
+      const next = { ...prev };
+      for (const { key } of pairs) {
+        const base =
+          (prev[key]?.price && Number(prev[key].price)) || DEFAULT_START[key] || 1;
+        next[key] = {
+          price: base,
+          change: 0,
+          history: [],
+          source: 'sim',
+        };
+      }
+      return next;
+    });
+
+    simTimer.current = setInterval(() => {
+      setCryptoPrices((prev) => {
+        const next = { ...prev };
+        for (const { key } of pairs) {
+          const old = prev[key] ?? { price: DEFAULT_START[key] || 1, history: [] };
+          const vol = SIM_VOL[key] ?? 0.3;
+          const step = (Math.random() - 0.5) * 2 * vol; // +/- vol %
+          const np = clamp(old.price * (1 + step / 100), 0.0000001, 10_000_000);
+          const change = ((np - old.price) / (old.price || np)) * 100;
+          const hist = [...(old.history || []), { time: nowMs(), value: np }];
+          if (hist.length > MAX_POINTS) hist.splice(0, hist.length - MAX_POINTS);
+          next[key] = { price: np, change, history: hist, source: 'sim' };
+        }
+        return next;
+      });
+    }, 1000);
+  };
+
+  const stopSimFeed = () => {
+    if (simTimer.current) {
+      clearInterval(simTimer.current);
+      simTimer.current = null;
+    }
+  };
+
+  // ======= Efecto: arrancar/alternar feed según marketMode =======
+  useEffect(() => {
+    if (!mountedRef.current) mountedRef.current = true;
+
+    localStorage.setItem('market_mode', marketMode);
+
+    if (marketMode === 'real') {
+      startRealFeed();
+    } else {
+      startSimFeed();
+    }
+
+    // Limpieza al desmontar o cambiar de modo
+    return () => {
+      stopRealFeed();
+      stopSimFeed();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketMode, pairs.map(p => p.key).join('|')]);
+
+  // ======= API de feed para la UI/Trading =======
+  const toggleMarketMode = () =>
+    setMarketMode((m) => (m === 'real' ? 'sim' : 'real'));
+
+  const getMarketMode = () => marketMode;
+
+  const setTrackedPairs = (newPairs) => {
+    // newPairs: [{key:'SOL', stream:'solusdt'}, ...]
+    if (!Array.isArray(newPairs) || newPairs.length === 0) return;
+    setPairs(newPairs);
+  };
+
+  const getPrice = (symbol) => Number(cryptoPrices?.[symbol]?.price || 0);
+  const getSeries = (symbol) => ensureArray(cryptoPrices?.[symbol]?.history);
+
+  // ======= Investment Plans (como tenías) =======
   const investmentPlans = useMemo(
     () => [
-      {
-        id: 1,
-        name: 'Plan Básico',
-        minAmount: 100,
-        maxAmount: 999,
-        dailyReturn: 1.5,
-        duration: 30,
-        description: 'Perfecto para principiantes',
-      },
-      {
-        id: 2,
-        name: 'Plan Estándar',
-        minAmount: 1000,
-        maxAmount: 4999,
-        dailyReturn: 2.0,
-        duration: 30,
-        description: 'Para inversores intermedios',
-      },
-      {
-        id: 3,
-        name: 'Plan Premium',
-        minAmount: 5000,
-        maxAmount: 19999,
-        dailyReturn: 2.5,
-        duration: 30,
-        description: 'Para inversores avanzados',
-      },
-      {
-        id: 4,
-        name: 'Plan VIP',
-        minAmount: 20000,
-        maxAmount: 100000,
-        dailyReturn: 3.0,
-        duration: 30,
-        description: 'Para grandes inversores',
-      },
+      { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
+      { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
+      { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para inversores avanzados' },
+      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
     ],
     []
   );
@@ -138,7 +342,8 @@ export function DataProvider({ children }) {
       const duration = Number(inv.duration || 0);
       const daysElapsed = Math.min(now.diff(start, 'day'), duration);
       const dailyReturn = Number(inv.daily_return || 0);
-      const earnings = dailyReturn * daysElapsed;
+      // ganancias = monto * (porcentaje diario) * días
+      const earnings = (Number(inv.amount || 0) * (dailyReturn / 100)) * daysElapsed;
 
       return {
         // compat filtros
@@ -162,59 +367,51 @@ export function DataProvider({ children }) {
   }
 
   async function refreshTransactions() {
-  if (!user?.id) {
-    setTransactions([]);
-    return;
+    if (!user?.id) {
+      setTransactions([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('wallet_transactions')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[refreshTransactions] error:', error);
+      setTransactions([]);
+      return;
+    }
+
+    const mapped = (Array.isArray(data) ? data : []).map((tx) => {
+      let base = (tx.type || '').toLowerCase();
+      if (base === 'plan_purchase') base = 'investment';
+
+      const ref = (tx.reference_type || '').toLowerCase();
+      let displayType = base;
+      if (ref === 'bot_activation') displayType = 'bot_activation';
+      if (ref === 'bot_profit')     displayType = 'bot_profit';
+      if (ref === 'bot_refund')     displayType = 'bot_refund';
+      if (ref === 'bot_fee')        displayType = 'bot_fee';
+
+      return {
+        user_id: tx.user_id,
+        userId: tx.user_id,
+        id: tx.id,
+        type: displayType,
+        rawType: tx.type,
+        status: tx.status,
+        amount: Number(tx.amount || 0),
+        currency: tx.currency || 'USDT',
+        description: tx.description || '',
+        createdAt: tx.created_at,
+        referenceType: tx.reference_type,
+        referenceId: tx.reference_id,
+      };
+    });
+
+    setTransactions(mapped);
   }
-  const { data, error } = await supabase
-    .from('wallet_transactions')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.error('[refreshTransactions] error:', error);
-    setTransactions([]);
-    return;
-  }
-
-  const mapped = (Array.isArray(data) ? data : []).map((tx) => {
-    // tipo base que viene de la tabla
-    let base = (tx.type || '').toLowerCase();
-
-    // normalización por compat
-    if (base === 'plan_purchase') base = 'investment';
-
-    // mapeo “amigable” si viene de bots (usa reference_type)
-    const ref = (tx.reference_type || '').toLowerCase();
-    let displayType = base;
-
-    if (ref === 'bot_activation') displayType = 'bot_activation';
-    if (ref === 'bot_profit')     displayType = 'bot_profit';
-    if (ref === 'bot_refund')     displayType = 'bot_refund';
-    if (ref === 'bot_fee')        displayType = 'bot_fee';
-
-    return {
-      // compat filtros
-      user_id: tx.user_id,
-      userId: tx.user_id,
-
-      id: tx.id,
-      type: displayType,                   // <<< usar este en la UI
-      rawType: tx.type,                    // (por si lo necesitás)
-      status: tx.status,
-      amount: Number(tx.amount || 0),
-      currency: tx.currency || 'USDT',
-      description: tx.description || '',
-      createdAt: tx.created_at,
-      referenceType: tx.reference_type,    // bot_activation | bot_profit | ...
-      referenceId: tx.reference_id,
-    };
-  });
-
-  setTransactions(mapped);
-}
-
 
   async function refreshReferrals() {
     if (!user?.id) {
@@ -235,7 +432,7 @@ export function DataProvider({ children }) {
     setReferrals(ensureArray(data));
   }
 
-  // ======= NUEVO: Bots =======
+  // ======= NUEVO: Bots (igual que tenías) =======
   async function refreshBotActivations() {
     if (!user?.id) { setBotActivations([]); return; }
     const { data, error } = await supabase
@@ -317,25 +514,43 @@ export function DataProvider({ children }) {
       p_note: note,
     });
     if (error) { console.error('[creditBotProfit] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
-    await refreshTransactions(); // refleja el crédito en el historial
+    await refreshTransactions();
     return data;
   }
 
-  // ======= Efecto: refetch al loguear/cambiar de user =======
+  // ======= Refetch al cambiar de user =======
   useEffect(() => {
     setInvestments([]);
     setTransactions([]);
     setReferrals([]);
     setBotActivations([]);
 
-    refreshInvestments();
-    refreshTransactions();
-    refreshReferrals();
-    refreshBotActivations();
+    if (user?.id) {
+      refreshInvestments();
+      refreshTransactions();
+      refreshReferrals();
+      refreshBotActivations();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ======= Mutaciones (insert) =======
+  // ======= Subs en tiempo real (wallet_transactions) =======
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel(`tx_user_${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
+        () => refreshTransactions()
+      )
+      .subscribe();
+
+    return () => { try { ch.unsubscribe(); } catch {} };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // ======= Mutaciones básicas =======
   async function addInvestment({
     planName,
     amount,
@@ -367,10 +582,8 @@ export function DataProvider({ children }) {
     await refreshInvestments();
 
     return {
-      // compat filtros
       user_id: data.user_id,
       userId: data.user_id,
-
       id: data.id,
       planName: data.plan_name,
       amount: Number(data.amount || 0),
@@ -423,10 +636,8 @@ export function DataProvider({ children }) {
     if (mappedType === 'plan_purchase') mappedType = 'investment';
 
     return {
-      // compat filtros
       user_id: data.user_id,
       userId: data.user_id,
-
       id: data.id,
       type: mappedType,
       status: data.status,
@@ -439,38 +650,45 @@ export function DataProvider({ children }) {
     };
   }
 
-  // ======= API pública (compat sincrónica + métodos de refresh) =======
+  // ======= API pública del contexto =======
   const value = useMemo(
     () => ({
-      // datos listos para usar sin await
+      // datos listos sin await
       investments,
       transactions,
       referrals,
       botActivations,
 
-      // getters compatibles con tu UI actual (sincrónicos)
-      getInvestments: () => investments,
-      getTransactions: () => transactions,
-      getReferrals: () => referrals,
+      // precios y market mode
+      cryptoPrices,
+      marketMode,
+      setMarketMode,
+      toggleMarketMode,
+      getMarketMode,
+      getPrice,
+      getSeries,
+      pairs,
+      setTrackedPairs,
 
-      // acciones y refrescos
+      // helpers y datos
+      investmentPlans,
+
+      // refrescos
       refreshInvestments,
       refreshTransactions,
       refreshReferrals,
+
+      // mutaciones
       addInvestment,
       addTransaction,
 
-      // BOTS
+      // bots
       refreshBotActivations,
       activateBot,
       pauseBot,
       resumeBot,
       cancelBot,
       creditBotProfit,
-
-      // otros datos de UI
-      cryptoPrices,
-      investmentPlans,
     }),
     [
       investments,
@@ -478,6 +696,8 @@ export function DataProvider({ children }) {
       referrals,
       botActivations,
       cryptoPrices,
+      marketMode,
+      pairs,
       investmentPlans,
     ]
   );
@@ -487,31 +707,45 @@ export function DataProvider({ children }) {
   );
 }
 
-// Hook con fallback seguro
+// Hook con fallback seguro (por si se usa fuera del provider)
 export function useData() {
   const ctx = useContext(DataContext);
   if (!ctx) {
     return {
+      // datos
       investments: [],
       transactions: [],
       referrals: [],
       botActivations: [],
-      getInvestments: () => [],
-      getTransactions: () => [],
-      getReferrals: () => [],
+      cryptoPrices: {},
+      marketMode: 'real',
+      pairs: DEFAULT_PAIRS,
+      investmentPlans: [],
+
+      // precio helpers
+      setMarketMode: () => {},
+      toggleMarketMode: () => {},
+      getMarketMode: () => 'real',
+      getPrice: () => 0,
+      getSeries: () => [],
+      setTrackedPairs: () => {},
+
+      // refresh
       refreshInvestments: async () => {},
       refreshTransactions: async () => {},
       refreshReferrals: async () => {},
+
+      // mutaciones
       addInvestment: async () => null,
       addTransaction: async () => null,
+
+      // bots
       refreshBotActivations: async () => {},
       activateBot: async () => ({ ok: false }),
       pauseBot: async () => ({ ok: false }),
       resumeBot: async () => ({ ok: false }),
       cancelBot: async () => ({ ok: false }),
       creditBotProfit: async () => ({ ok: false }),
-      cryptoPrices: {},
-      investmentPlans: [],
     };
   }
   return ctx;
