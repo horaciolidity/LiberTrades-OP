@@ -70,13 +70,13 @@ const SIM_VOL = {
 };
 
 export function DataProvider({ children }) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
 
   // ======= Estado que la UI consume SINCRÓNICAMENTE =======
   const [investments, setInvestments] = useState([]);   // []
   const [transactions, setTransactions] = useState([]); // []
   const [referrals, setReferrals] = useState([]);       // []
-  const [botActivations, setBotActivations] = useState([]);
+  const [botActivations, setBotActivations] = useState([]); // []
 
   // ======= Precio y modo de mercado =======
   /**
@@ -139,9 +139,9 @@ export function DataProvider({ children }) {
   const pushPoint = (key, value, source) => {
     setCryptoPrices((prev) => {
       const p = prev[key] ?? { price: 0, change: 0, history: [], source };
-      const last = p.price || value;
+      const last = p.price || Number(value) || 0;
       const price = Number(value) || last;
-      const change = ((price - last) / (last || price)) * 100;
+      const change = last ? ((price - last) / last) * 100 : 0;
 
       const history = [...p.history, { time: nowMs(), value: price }];
       if (history.length > MAX_POINTS) history.splice(0, history.length - MAX_POINTS);
@@ -255,9 +255,9 @@ export function DataProvider({ children }) {
           const vol = SIM_VOL[key] ?? 0.3;
           const step = (Math.random() - 0.5) * 2 * vol; // +/- vol %
           const np = clamp(old.price * (1 + step / 100), 0.0000001, 10_000_000);
-          const change = ((np - old.price) / (old.price || np)) * 100;
+          const change = old.price ? ((np - old.price) / old.price) * 100 : 0;
           const hist = [...(old.history || []), { time: nowMs(), value: np }];
-          if (hist.length > MAX_POINTS) hist.splice(0, hist.length - MAX_POINTS);
+          if (hist.length > MAX_POINTS) hist.splice(0, history.length - MAX_POINTS);
           next[key] = { price: np, change, history: hist, source: 'sim' };
         }
         return next;
@@ -414,14 +414,28 @@ export function DataProvider({ children }) {
   }
 
   async function refreshReferrals() {
-    if (!user?.id) {
+    // En tu base, referred_by es TEXT. Puede guardar id, email, username o referral_code.
+    if (!user) {
       setReferrals([]);
       return;
     }
+
+    const keys = [
+      user?.id || null,
+      user?.email || null,
+      profile?.username || null,
+      profile?.referral_code || null,
+    ].filter(Boolean);
+
+    if (keys.length === 0) {
+      setReferrals([]);
+      return;
+    }
+
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, email, full_name, created_at, username')
-      .eq('referred_by', user.id)
+      .select('id, email, full_name, created_at, username, referred_by')
+      .in('referred_by', keys)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -432,7 +446,7 @@ export function DataProvider({ children }) {
     setReferrals(ensureArray(data));
   }
 
-  // ======= NUEVO: Bots (igual que tenías) =======
+  // ======= NUEVO: Bots =======
   async function refreshBotActivations() {
     if (!user?.id) { setBotActivations([]); return; }
     const { data, error } = await supabase
@@ -455,6 +469,15 @@ export function DataProvider({ children }) {
       createdAt: b.created_at,
     }));
     setBotActivations(mapped);
+  }
+
+  async function refreshAll() {
+    await Promise.all([
+      refreshInvestments(),
+      refreshTransactions(),
+      refreshReferrals(),
+      refreshBotActivations(),
+    ]);
   }
 
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
@@ -526,27 +549,58 @@ export function DataProvider({ children }) {
     setBotActivations([]);
 
     if (user?.id) {
-      refreshInvestments();
-      refreshTransactions();
-      refreshReferrals();
-      refreshBotActivations();
+      refreshAll();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ======= Subs en tiempo real (wallet_transactions) =======
+  // ======= Subs en tiempo real =======
   useEffect(() => {
     if (!user?.id) return;
-    const ch = supabase
+
+    const chTx = supabase
       .channel(`tx_user_${user.id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` },
-        () => refreshTransactions()
+        refreshTransactions
       )
       .subscribe();
 
-    return () => { try { ch.unsubscribe(); } catch {} };
+    const chInv = supabase
+      .channel(`inv_user_${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'investments', filter: `user_id=eq.${user.id}` },
+        refreshInvestments
+      )
+      .subscribe();
+
+    const chBots = supabase
+      .channel(`bots_user_${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bot_activations', filter: `user_id=eq.${user.id}` },
+        refreshBotActivations
+      )
+      .subscribe();
+
+    // Referidos: si cambia profiles (nuevos registros), refrescamos.
+    const chRefs = supabase
+      .channel(`refs_all_${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles' },
+        refreshReferrals
+      )
+      .subscribe();
+
+    return () => {
+      try { chTx.unsubscribe(); } catch {}
+      try { chInv.unsubscribe(); } catch {}
+      try { chBots.unsubscribe(); } catch {}
+      try { chRefs.unsubscribe(); } catch {}
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
@@ -677,13 +731,14 @@ export function DataProvider({ children }) {
       refreshInvestments,
       refreshTransactions,
       refreshReferrals,
+      refreshBotActivations,
+      refreshAll,
 
       // mutaciones
       addInvestment,
       addTransaction,
 
       // bots
-      refreshBotActivations,
       activateBot,
       pauseBot,
       resumeBot,
@@ -734,13 +789,14 @@ export function useData() {
       refreshInvestments: async () => {},
       refreshTransactions: async () => {},
       refreshReferrals: async () => {},
+      refreshBotActivations: async () => {},
+      refreshAll: async () => {},
 
       // mutaciones
       addInvestment: async () => null,
       addTransaction: async () => null,
 
       // bots
-      refreshBotActivations: async () => {},
       activateBot: async () => ({ ok: false }),
       pauseBot: async () => ({ ok: false }),
       resumeBot: async () => ({ ok: false }),
