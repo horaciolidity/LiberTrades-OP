@@ -2,170 +2,149 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 /**
- * Hook híbrido: ancla con precios reales (Binance) y genera ticks intermedios
- * para un historial uniforme y fluido.
+ * 100% precios reales (Binance WebSocket).
+ * - Sin simulación ni ticks locales.
+ * - Reconexión automática con backoff.
+ * - Mantiene la misma API que tu hook anterior:
+ *    - prices: { BTC: { price, change }, ... }
+ *    - selectedPriceHistory: [{ time, value }]
  *
- * Opciones:
- *  - symbols: ['BTC','ETH',...]
- *  - vs: 'USDT' | 'USD'
- *  - pollMs: ms entre polls reales
- *  - tickMs: ms entre ticks locales
- *  - maxHist: cantidad máxima de puntos en historial
+ * Parámetros (algunos se conservan por compatibilidad, aunque ya no se usan):
+ *  - symbols: ['BTC','ETH','BNB','ADA', ...]
+ *  - vs: 'USDT' | 'USD' (default 'USDT')
+ *  - maxHist: cantidad máxima de puntos en historial (default 300)
  *  - selectedPair: ej. "BTC/USDT"
+ *  - pollMs / tickMs: ignorados (compatibilidad)
  */
 export default function useHybridLivePrices({
-  symbols = ['BTC', 'ETH', 'BNB', 'ADA'],
+  symbols = ['BTC', 'ETH', 'BNB', 'ADA', 'USDT'],
   vs = 'USDT',
-  pollMs = 12000,
-  tickMs = 1000,
+  pollMs = 12000, // <— ignorado (compatibilidad)
+  tickMs = 1000,  // <— ignorado (compatibilidad)
   maxHist = 300,
   selectedPair = 'BTC/USDT',
 } = {}) {
-  const [prices, setPrices] = useState({}); // { BTC: { price, change }, ... }
-  const [selectedPriceHistory, setSelectedPriceHistory] = useState([]); // [{ time(ms), value }]
-  const lastPollRef = useRef({});   // { BTC: lastRealPrice, ... }
-  const lastTickRef = useRef({});   // { BTC: lastTickPrice, ... }
-  const timers = useRef({ poll: null, tick: null });
+  const [prices, setPrices] = useState({});       // { BTC: { price, change }, ... }
+  const [histories, setHistories] = useState({}); // { BTC: [{ time, value }, ...] }
 
-  const selectedSymbol = useMemo(() => {
-    const [base] = String(selectedPair).split('/');
+  const wsRef = useRef(null);
+  const retryRef = useRef({ tries: 0, timer: null });
+
+  const uVS = String(vs || 'USDT').toUpperCase();
+
+  const selectedBase = useMemo(() => {
+    const [base] = String(selectedPair || 'BTC/USDT').split('/');
     return (base || 'BTC').toUpperCase();
   }, [selectedPair]);
 
+  const selectedPriceHistory = useMemo(
+    () => histories[selectedBase] || [],
+    [histories, selectedBase]
+  );
+
   // Helpers
-  const clampHist = (arr, limit = maxHist) => (arr.length > limit ? arr.slice(arr.length - limit) : arr);
+  const clampHist = (arr, limit = maxHist) =>
+    arr.length > limit ? arr.slice(arr.length - limit) : arr;
 
-  // Poll real a Binance (fallback robusto si falla)
-  const fetchBinanceSymbol = async (sym) => {
-    // Evita pares tipo USDT/USDT
-    if (sym.toUpperCase() === vs.toUpperCase()) {
-      return { price: 1, change: 0 };
-    }
-    const pair = `${sym.toUpperCase()}${vs.toUpperCase()}`; // p.ej. BTCUSDT
-    // 24hr para tener % change
-    const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`;
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) throw new Error(`Binance ${pair} ${res.status}`);
-    const data = await res.json();
-    const price = Number(data.lastPrice);
-    const change = Number(data.priceChangePercent);
-    if (!Number.isFinite(price)) throw new Error('Precio inválido');
-    return { price, change };
+  const baseFromStreamSymbol = (streamSym) => {
+    const up = String(streamSym || '').toUpperCase();
+    return up.endsWith(uVS) ? up.slice(0, -uVS.length) : up; // "BTCUSDT" -> "BTC"
   };
 
-  const fetchFallback = async (sym) => {
-    // CoinGecko simple/price (fallback)
-    const map = { BTC: 'bitcoin', ETH: 'ethereum', BNB: 'binancecoin', ADA: 'cardano', USDT: 'tether' };
-    const id = map[sym.toUpperCase()] || 'bitcoin';
-    const vsKey = vs.toLowerCase() === 'usdt' ? 'usd' : vs.toLowerCase();
-    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=${vsKey}&include_24hr_change=true`;
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) throw new Error(`CG ${id} ${res.status}`);
-    const json = await res.json();
-    const price = Number(json?.[id]?.[vsKey] ?? 0);
-    const change = Number(json?.[id]?.[`${vsKey}_24h_change`] ?? 0);
-    if (!Number.isFinite(price) || price <= 0) throw new Error('CG precio inválido');
-    return { price, change };
+  const streamFromSymbols = (arr) => {
+    const lowVS = uVS.toLowerCase();
+    return arr
+      .map((s) => `${String(s).toLowerCase()}${lowVS}@miniTicker`)
+      .join('/');
   };
 
-  const pollAll = async () => {
-    try {
-      const results = await Promise.all(
-        symbols.map(async (sym) => {
-          try {
-            return [sym, await fetchBinanceSymbol(sym)];
-          } catch {
-            return [sym, await fetchFallback(sym)];
-          }
-        })
-      );
-
-      const nextPrices = {};
-      results.forEach(([sym, { price, change }]) => {
-        nextPrices[sym] = { price, change };
-        lastPollRef.current[sym] = price;
-        if (!Number.isFinite(lastTickRef.current[sym])) {
-          lastTickRef.current[sym] = price;
-        }
-      });
-
-      setPrices((prev) => ({ ...prev, ...nextPrices }));
-
-      // Si el símbolo seleccionado está en results, pusheamos un punto “real”
-      const sel = selectedSymbol;
-      if (nextPrices[sel]?.price) {
-        setSelectedPriceHistory((prev) =>
-          clampHist([...prev, { time: Date.now(), value: nextPrices[sel].price }])
-        );
-      }
-    } catch (e) {
-      // Silencioso: si todo falla, no rompemos la UI, mantenemos los últimos valores
-      // console.warn('[useHybridLivePrices] poll error', e);
-    }
-  };
-
-  // Genera ticks suaves alrededor del último real/tick
-  const makeTick = () => {
-    const sel = selectedSymbol;
-    const base =
-      Number.isFinite(lastTickRef.current[sel])
-        ? lastTickRef.current[sel]
-        : Number.isFinite(lastPollRef.current[sel])
-        ? lastPollRef.current[sel]
-        : 0;
-
-    if (!Number.isFinite(base) || base <= 0) return;
-
-    // Pequeña variación aleatoria ±0.08%
-    const drift = 1 + (Math.random() - 0.5) * 0.0016;
-    const next = base * drift;
-
-    lastTickRef.current[sel] = next;
-
-    // refrezcamos “prices” solo del seleccionado para que la UI muestre algo vivo
-    setPrices((prev) => ({
-      ...prev,
-      [sel]: {
-        price: next,
-        change: Number(prev?.[sel]?.change ?? 0),
-      },
-    }));
-
-    setSelectedPriceHistory((prev) =>
-      clampHist([...prev, { time: Date.now(), value: next }])
-    );
-  };
-
-  // Setup / cleanup
   useEffect(() => {
-    // arranca con un poll
-    pollAll();
+    // Normalizamos símbolos y evitamos streamear el propio VS (USDT/USDT)
+    const bases = Array.from(new Set(symbols.map((s) => String(s).toUpperCase())));
+    const streamBases = bases.filter((b) => b !== uVS); // no streameamos USDT/USDT
 
-    // timers
-    timers.current.poll = setInterval(pollAll, pollMs);
-    timers.current.tick = setInterval(makeTick, tickMs);
+    // Si quieren ver el VS (USDT) en la UI, lo seteamos fijo a 1 con change 0
+    if (bases.includes(uVS)) {
+      setPrices((prev) => ({ ...prev, [uVS]: { price: 1, change: 0 } }));
+      setHistories((prev) => ({ ...prev, [uVS]: prev[uVS] || [] }));
+    }
+
+    // Si no hay nada para streamear, salimos
+    if (streamBases.length === 0) {
+      return;
+    }
+
+    const url = `wss://stream.binance.com:9443/stream?streams=${streamFromSymbols(streamBases)}`;
+
+    const openWS = () => {
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        // reset backoff
+        if (retryRef.current.timer) {
+          clearTimeout(retryRef.current.timer);
+          retryRef.current.timer = null;
+        }
+        retryRef.current.tries = 0;
+      };
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          const data = msg?.data || msg; // combined stream => {stream, data}
+
+          const s = data?.s; // e.g. "BTCUSDT"
+          const c = Number(data?.c); // last price
+          const o = Number(data?.o); // 24h open
+          if (!s || !Number.isFinite(c)) return;
+
+          const base = baseFromStreamSymbol(s);
+          const isStable = base === uVS;
+          const price = isStable ? 1 : c;
+          const change = isStable || !Number.isFinite(o) || o <= 0 ? 0 : ((c - o) / o) * 100;
+
+          // Actualizamos precios
+          setPrices((prev) => ({ ...prev, [base]: { price, change } }));
+
+          // Actualizamos historial del símbolo
+          setHistories((prev) => {
+            const now = Date.now();
+            const arr = prev[base] ? [...prev[base], { time: now, value: price }] : [{ time: now, value: price }];
+            return { ...prev, [base]: clampHist(arr, maxHist) };
+          });
+        } catch {
+          /* ignore parse errors */
+        }
+      };
+
+      const scheduleReconnect = () => {
+        try { ws.close(); } catch {}
+        const tries = (retryRef.current.tries || 0) + 1;
+        retryRef.current.tries = tries;
+        const wait = Math.min(30000, 500 * Math.pow(2, tries)); // backoff máx 30s
+        retryRef.current.timer = setTimeout(() => openWS(), wait);
+      };
+
+      ws.onerror = scheduleReconnect;
+      ws.onclose = scheduleReconnect;
+    };
+
+    openWS();
 
     return () => {
-      if (timers.current.poll) clearInterval(timers.current.poll);
-      if (timers.current.tick) clearInterval(timers.current.tick);
+      if (retryRef.current.timer) {
+        clearTimeout(retryRef.current.timer);
+        retryRef.current.timer = null;
+      }
+      try { wsRef.current?.close(); } catch {}
+      wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pollMs, tickMs, selectedSymbol]);
-
-  // Cuando cambia el par seleccionado, reseteamos el mini historial para que encaje visualmente
-  useEffect(() => {
-    setSelectedPriceHistory([]);
-    // pre-cargamos un punto si ya tenemos precio para ese símbolo
-    const p = prices[selectedSymbol]?.price ?? lastPollRef.current[selectedSymbol];
-    if (Number.isFinite(p) && p > 0) {
-      setSelectedPriceHistory([{ time: Date.now(), value: p }]);
-      lastTickRef.current[selectedSymbol] = p;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSymbol]);
+  }, [JSON.stringify(symbols), uVS, maxHist]);
 
   return {
-    prices,                 // { BTC: { price, change }, ... }
-    selectedPriceHistory,   // [{ time: msEpoch, value: number }]
+    prices,                // { BTC: { price, change }, ... }
+    selectedPriceHistory,  // [{ time, value }]
   };
 }
