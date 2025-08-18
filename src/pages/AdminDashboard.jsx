@@ -1,3 +1,4 @@
+// src/pages/AdminDashboard.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -114,30 +115,26 @@ export default function AdminDashboard() {
     setPendingWithdrawals(wit || []);
   };
 
-  // NUEVO: inversiones de proyectos pendientes (status = 'pending')
+  // NUEVO: inversiones de proyectos pendientes (status = 'pending') – versión simple y robusta
   const fetchPendingProjectInvs = async () => {
-    const { data, error } = await supabase
-      .from('project_investments')
-      .select(
-        [
-          'id',
-          'user_id',
-          'project_id',
-          'project_symbol',
-          'project_name',
-          'amount_usd',
-          'status',
-          'created_at',
-          // Embeds opcionales (si FKs están nombradas distinto, el embed puede fallar; mantenemos fallback por usersById):
-          'profiles:profiles!project_investments_user_id_fkey(email,username)',
-          'project:tokenized_projects!project_investments_project_id_fkey(symbol,name)',
-        ].join(', ')
-      )
-      .eq('status', 'pending')
-      .order('created_at', { ascending: true });
+    try {
+      const { data, error } = await supabase
+        .from('project_investments')
+        .select('id,user_id,project_id,project_symbol,project_name,amount_usd,status,created_at')
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true });
 
-    if (error) throw error;
-    setPendingProjectInvs(Array.isArray(data) ? data : []);
+      if (error) throw error;
+      setPendingProjectInvs(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('fetchPendingProjectInvs error', err);
+      toast({
+        title: 'Error cargando inversiones de proyectos',
+        description: err?.message || 'Consulta inválida',
+        variant: 'destructive',
+      });
+      setPendingProjectInvs([]);
+    }
   };
 
   const fetchMetrics = async (usersList, depList, witList) => {
@@ -199,14 +196,12 @@ export default function AdminDashboard() {
     tx.user_id;
 
   const userLabelFromProjectInv = (pi) =>
-    pi?.profiles?.email ||
     usersById[pi.user_id]?.email ||
-    pi?.profiles?.username ||
     usersById[pi.user_id]?.username ||
     pi.user_id;
 
   const projectLabel = (pi) =>
-    pi?.project?.name || pi?.project_name || pi?.project_symbol || 'Proyecto';
+    pi?.project_name || pi?.project_symbol || 'Proyecto';
 
   // ------- acciones admin -------
   // TODO: si refreshBalances hace más que balances, considerar refrescar también DataContext.
