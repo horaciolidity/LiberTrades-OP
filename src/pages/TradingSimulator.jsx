@@ -1,5 +1,4 @@
-// src/pages/TradingSimulator.jsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import TradingChart from '@/components/trading/TradingChart';
 import TradingPanel from '@/components/trading/TradingPanel';
@@ -14,285 +13,107 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
 import { Send, MessageSquare } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
-import { toast } from '@/components/ui/use-toast';
 
-// Feed híbrido (API + ticks locales) para MODO REAL
-import useHybridLivePrices from '@/hooks/useHybridLivePrices';
-
-// ====== Utils ======
 const countryFlags = {
   US: '🇺🇸', AR: '🇦🇷', BR: '🇧🇷', CO: '🇨🇴', MX: '🇲🇽', ES: '🇪🇸',
   DE: '🇩🇪', GB: '🇬🇧', FR: '🇫🇷', JP: '🇯🇵', CN: '🇨🇳', default: '🏳️'
 };
+
 const userLevels = {
   newbie: '🌱', beginner: '🥉', intermediate: '🥈', advanced: '🥇', pro: '🏆', legend: '💎'
 };
-const fmt = (n, dec = 2) => {
-  const x = Number(n);
-  return Number.isFinite(x) ? x.toFixed(dec) : (0).toFixed(dec);
-};
-
-// Normaliza cualquier historial a una grilla uniforme (1s) => [{time(epoch s), value}]
-const normalizeHistory = (raw, { max = 300, stepMs = 1000 } = {}) => {
-  const arr = (Array.isArray(raw) ? raw : [])
-    .map((p) => {
-      const ts =
-        typeof p.ts === 'number'
-          ? p.ts
-          : typeof p.time === 'number'
-          ? (p.time > 2e10 ? p.time : p.time * 1000)
-          : new Date(p.timestamp ?? p.date ?? p.t ?? p[0] ?? Date.now()).getTime();
-
-      const price = Number(p.price ?? p.value ?? p.close ?? p.c ?? p[1] ?? 0);
-      return { ts, price };
-    })
-    .filter((r) => r.ts && r.price > 0)
-    .sort((a, b) => a.ts - b.ts);
-
-  if (!arr.length) return [];
-
-  const out = [];
-  let i = 0;
-  let last = arr[0].price;
-  let t = arr[0].ts - (arr[0].ts % stepMs);
-  const end = arr[arr.length - 1].ts;
-
-  while (t <= end) {
-    while (i < arr.length && arr[i].ts <= t) {
-      last = arr[i].price;
-      i++;
-    }
-    out.push({ time: Math.floor(t / 1000), value: last });
-    t += stepMs;
-  }
-  return out.slice(-max);
-};
 
 const TradingSimulator = () => {
-  const { user, displayName, profile } = useAuth();
+  const { user } = useAuth();
   const { playSound } = useSound();
-  const tradingLogic = useTradingLogic(); // motor DEMO
+  const tradingLogic = useTradingLogic(); // virtual trading hook
   const chatEndRef = useRef(null);
 
-  // 'demo' | 'real' (persistido)
-  const [mode, setMode] = useState(() => localStorage.getItem('trade_mode') || 'demo');
-  useEffect(() => localStorage.setItem('trade_mode', mode), [mode]);
-
-  // ===== Feed de precios (solo lo usamos en REAL) =====
-  const liveFeed = useHybridLivePrices({
-    symbols: ['BTC', 'ETH', 'BNB', 'ADA', 'USDT'],
-    vs: 'USDT',
-    pollMs: 12000,
-    tickMs: 1000,
-    maxHist: 300,
-    selectedPair: tradingLogic.selectedPair, // ej: "BTC/USDT"
-  });
-
-  // ====== Estado REAL ======
+  const [mode, setMode] = useState('demo'); // 'demo' o 'real'
+  const [chatMessages, setChatMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
   const [realTrades, setRealTrades] = useState([]);
   const [realBalance, setRealBalance] = useState(0);
 
-  // ====== Chat global ======
-  const [chatMessages, setChatMessages] = useState([]);
-  const [newMessage, setNewMessage] = useState('');
-
-  // ---------- Fetch REAL ----------
   const fetchRealData = async () => {
     if (!user?.id) return;
-    try {
-      const [{ data: balRow, error: balErr }, { data: tradesData, error: trErr }] = await Promise.all([
-        supabase.from('balances').select('usdc').eq('user_id', user.id).single(),
-        supabase
-          .from('trades')
-          .select('id, user_id, pair, type, amount, price, status, profit, closeat, timestamp')
-          .eq('user_id', user.id)
-          .order('timestamp', { ascending: false }),
-      ]);
 
-      if (balErr) throw balErr;
-      if (trErr) throw trErr;
+    // balances: usar id del usuario y columna usdc (no user_id / balance)
+    const { data: balanceData } = await supabase
+      .from('balances')
+      .select('usdc')
+      .eq('id', user.id)
+      .single();
 
-      setRealBalance(Number(balRow?.usdc ?? 0));
-      setRealTrades(Array.isArray(tradesData) ? tradesData : []);
-    } catch (e) {
-      console.error('[TradingSimulator] fetchRealData error:', e);
-      toast({
-        title: 'Error cargando trading real',
-        description: e?.message ?? 'Intenta más tarde.',
-        variant: 'destructive',
-      });
+    const { data: tradesData } = await supabase
+      .from('trades')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('timestamp', { ascending: false });
+
+    setRealBalance(balanceData?.usdc || 0);
+    setRealTrades(tradesData || []);
+  };
+
+  useEffect(() => {
+    if (mode === 'real') {
+      fetchRealData();
     }
-  };
+  }, [mode]);
 
-  useEffect(() => {
-    if (mode === 'real') fetchRealData();
-  }, [mode, user?.id]);
-
-  // Realtime: trades del usuario en REAL
-  useEffect(() => {
-    if (mode !== 'real' || !user?.id) return;
-    const ch = supabase
-      .channel('realtime-trades')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'trades', filter: `user_id=eq.${user.id}` },
-        () => {
-          fetchRealData();
-        }
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, user?.id]);
-
-  // ---------- Chat: carga inicial ----------
-  const loadChat = async () => {
-    const { data, error } = await supabase
-      .from('chat_messages')
-      .select('id,user_id,user_name,text,country_code,user_level,created_at')
-      .order('created_at', { ascending: true })
-      .limit(200);
-    if (!error) setChatMessages(data ?? []);
-  };
-  useEffect(() => {
-    loadChat();
-  }, []);
-
-  // Chat: realtime
-  useEffect(() => {
-    const ch = supabase
-      .channel('chat-room')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'chat_messages' },
-        (payload) => {
-          setChatMessages((prev) => [...prev, payload.new]);
-        }
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-  }, []);
-
-  // autoscroll chat
-  useEffect(() => {
+  const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
-
-  const handleSendMessage = async () => {
-    const txt = newMessage.trim();
-    if (!txt || !user?.id) return;
-    try {
-      const msgUser = displayName || profile?.username || user?.email || 'Anónimo';
-      const { error } = await supabase.from('chat_messages').insert({
-        user_id: user.id,
-        user_name: msgUser,
-        text: txt,
-        country_code: profile?.countryCode || 'AR',
-        user_level: profile?.tradingLevel || 'beginner',
-      });
-      if (error) throw error;
-      setNewMessage('');
-      playSound?.('click');
-    } catch (e) {
-      console.error('[chat] send error', e);
-      toast({ title: 'No se pudo enviar el mensaje', description: e.message, variant: 'destructive' });
-    }
   };
 
-  // ---------- Trading actions ----------
-  const handleTrade = async (tradeData) => {
-    // tradeData: { pair, type: 'buy'|'sell', amount, price }
-    if (mode === 'demo') {
-      tradingLogic.openTrade(tradeData); // sólo estado en memoria (demo)
-      return;
-    }
-    if (!user?.id) return;
+  useEffect(scrollToBottom, [chatMessages]);
 
-    try {
+  const handleSendMessage = () => {
+    if (newMessage.trim() === '') return;
+    playSound('click');
+
+    const message = {
+      id: chatMessages.length + 1,
+      user: user?.name || 'Anónimo',
+      text: newMessage,
+      country: user?.countryCode || 'AR',
+      level: user?.tradingLevel || 'beginner',
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    setChatMessages([...chatMessages, message]);
+    setNewMessage('');
+  };
+
+  const handleTrade = async (tradeData) => {
+    if (mode === 'demo') {
+      tradingLogic.openTrade(tradeData);
+    } else {
       const { error } = await supabase.from('trades').insert([
         {
           user_id: user.id,
           pair: tradeData.pair,
           type: tradeData.type,
-          amount: Number(tradeData.amount),
-          price: Number(tradeData.price),
+          amount: tradeData.amount,
+          price: tradeData.price,
           status: 'open',
-          timestamp: new Date().toISOString(),
-        },
+          timestamp: new Date()
+        }
       ]);
-      if (error) throw error;
-      playSound?.('success');
-      await fetchRealData();
-    } catch (e) {
-      console.error('[TradingSimulator] handleTrade error:', e);
-      playSound?.('error');
-      toast({
-        title: 'No se pudo abrir la operación',
-        description: e?.message ?? 'Intenta de nuevo.',
-        variant: 'destructive',
-      });
+      if (!error) fetchRealData();
     }
   };
 
   const handleCloseTrade = async (tradeId, profit) => {
     if (mode === 'demo') {
       tradingLogic.closeTrade(tradeId, profit);
-      return;
-    }
-    try {
-      const { error } = await supabase
+    } else {
+      await supabase
         .from('trades')
-        .update({ status: 'closed', profit: Number(profit ?? 0), closeat: Date.now() })
+        .update({ status: 'closed', profit, closeat: Date.now() })
         .eq('id', tradeId);
-      if (error) throw error;
-      playSound?.('success');
       await fetchRealData();
-    } catch (e) {
-      console.error('[TradingSimulator] handleCloseTrade error:', e);
-      playSound?.('error');
-      toast({
-        title: 'No se pudo cerrar la operación',
-        description: e?.message ?? 'Intenta de nuevo.',
-        variant: 'destructive',
-      });
     }
   };
-
-  // ---------- Datos para UI (precios/historial) ----------
-  const pricesForUI = mode === 'real' ? liveFeed.prices : tradingLogic.cryptoPrices;
-  const rawHistory = mode === 'real' ? liveFeed.selectedPriceHistory : tradingLogic.priceHistory;
-
-  const chartHistory = useMemo(
-    () => normalizeHistory(rawHistory, { max: 600, stepMs: 1000 }),
-    [rawHistory]
-  );
-
-  // Dominio Y (arregla problema de escala en modo real)
-  const yDomain = useMemo(() => {
-    if (!chartHistory.length) return undefined;
-    const values = chartHistory.map((p) => p.value).filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
-    if (!values.length) return undefined;
-    const q = (k) => values[Math.max(0, Math.min(values.length - 1, Math.floor(values.length * k)))];
-    const low = q(0.05);
-    const high = q(0.95);
-    const range = Math.max(1e-6, high - low);
-    const pad = range * 0.02;
-    return [low - pad, high + pad];
-  }, [chartHistory]);
-
-  const realTotals = useMemo(
-    () => ({
-      profit: (Array.isArray(realTrades) ? realTrades : []).reduce((s, t) => s + Number(t.profit || 0), 0),
-      openCount: (Array.isArray(realTrades) ? realTrades : []).filter((t) => (t.status || '').toLowerCase() === 'open')
-        .length,
-      totalCount: Array.isArray(realTrades) ? realTrades.length : 0,
-    }),
-    [realTrades]
-  );
 
   return (
     <>
@@ -300,9 +121,7 @@ const TradingSimulator = () => {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold text-white mb-1">Simulador de Trading</h1>
-            <p className="text-slate-300">
-              Modo {mode === 'demo' ? 'Demo (saldo virtual)' : `Real (saldo USDC ${fmt(realBalance)})`}
-            </p>
+            <p className="text-slate-300">Modo {mode === 'demo' ? 'Demo (saldo virtual)' : 'Real (saldo real)'}</p>
           </div>
           <Select value={mode} onValueChange={(val) => setMode(val)}>
             <SelectTrigger className="w-[130px] bg-slate-800 text-white border-slate-700">
@@ -317,18 +136,27 @@ const TradingSimulator = () => {
 
         <TradingStats
           virtualBalance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
-          totalProfit={mode === 'demo' ? tradingLogic.totalProfit : realTotals.profit}
-          openTradesCount={mode === 'demo' ? tradingLogic.openTrades.length : realTotals.openCount}
-          totalTradesCount={mode === 'demo' ? tradingLogic.trades.length : realTotals.totalCount}
+          totalProfit={
+            mode === 'demo'
+              ? tradingLogic.totalProfit
+              : realTrades.reduce((sum, t) => sum + (t.profit || 0), 0)
+          }
+          openTradesCount={
+            mode === 'demo'
+              ? tradingLogic.openTrades.length
+              : realTrades.filter(t => t.status === 'open').length
+          }
+          totalTradesCount={
+            mode === 'demo' ? tradingLogic.trades.length : realTrades.length
+          }
         />
 
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
           <div className="xl:col-span-9">
             <TradingChart
-              priceHistory={chartHistory}      // ← uniforme (1s)
+              priceHistory={tradingLogic.priceHistory}
               selectedPair={tradingLogic.selectedPair}
-              cryptoPrices={pricesForUI}
-              yDomain={yDomain}                // ← clave para que no quede “aplastado” en real
+              cryptoPrices={tradingLogic.cryptoPrices}
             />
           </div>
 
@@ -341,15 +169,13 @@ const TradingSimulator = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex-grow overflow-y-auto space-y-3 h-[350px]">
-                {(chatMessages ?? []).map((msg) => (
+                {chatMessages.map(msg => (
                   <div key={msg.id}>
                     <div className="flex items-center text-xs space-x-1 text-slate-400 mb-1">
-                      <span className="text-purple-300 font-semibold">{msg.user_name}</span>
-                      <span>{countryFlags[msg.country_code] || countryFlags.default}</span>
-                      <span>{userLevels[msg.user_level] || userLevels.beginner}</span>
-                      <span className="text-slate-500">
-                        {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
+                      <span className="text-purple-300 font-semibold">{msg.user}</span>
+                      <span>{countryFlags[msg.country] || countryFlags.default}</span>
+                      <span>{userLevels[msg.level] || userLevels.beginner}</span>
+                      <span className="text-slate-500">{msg.time}</span>
                     </div>
                     <p className="text-sm text-slate-200 bg-slate-700 px-3 py-1.5 rounded-md">{msg.text}</p>
                   </div>
@@ -361,7 +187,7 @@ const TradingSimulator = () => {
                   <Input
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
                     placeholder="Mensaje..."
                     className="bg-slate-800 text-white border-slate-600"
                   />
@@ -376,19 +202,14 @@ const TradingSimulator = () => {
 
         <TradingPanel
           {...tradingLogic}
-          // ⚠️ Sobrescribimos para que en modo REAL no toque el estado DEMO interno
-          openTrade={handleTrade}
-          closeTrade={handleCloseTrade}
-          onTrade={handleTrade} // compat
+          onTrade={handleTrade}
           balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
           mode={mode}
-          cryptoPrices={pricesForUI}
-          priceHistory={chartHistory}
         />
 
         <TradesHistory
-          trades={mode === 'demo' ? tradingLogic.trades : (Array.isArray(realTrades) ? realTrades : [])}
-          cryptoPrices={pricesForUI}
+          trades={mode === 'demo' ? tradingLogic.trades : realTrades}
+          cryptoPrices={tradingLogic.cryptoPrices}
           closeTrade={handleCloseTrade}
         />
       </div>

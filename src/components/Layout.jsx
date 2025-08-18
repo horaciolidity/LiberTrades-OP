@@ -1,3 +1,4 @@
+// src/layouts/Layout.jsx
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -16,28 +17,27 @@ import {
   Coins,
   BarChartHorizontalBig,
   Bot,
-  DollarSign
+  DollarSign,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSound } from '@/contexts/SoundContext';
 import { ethers } from 'ethers';
 import { toast } from '@/components/ui/use-toast';
 
 // helper numérico seguro
 const fmt = (n, dec = 2) => {
   const num = Number(n);
-  if (!isFinite(num)) return '0.00';
+  if (!Number.isFinite(num)) return (0).toFixed(dec);
   return num.toFixed(dec);
 };
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // 👇 IMPORTANTE: ahora traemos profile desde el AuthContext
   const { user, profile, balances, displayName, logout, updateUser } = useAuth();
+  const { playSound } = useSound();
   const location = useLocation();
   const navigate = useNavigate();
-
-  const playSound = () => {};
 
   const [web3Account, setWeb3Account] = useState(null);
   const [ethBalance, setEthBalance] = useState('0.00');
@@ -47,7 +47,7 @@ const Layout = () => {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Estadísticas', href: '/stats', icon: BarChartHorizontalBig },
     { name: 'Depositar', href: '/deposit', icon: DollarSign },
-    { name: 'Wallet', href: '/wallet', icon: Wallet, showBalance: true }, // <-- NUEVO
+    { name: 'Wallet', href: '/wallet', icon: Wallet, showBalance: true },
     { name: 'Trading', href: '/simulator', icon: TrendingUp },
     { name: 'Bots de Trading', href: '/trading-bots', icon: Bot },
     { name: 'Planes de Inversión', href: '/plans', icon: Wallet },
@@ -58,51 +58,54 @@ const Layout = () => {
     { name: 'Perfil', href: '/profile', icon: User },
   ];
 
-  // 👇 CLAVE: usar profile.role (no user.role)
+  // Agregar Admin Panel si corresponde (perfil viene de AuthContext)
   if (profile?.role === 'admin') {
     navigation.unshift({ name: 'Admin Panel', href: '/admin', icon: Shield });
   }
 
   const handleLogout = () => {
-    playSound('logout');
+    playSound?.('logout');
     logout();
     navigate('/');
   };
 
   const handleLinkClick = (path) => {
-    playSound('navigation');
+    playSound?.('navigation');
     setSidebarOpen(false);
     navigate(path);
   };
 
   const connectWallet = async () => {
-    playSound('click');
+    playSound?.('click');
     if (typeof window !== 'undefined' && window.ethereum) {
       try {
         const provider = new ethers.BrowserProvider(window.ethereum);
         await provider.send('eth_requestAccounts', []);
         const signer = await provider.getSigner();
         const address = await signer.getAddress();
+
         setWeb3Account(address);
         updateUser?.({ web3Wallet: address });
+
         toast({
-          title: 'Wallet Conectada',
-          description: `Cuenta: ${address.slice(0, 6)}...${address.slice(-4)}`
+          title: 'Wallet conectada',
+          description: `Cuenta: ${address.slice(0, 6)}...${address.slice(-4)}`,
         });
-        fetchBalances(provider, address);
+
+        await fetchBalances(provider, address);
       } catch (error) {
         console.error('Error conectando wallet:', error);
         toast({
-          title: 'Error de Wallet',
+          title: 'Error de wallet',
           description: 'No se pudo conectar la wallet. Intenta de nuevo.',
-          variant: 'destructive'
+          variant: 'destructive',
         });
       }
     } else {
       toast({
         title: 'MetaMask no detectado',
         description: 'Instalá MetaMask para usar esta función.',
-        variant: 'destructive'
+        variant: 'destructive',
       });
     }
   };
@@ -112,6 +115,7 @@ const Layout = () => {
       const ethBal = await provider.getBalance(account);
       setEthBalance(ethers.formatEther(ethBal));
 
+      // USDT (Ethereum mainnet) – solo lectura balance
       const usdtContractAddress = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
       const usdtAbi = ['function balanceOf(address owner) view returns (uint256)'];
       const usdtContract = new ethers.Contract(usdtContractAddress, usdtAbi, provider);
@@ -120,20 +124,20 @@ const Layout = () => {
     } catch (error) {
       console.error('Error obteniendo balances:', error);
       toast({
-        title: 'Error de Balance',
+        title: 'Error de balance',
         description: 'No se pudieron obtener los balances de la wallet.',
-        variant: 'destructive'
+        variant: 'destructive',
       });
     }
   };
 
   useEffect(() => {
-    console.log('Layout montado');
+    // hook de montaje (útil para debug)
+    // console.log('Layout montado');
   }, []);
 
   const shortAddr = web3Account ? `${web3Account.slice(0, 6)}...${web3Account.slice(-4)}` : '';
 
-  // (opcional) Si ya pegaste el index.css SSJ5, cambiá el bg contenedor a app-bg-saiyan
   return (
     <div className="min-h-screen app-bg-saiyan">
       {/* Sidebar mobile */}
@@ -143,77 +147,81 @@ const Layout = () => {
         className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-800/95 backdrop-blur-xl border-r border-slate-700 lg:hidden"
       >
         <div className="flex items-center justify-between p-4">
-          <span className="text-xl font-bold brand-title">
-            LiberTrades
-          </span>
-          <Button variant="ghost" size="icon" onClick={() => { playSound('click'); setSidebarOpen(false); }}>
+          <span className="text-xl font-bold brand-title">LiberTrades</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              playSound?.('click');
+              setSidebarOpen(false);
+            }}
+          >
             <X className="h-6 w-6" />
           </Button>
         </div>
+
         <nav className="mt-8 px-4">
-  {navigation.map((item) => {
-    const Icon = item.icon;
-    const isActive = location.pathname.startsWith(item.href);
-    return (
-      <button
-        key={item.name}
-        onClick={() => handleLinkClick(item.href)}
-        className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
-          isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
-        }`}
-      >
-        <Icon className="h-5 w-5 mr-3" />
-        <span>{item.name}</span>
+          {navigation.map((item) => {
+            const Icon = item.icon;
+            const isActive = location.pathname.startsWith(item.href);
+            return (
+              <button
+                key={item.name}
+                onClick={() => handleLinkClick(item.href)}
+                className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
+                  isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+                }`}
+              >
+                <Icon className="h-5 w-5 mr-3" />
+                <span>{item.name}</span>
 
-        {item.showBalance && (
-          <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
-            ${fmt(balances?.usdc ?? 0, 2)}
-          </span>
-        )}
-      </button>
-    );
-  })}
-</nav>
-
+                {item.showBalance && (
+                  <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
+                    ${fmt(balances?.usdc ?? 0, 2)}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
       </motion.div>
 
       {/* Sidebar desktop */}
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
         <div className="flex flex-col flex-grow bg-slate-800/95 backdrop-blur-xl border-r border-slate-700">
           <div className="flex items-center h-16 px-4">
-            <span className="text-xl font-bold brand-title">
-              LiberTrades
-            </span>
+            <span className="text-xl font-bold brand-title">LiberTrades</span>
           </div>
-          <nav className="mt-8 flex-1 px-4">
-  {navigation.map((item) => {
-    const Icon = item.icon;
-    const isActive = location.pathname.startsWith(item.href);
-    return (
-      <button
-        key={item.name}
-        onClick={() => handleLinkClick(item.href)}
-        className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
-          isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
-        }`}
-      >
-        <Icon className="h-5 w-5 mr-3" />
-        <span>{item.name}</span>
 
-        {item.showBalance && (
-          <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
-            ${fmt(balances?.usdc ?? 0, 2)}
-          </span>
-        )}
-      </button>
-    );
-  })}
-</nav>
+          <nav className="mt-8 flex-1 px-4">
+            {navigation.map((item) => {
+              const Icon = item.icon;
+              const isActive = location.pathname.startsWith(item.href);
+              return (
+                <button
+                  key={item.name}
+                  onClick={() => handleLinkClick(item.href)}
+                  className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
+                    isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+                  }`}
+                >
+                  <Icon className="h-5 w-5 mr-3" />
+                  <span>{item.name}</span>
+
+                  {item.showBalance && (
+                    <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
+                      ${fmt(balances?.usdc ?? 0, 2)}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
 
           <div className="p-4">
             <Button onClick={handleLogout} variant="outline" className="w-full justify-start">
               <LogOut className="h-4 w-4 mr-2" />
-              Cerrar Sesión
+              Cerrar sesión
             </Button>
           </div>
         </div>
@@ -225,7 +233,10 @@ const Layout = () => {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => { playSound('click'); setSidebarOpen(true); }}
+            onClick={() => {
+              playSound?.('click');
+              setSidebarOpen(true);
+            }}
             className="lg:hidden"
           >
             <Menu className="h-6 w-6" />
@@ -234,22 +245,33 @@ const Layout = () => {
           <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
             <div className="flex flex-1 items-center">
               <div className="text-sm text-slate-300">
-Bienvenido,       <span className="font-semibold text-white">{displayName}</span>              </div>
+                Bienvenido,{' '}
+                <span className="font-semibold text-white">{displayName || user?.email || 'usuario'}</span>
+              </div>
             </div>
+
             <div className="flex items-center gap-x-4 lg:gap-x-6">
               {web3Account ? (
-                <div className="text-sm text-slate-300">
-                  <p>ETH: <span className="font-semibold text-yellow-400">{fmt(ethBalance, 4)}</span></p>
-                  <p>USDT: <span className="font-semibold text-green-400">{fmt(usdtBalance, 2)}</span></p>
+                <div className="text-sm text-slate-300 text-right">
+                  <p>
+                    ETH: <span className="font-semibold text-yellow-400">{fmt(ethBalance, 4)}</span>
+                  </p>
+                  <p>
+                    USDT: <span className="font-semibold text-green-400">{fmt(usdtBalance, 2)}</span>
+                  </p>
                   <p className="text-xs text-slate-500">Wallet: {shortAddr}</p>
                 </div>
               ) : (
                 <Button onClick={connectWallet} size="sm" className="bg-blue-500 hover:bg-blue-600">
-                  Conectar Wallet
+                  Conectar wallet
                 </Button>
               )}
+
               <div className="text-sm text-slate-300">
-                Saldo App: <span className="font-semibold text-green-400">${fmt(balances?.usdc, 2)}</span>
+                Saldo App:{' '}
+                <span className="font-semibold text-green-400">
+                  ${fmt(balances?.usdc ?? 0, 2)}
+                </span>
               </div>
             </div>
           </div>
@@ -265,7 +287,10 @@ Bienvenido,       <span className="font-semibold text-white">{displayName}</span
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/50 lg:hidden"
-          onClick={() => { playSound('click'); setSidebarOpen(false); }}
+          onClick={() => {
+            playSound?.('click');
+            setSidebarOpen(false);
+          }}
         />
       )}
     </div>
