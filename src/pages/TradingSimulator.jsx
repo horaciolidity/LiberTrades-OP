@@ -16,6 +16,8 @@ import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@
 import { Send, MessageSquare } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 
+const DEFAULT_PAIR = 'BTC/USDT';
+
 const countryFlags = {
   US: '🇺🇸', AR: '🇦🇷', BR: '🇧🇷', CO: '🇨🇴', MX: '🇲🇽', ES: '🇪🇸',
   DE: '🇩🇪', GB: '🇬🇧', FR: '🇫🇷', JP: '🇯🇵', CN: '🇨🇳', default: '🏳️',
@@ -28,9 +30,10 @@ const userLevels = {
 
 const safe = (arr) => (Array.isArray(arr) ? arr : []);
 
+// tolerante a undefined y distintos formatos
 const parseBaseFromPair = (pair) => {
-  if (!pair) return 'BTC';
-  const p = pair.replace('/', '').toUpperCase(); // 'BTC/USDT' -> 'BTCUSDT'
+  const raw = String(pair || DEFAULT_PAIR);
+  const p = raw.replace('/', '').toUpperCase();
   if (p.endsWith('USDT')) return p.slice(0, -4);
   if (p.endsWith('USDC')) return p.slice(0, -4);
   return p;
@@ -39,12 +42,8 @@ const parseBaseFromPair = (pair) => {
 export default function TradingSimulator() {
   const { user } = useAuth();
   const { playSound } = useSound();
-
-  // ✅ cotizaciones e instrumentos desde DataContext
-  const { cryptoPrices: marketPrices = {}, pairOptions = [] } = useData();
-
-  // Motor para modo DEMO únicamente
-  const tradingLogic = useTradingLogic();
+  const { cryptoPrices: marketPrices = {} } = useData(); // feed real + reglas
+  const tradingLogic = useTradingLogic(); // solo gobierna DEMO
 
   const [mode, setMode] = useState('demo'); // 'demo' | 'real'
 
@@ -73,6 +72,20 @@ export default function TradingSimulator() {
     (user?.user_metadata?.user_level || 'beginner')
       .toLowerCase()
       .replace(/[^a-z]/g, '');
+
+  // ====== Par seleccionado seguro (evita value undefined en <Select>) ======
+  // Si el hook aún no lo inicializó, usamos BTC/USDT y lo “curamos” en el hook
+  const selectedPair = useMemo(
+    () => tradingLogic?.selectedPair || DEFAULT_PAIR,
+    [tradingLogic?.selectedPair]
+  );
+
+  useEffect(() => {
+    if (!tradingLogic?.selectedPair && typeof tradingLogic?.setSelectedPair === 'function') {
+      tradingLogic.setSelectedPair(DEFAULT_PAIR);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // =================== Fetch REAL data ===================
   const fetchRealData = async () => {
@@ -107,20 +120,6 @@ export default function TradingSimulator() {
     if (mode === 'real') fetchRealData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, user?.id]);
-
-  // ===== Realtime para REAL: trades y balance del usuario =====
-  useEffect(() => {
-    if (!user?.id || mode !== 'real') return;
-    const ch = supabase
-      .channel('trades_balances_rt')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'trades', filter: `user_id=eq.${user.id}` }, () => fetchRealData())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'balances', filter: `user_id=eq.${user.id}` }, () => fetchRealData())
-      .subscribe();
-    return () => {
-      try { supabase.removeChannel(ch); } catch (_) {}
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, mode]);
 
   // =================== Chat: cargar + realtime ===================
   useEffect(() => {
@@ -218,39 +217,38 @@ export default function TradingSimulator() {
 
   // ============== PnL en tiempo real (demo y real) ==============
   const computeLivePnL = (trade) => {
-    const base = parseBaseFromPair(trade.pair || tradingLogic.selectedPair);
+    const base = parseBaseFromPair(trade?.pair || selectedPair);
     const current = Number(marketPrices?.[base]?.price ?? 0);
-    const entry = Number(trade.price || 0);
-    const amountUsd = Number(trade.amount || 0);
+    const entry = Number(trade?.price ?? 0);
+    const amountUsd = Number(trade?.amount ?? 0);
     if (!current || !entry || !amountUsd) return { upnl: 0, livePrice: current || null };
 
-    // tamaño en unidades del activo (notional USD / entry)
+    // tamaño en unidades del activo
     const qty = amountUsd / entry;
-    const side = (trade.type || '').toLowerCase(); // buy | sell
+    const side = String(trade?.type || '').toLowerCase(); // buy | sell
     const upnl = side === 'sell' ? (entry - current) * qty : (current - entry) * qty;
     return { upnl, livePrice: current };
   };
 
-  // Decorar trades con upnl/livePrice para mostrar y sumar en stats
+  // Decorar trades con upnl/livePrice
   const demoTradesWithLive = useMemo(() => {
     return safe(tradingLogic.trades).map((t) => {
       const { upnl, livePrice } = computeLivePnL(t);
       return { ...t, upnl, livePrice };
     });
-  }, [tradingLogic.trades, marketPrices, tradingLogic.selectedPair]);
+  }, [tradingLogic.trades, marketPrices, selectedPair]);
 
   const realTradesWithLive = useMemo(() => {
     return safe(realTrades).map((t) => {
       const { upnl, livePrice } = computeLivePnL(t);
       return { ...t, upnl, livePrice };
     });
-  }, [realTrades, marketPrices, tradingLogic.selectedPair]);
+  }, [realTrades, marketPrices, selectedPair]);
 
   // =================== Trading actions ===================
   const handleTrade = async (tradeData) => {
     if (mode === 'demo') {
-      // DEMO: no tocar DB/Saldo real
-      tradingLogic.openTrade(tradeData);
+      tradingLogic.openTrade(tradeData); // DEMO: no tocar saldo real
       return;
     }
     if (!user?.id) return;
@@ -258,21 +256,20 @@ export default function TradingSimulator() {
     const payload = {
       user_id: user.id,
       pair: tradeData.pair,
-      type: tradeData.type, // 'buy' | 'sell'
-      amount: Number(tradeData.amount), // notional en USD
+      type: tradeData.type,
+      amount: Number(tradeData.amount),
       price: Number(tradeData.price),
       status: 'open',
       timestamp: new Date().toISOString(),
     };
 
-    // 1) Insert trade
     const { error: tErr } = await supabase.from('trades').insert(payload);
     if (tErr) {
       console.error('[trade insert] error:', tErr);
       return;
     }
 
-    // 2) Descontar saldo real (bloqueo simple del notional)
+    // Bloquear nocional en saldo real
     const { data: balRow, error: bErr } = await supabase
       .from('balances')
       .select('usdc')
@@ -299,7 +296,6 @@ export default function TradingSimulator() {
     }
     if (!tradeId) return;
 
-    // 0) Obtener trade para conocer notional al cerrar
     const { data: tr, error: gErr } = await supabase
       .from('trades')
       .select('*')
@@ -311,14 +307,12 @@ export default function TradingSimulator() {
       return;
     }
 
-    // 1) Calcular profit si no lo recibimos
     let realized = Number(profitOverride || 0);
     if (profitOverride == null) {
       const { upnl } = computeLivePnL(tr);
       realized = Number(upnl || 0);
     }
 
-    // 2) Cerrar trade con profit final
     const { error: uErr } = await supabase
       .from('trades')
       .update({ status: 'closed', profit: realized, closeat: new Date().toISOString() })
@@ -329,7 +323,7 @@ export default function TradingSimulator() {
       return;
     }
 
-    // 3) Devolver notional + profit al saldo real
+    // Devolver nocional + profit al saldo real
     const { data: balRow, error: bErr } = await supabase
       .from('balances')
       .select('usdc')
@@ -387,26 +381,13 @@ export default function TradingSimulator() {
       mode === 'demo' ? safe(tradingLogic.trades).length : safe(realTrades).length,
   };
 
-  // =================== Gráfico: usar history “cercano” ===================
-  const baseForChart = parseBaseFromPair(tradingLogic.selectedPair);
+  // =================== Gráfico: history “cercano” ===================
+  const baseForChart = parseBaseFromPair(selectedPair);
   const chartHistory = useMemo(() => {
-    // si hay history en DataContext, úsalo; si no, fallback al del motor
     const liveHist = safe(marketPrices?.[baseForChart]?.history);
     const src = liveHist.length ? liveHist : tradingLogic.priceHistory;
-    // acercar zoom a últimos ~240 puntos para ver fluctuaciones
     return safe(src).slice(-240);
   }, [marketPrices, baseForChart, tradingLogic.priceHistory]);
-
-  // ============ Sincronizar par con pairOptions del admin ============
-  useEffect(() => {
-    if (!pairOptions?.length) return;
-    // si el par actual no está disponible, forzar al primero
-    const current = tradingLogic.selectedPair;
-    if (!current || !pairOptions.includes(current)) {
-      tradingLogic.setSelectedPair(pairOptions[0]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pairOptions?.join('|')]); // string join para evitar deps profundas
 
   // =================== Render ===================
   return (
@@ -440,9 +421,9 @@ export default function TradingSimulator() {
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
           <div className="xl:col-span-9">
             <TradingChart
-              priceHistory={chartHistory}            // histórico “cercano”
-              selectedPair={tradingLogic.selectedPair}
-              cryptoPrices={marketPrices}            // feed real con reglas/admin
+              priceHistory={chartHistory}
+              selectedPair={selectedPair}
+              cryptoPrices={marketPrices}
             />
           </div>
 
@@ -495,30 +476,18 @@ export default function TradingSimulator() {
           </div>
         </div>
 
-        {/* 👇 No pasar todo el tradingLogic en modo real (para evitar filtraciones Demo->Real) */}
+        {/* IMPORTANTE: en real no pases todo el tradingLogic */}
         <TradingPanel
-          // control del par desde el hook (sirve para demo y real)
-          selectedPair={tradingLogic.selectedPair}
+          selectedPair={selectedPair}
           setSelectedPair={tradingLogic.setSelectedPair}
-
-          // lista de pares generada por el admin (incluye custom)
-          pairOptions={pairOptions}
-
-          // abrir/cerrar operación (en ambos modos usa nuestros handlers)
           onTrade={handleTrade}
           openTrade={handleTrade}
           closeTrade={handleCloseTrade}
-
-          // balance que se muestra en el panel según modo
           balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
           mode={mode}
-
-          // abiertas correctas según modo (con uPnL)
           openTrades={mode === 'demo'
             ? demoTradesWithLive.filter(t => (t.status || '').toLowerCase() === 'open')
             : realTradesWithLive.filter(t => (t.status || '').toLowerCase() === 'open')}
-
-          // Precios para cálculo instantáneo en inputs del panel
           cryptoPrices={marketPrices}
         />
 
