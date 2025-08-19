@@ -1,17 +1,25 @@
+// src/components/trading/TradingChart.jsx
 import React, { useEffect, useRef } from 'react';
 import { createChart, ColorType } from 'lightweight-charts';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from '@/components/ui/card';
 import { TrendingUp } from 'lucide-react';
 
-const LAST_N_BARS = 120; // zoom cercano
+const LAST_N_BARS = 120; // zoom cercano (últimos N ticks)
+const n = (x, fallback = 0) => (Number.isFinite(Number(x)) ? Number(x) : fallback);
 
 const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) => {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
-  const lastBarTimeRef = useRef(undefined); // epoch seconds del último bar dibujado
+  const lastBarTimeRef = useRef(undefined); // epoch seconds del último bar pintado
 
-  // ---- crear/destruir chart ----
+  // Crear / destruir el chart
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -23,8 +31,8 @@ const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) =>
         textColor: '#D1D5DB',
       },
       grid: {
-        vertLines: { color: 'rgba(71, 85, 105, 0.35)' },
-        horzLines: { color: 'rgba(71, 85, 105, 0.35)' },
+        vertLines: { color: 'rgba(71,85,105,0.35)' },
+        horzLines: { color: 'rgba(71,85,105,0.35)' },
       },
       rightPriceScale: {
         borderColor: '#4B5563',
@@ -51,7 +59,7 @@ const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) =>
     chartRef.current = chart;
     seriesRef.current = series;
 
-    // Responsivo con ResizeObserver
+    // Responsivo
     const ro = new ResizeObserver((entries) => {
       if (!entries.length) return;
       const { width, height } = entries[0].contentRect;
@@ -68,87 +76,88 @@ const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) =>
     };
   }, []);
 
-  // ---- set/actualizar datos de velas ----
+  // Set/actualizar velas con datos
   useEffect(() => {
     const series = seriesRef.current;
     const chart = chartRef.current;
     if (!series || !chart) return;
 
+    // Normaliza, filtra NaN/0 y ordena por tiempo
     const hist = Array.isArray(priceHistory) ? priceHistory : [];
-    if (!hist.length) {
+    const sorted = hist
+      .filter((p) => n(p.time) > 0 && n(p.value) > 0)
+      .sort((a, b) => a.time - b.time);
+
+    if (!sorted.length) {
       series.setData([]);
       lastBarTimeRef.current = undefined;
       return;
     }
 
-    // Ordena por tiempo ascendente
-    const sorted = [...hist].sort((a, b) => a.time - b.time);
-
-    // Si nunca dibujamos: seed inicial (solo últimos LAST_N_BARS)
+    // Seed inicial (últimos N puntos)
     if (!lastBarTimeRef.current) {
       const seed = sorted.slice(-LAST_N_BARS);
       const seedCandles = seed.map((p, idx) => {
         const prev = seed[idx - 1] || p;
         return {
-          time: Math.floor(p.time / 1000),
-          open: Number(prev.value) || Number(p.value) || 0,
-          high: Math.max(Number(prev.value) || 0, Number(p.value) || 0),
-          low: Math.min(Number(prev.value) || 0, Number(p.value) || 0),
-          close: Number(p.value) || 0,
+          time: Math.floor(n(p.time) / 1000),
+          open: n(prev.value, n(p.value)),
+          high: Math.max(n(prev.value), n(p.value)),
+          low: Math.min(n(prev.value), n(p.value)),
+          close: n(p.value),
         };
       });
+
       series.setData(seedCandles);
+
       if (seedCandles.length) {
         lastBarTimeRef.current = seedCandles[seedCandles.length - 1].time;
-        // zoom cercano
-        const first = seedCandles[Math.max(0, seedCandles.length - LAST_N_BARS)].time;
-        const last = seedCandles[seedCandles.length - 1].time;
-        chart.timeScale().setVisibleRange({ from: first, to: last });
+        // Zoom cercano si hay más de una vela
+        if (seedCandles.length > 1) {
+          const first = seedCandles[Math.max(0, seedCandles.length - LAST_N_BARS)].time;
+          const last = seedCandles[seedCandles.length - 1].time;
+          chart.timeScale().setVisibleRange({ from: first, to: last });
+        }
       }
       return;
     }
 
-    // Incremental: si hay nuevos puntos, agrega/actualiza el último bar
+    // Actualización incremental
     const lastPoint = sorted[sorted.length - 1];
     const prevPoint = sorted[sorted.length - 2] || lastPoint;
-    const lastSec = Math.floor(lastPoint.time / 1000);
+    const lastSec = Math.floor(n(lastPoint.time) / 1000);
+
+    const candle = {
+      time: lastSec,
+      open: n(prevPoint.value, n(lastPoint.value)),
+      high: Math.max(n(prevPoint.value), n(lastPoint.value)),
+      low: Math.min(n(prevPoint.value), n(lastPoint.value)),
+      close: n(lastPoint.value),
+    };
 
     if (lastSec > lastBarTimeRef.current) {
-      // nuevo bar
-      const candle = {
-        time: lastSec,
-        open: Number(prevPoint.value) || Number(lastPoint.value) || 0,
-        high: Math.max(Number(prevPoint.value) || 0, Number(lastPoint.value) || 0),
-        low: Math.min(Number(prevPoint.value) || 0, Number(lastPoint.value) || 0),
-        close: Number(lastPoint.value) || 0,
-      };
+      // Nueva vela
       series.update(candle);
       lastBarTimeRef.current = lastSec;
 
-      // mantener zoom a últimos N
+      // Mantener el foco en los últimos N
       const to = lastSec;
-      const from = to - (LAST_N_BARS * 2); // ~ventana razonable
+      const from = to - LAST_N_BARS * 2; // ventana razonable
       chart.timeScale().setVisibleRange({ from, to });
     } else if (lastSec === lastBarTimeRef.current) {
-      // mismo segundo: actualiza vela actual (mejora fluidez)
-      const candle = {
-        time: lastSec,
-        open: Number(prevPoint.value) || Number(lastPoint.value) || 0,
-        high: Math.max(Number(prevPoint.value) || 0, Number(lastPoint.value) || 0),
-        low: Math.min(Number(prevPoint.value) || 0, Number(lastPoint.value) || 0),
-        close: Number(lastPoint.value) || 0,
-      };
+      // Mismo segundo: refresca la vela actual
       series.update(candle);
     }
   }, [priceHistory]);
 
-  // ---- cabecera: precio/cambio actuales (con guards) ----
+  // Cabecera
   const pair = typeof selectedPair === 'string' && selectedPair ? selectedPair : 'BTC/USDT';
   const base = (pair.split?.('/')?.[0] || 'BTC').toUpperCase();
   const info = cryptoPrices?.[base] || {};
   const priceStr = Number.isFinite(Number(info.price)) ? Number(info.price).toFixed(2) : '--';
-  const chgStr = Number.isFinite(Number(info.change)) ? Number(info.change).toFixed(2) : '--';
-  const chgPos = Number(info.change) >= 0;
+  const chg = Number(info.change);
+  const chgStr = Number.isFinite(chg) ? chg.toFixed(2) : '--';
+  const chgPos = Number.isFinite(chg) ? chg >= 0 : true;
 
   return (
     <Card className="crypto-card h-full flex flex-col">
