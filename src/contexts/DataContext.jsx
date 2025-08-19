@@ -5,6 +5,7 @@ import React, {
   useMemo,
   useState,
   useEffect,
+  useRef,
 } from 'react';
 import dayjs from 'dayjs';
 import { supabase } from '@/lib/supabaseClient';
@@ -16,6 +17,7 @@ const DataContext = createContext(null);
 const ensureArray = (v) => (Array.isArray(v) ? v : []);
 
 // ==== Config de cotizaciones reales (Binance) ====
+// Mapea símbolo interno -> par de Binance
 const ASSET_TO_SYMBOL = {
   BTC: 'BTCUSDT',
   ETH: 'ETHUSDT',
@@ -24,33 +26,102 @@ const ASSET_TO_SYMBOL = {
   // Podés agregar más: SOL: 'SOLUSDT', etc.
 };
 const HISTORY_MAX = 600; // ~20 min si llega un tick cada 2s aprox.
+const TICK_MS = 10_000;  // cada 10s consolidamos y empujamos a history
 
 /**
  * DataProvider
  * - Lee: investments, wallet_transactions, referrals (profiles.referred_by), bot_activations
+ * - Mercado configurable: market_instruments + market_rules (Supabase)
  * - Cotizaciones reales: WebSocket de Binance (@miniTicker) + fallback REST de arranque
- * - Métodos addInvestment / addTransaction
- * - Acciones de bots (RPC opcionales; si no existen, no rompen)
+ * - Aplica reglas a precios y expone cryptoPrices finales con history
+ * - Métodos addInvestment / addTransaction / acciones de bots
  */
 export function DataProvider({ children }) {
   const { user } = useAuth();
 
-  // ======= Estado que la UI consume SINCRÓNICAMENTE =======
+  // ======= Estado que la UI consume =======
   const [investments, setInvestments] = useState([]);   // []
   const [transactions, setTransactions] = useState([]); // []
   const [referrals, setReferrals] = useState([]);       // []
   const [botActivations, setBotActivations] = useState([]);
 
-  // ======= Precios (reales) =======
+  // ======= Mercado configurable =======
+  const [instruments, setInstruments] = useState([]); // market_instruments habilitados o todos (se usan todos para edición desde Admin)
+  const [marketRules, setMarketRules] = useState([]); // reglas activas
+
+  // ======= Precios (feed real + cálculo final con reglas) =======
+  // realQuotes: precios "reales" crudos (REST/WS) por símbolo simple (BTC, ETH, etc.)
+  const [realQuotes, setRealQuotes] = useState({
+    BTC: { price: 0, change: 0 },
+    ETH: { price: 0, change: 0 },
+    BNB: { price: 0, change: 0 },
+    ADA: { price: 0, change: 0 },
+    USDT: { price: 1.0, change: 0 }, // estable
+  });
+
+  // priceHistories: diccionario de histories por símbolo
+  const [priceHistories, setPriceHistories] = useState({
+    USDT: [{ time: Date.now(), value: 1 }],
+  });
+
+  // cryptoPrices finales (lo que ve la UI)
   const [cryptoPrices, setCryptoPrices] = useState({
     BTC: { price: 0, change: 0, history: [] },
     ETH: { price: 0, change: 0, history: [] },
-    USDT: { price: 1.0, change: 0, history: [{ time: Date.now(), value: 1 }] }, // estable
+    USDT: { price: 1.0, change: 0, history: [{ time: Date.now(), value: 1 }] },
     BNB: { price: 0, change: 0, history: [] },
     ADA: { price: 0, change: 0, history: [] },
   });
 
-  // ----- Inicialización con REST + stream en vivo con WS -----
+  // ===========================
+  // Mercado: cargar instrumentos y reglas
+  // ===========================
+  const refreshMarketInstruments = async () => {
+    const { data, error } = await supabase
+      .from('market_instruments')
+      .select('*')
+      .order('symbol', { ascending: true });
+    if (!error) setInstruments(ensureArray(data));
+  };
+
+  const refreshMarketRules = async () => {
+    const { data, error } = await supabase
+      .from('market_rules')
+      .select('*')
+      .eq('active', true)
+      .order('start_hour', { ascending: true });
+    if (!error) setMarketRules(ensureArray(data));
+  };
+
+  const forceRefreshMarket = async () => {
+    await Promise.all([refreshMarketInstruments(), refreshMarketRules()]);
+  };
+
+  // Suscripción en tiempo real (opcional, si no está habilitado en tu proyecto no rompe)
+  useEffect(() => {
+    forceRefreshMarket();
+    const ch = supabase
+      .channel('market_realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'market_instruments' },
+        () => refreshMarketInstruments()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'market_rules' },
+        () => refreshMarketRules()
+      )
+      .subscribe();
+    return () => {
+      try { supabase.removeChannel(ch); } catch (_) {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ===========================
+  // Feed real: REST init + WS
+  // ===========================
   useEffect(() => {
     let ws;
     let reconnectTimer;
@@ -69,23 +140,28 @@ export function DataProvider({ children }) {
             const j = await res.json();
             const price = Number(j.lastPrice ?? j.c ?? 0);
             const change = Number(j.priceChangePercent ?? j.P ?? 0);
-            return [asset, { price, change, history: [{ time: Date.now(), value: price }] }];
+            return [asset, { price, change }];
           })
         );
-
-        setCryptoPrices((prev) => {
+        setRealQuotes((prev) => {
           const next = { ...prev };
           entries.forEach(([asset, val]) => {
-            next[asset] = {
-              ...(prev[asset] || {}),
-              ...val,
-              history: (prev[asset]?.history?.length ? prev[asset].history : val.history),
-            };
+            next[asset] = { ...next[asset], ...val };
           });
-          // USDT se mantiene estable en 1
-          if (!next.USDT) {
-            next.USDT = { price: 1, change: 0, history: [{ time: Date.now(), value: 1 }] };
-          }
+          // USDT estable
+          next.USDT = { price: 1, change: 0 };
+          return next;
+        });
+
+        // seed de histories (solo para los que llegaron)
+        const now = Date.now();
+        setPriceHistories((prev) => {
+          const next = { ...prev };
+          entries.forEach(([asset, val]) => {
+            const arr = prev[asset]?.length ? prev[asset] : [{ time: now, value: val.price }];
+            next[asset] = arr;
+          });
+          if (!next.USDT) next.USDT = [{ time: now, value: 1 }];
           return next;
         });
       } catch (e) {
@@ -108,18 +184,13 @@ export function DataProvider({ children }) {
           );
           if (!asset) return;
 
-          const price = Number(t.c);     // last price
-          const change = Number(t.P);    // 24h percent
-          const now = Date.now();
+          const price = Number(t.c);  // last price
+          const change = Number(t.P); // 24h percent
 
-          setCryptoPrices((prev) => {
-            const prevEntry = prev[asset] || { price: 0, change: 0, history: [] };
-            const history = [...(prevEntry.history || []), { time: now, value: price }].slice(-HISTORY_MAX);
-            return {
-              ...prev,
-              [asset]: { price, change, history },
-            };
-          });
+          setRealQuotes((prev) => ({
+            ...prev,
+            [asset]: { price, change },
+          }));
         } catch (e) {
           console.warn('[Binance WS] parse error:', e?.message || e);
         }
@@ -147,6 +218,112 @@ export function DataProvider({ children }) {
     };
   }, []);
 
+  // ===========================
+  // Aplicar reglas + consolidar precios finales + history
+  // ===========================
+  const lastTickRef = useRef(0);
+
+  const applyRulesForSymbol = (symbol, basePrice, now = new Date()) => {
+    // Reglas activas para este símbolo y hora UTC actual
+    const hour = now.getUTCHours();
+    const hits = marketRules.filter(
+      (r) =>
+        r.symbol === symbol &&
+        r.active &&
+        (
+          (r.start_hour < r.end_hour && hour >= r.start_hour && hour < r.end_hour) ||
+          (r.start_hour > r.end_hour && (hour >= r.start_hour || hour < r.end_hour)) // cruza medianoche
+        )
+    );
+    let price = basePrice;
+    for (const r of hits) {
+      const v = Number(r.value || 0);
+      if (r.type === 'percent') price *= (1 + v / 100);
+      else price += v;
+    }
+    return price;
+  };
+
+  // Cada TICK_MS consolidamos precios finales y actualizamos histories
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now();
+
+      // Evita ticks más rápidos que TICK_MS si hay muchos ws updates
+      if (now - lastTickRef.current < TICK_MS / 2) return;
+      lastTickRef.current = now;
+
+      // Conjunto de símbolos a publicar:
+      // - todos los market_instruments (activos o no, para que aparezcan)
+      // - + los "conocidos" por el feed real (BTC/ETH/BNB/ADA)
+      // - + USDT
+      const symbolsSet = new Set([
+        ...Object.keys(ASSET_TO_SYMBOL),
+        ...instruments.map((i) => i.symbol),
+        'USDT',
+      ]);
+
+      const nextPrices = {};
+      const nextHistories = { ...priceHistories };
+
+      symbolsSet.forEach((sym) => {
+        const inst = instruments.find((i) => i.symbol === sym);
+        const decimals = Number(inst?.decimals ?? 2);
+
+        // base: según source (real/manual) con fallback
+        let base = 0;
+        if (inst?.source === 'manual') {
+          base = Number(inst?.base_price ?? 0);
+        } else {
+          // real o sin inst -> intentar feed real
+          base = Number(realQuotes?.[sym]?.price ?? 0);
+          if (!base && inst) base = Number(inst.base_price ?? 0);
+        }
+
+        // aplicar reglas
+        let finalPrice =
+          sym === 'USDT' ? 1 : applyRulesForSymbol(sym, base, new Date());
+
+        // normalize decimales
+        if (Number.isFinite(decimals) && decimals >= 0) {
+          finalPrice = Number(finalPrice.toFixed(decimals));
+        } else {
+          finalPrice = Number(finalPrice.toFixed(2));
+        }
+
+        // calcular change (si tenemos realQuotes -> usar, sino % vs primer punto del history)
+        let changePct = 0;
+        if (realQuotes?.[sym]?.change != null) {
+          changePct = Number(realQuotes[sym].change || 0);
+        } else {
+          const h = ensureArray(nextHistories[sym]);
+          const baseRef = h?.[0]?.value ?? finalPrice;
+          if (baseRef) changePct = ((finalPrice - baseRef) / baseRef) * 100;
+        }
+
+        // history
+        const prevH = ensureArray(nextHistories[sym]);
+        const newH = [...prevH, { time: now, value: finalPrice }].slice(-HISTORY_MAX);
+        nextHistories[sym] = newH;
+
+        nextPrices[sym] = { price: finalPrice, change: changePct, history: newH };
+      });
+
+      setPriceHistories(nextHistories);
+      setCryptoPrices((prev) => ({ ...prev, ...nextPrices }));
+    };
+
+    const id = setInterval(tick, TICK_MS);
+    // ejecuta una consolidación inicial rápida al montar / al cambiar dependencias
+    tick();
+
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instruments, marketRules, realQuotes]);
+
+  // ===========================
+  // Planes (estáticos)
+  // ===========================
   const investmentPlans = useMemo(
     () => [
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
@@ -157,7 +334,9 @@ export function DataProvider({ children }) {
     []
   );
 
-  // ======= Fetchers (async) que ACTUALIZAN el estado =======
+  // ===========================
+  // Fetchers (async) que ACTUALIZAN el estado
+  // ===========================
   async function refreshInvestments() {
     if (!user?.id) {
       setInvestments([]);
@@ -301,7 +480,7 @@ export function DataProvider({ children }) {
     setBotActivations(mapped);
   }
 
-  // ======= Efecto: refetch al loguear/cambiar de user =======
+  // ======= Refetch al loguear/cambiar de user =======
   useEffect(() => {
     setInvestments([]);
     setTransactions([]);
@@ -419,7 +598,7 @@ export function DataProvider({ children }) {
     };
   }
 
-  // ======= Acciones de bots (RPC opcionales, no fallan si no existen) =======
+  // ======= Acciones de bots (RPC opcionales) =======
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
@@ -549,8 +728,15 @@ export function DataProvider({ children }) {
       cancelBot,
       creditBotProfit,
 
-      // otros datos de UI
-      cryptoPrices,          // { BTC: {price, change, history[]}, ... }
+      // Mercado configurable
+      instruments,
+      marketRules,
+      refreshMarketInstruments,
+      refreshMarketRules,
+      forceRefreshMarket,
+
+      // datos para Trading / UI
+      cryptoPrices,          // { SYM: {price, change, history[]}, ... }
       assetToSymbol: ASSET_TO_SYMBOL, // por si la UI necesita el par exacto
       investmentPlans,
     }),
@@ -560,6 +746,8 @@ export function DataProvider({ children }) {
       referrals,
       botActivations,
       cryptoPrices,
+      instruments,
+      marketRules,
       investmentPlans,
     ]
   );
@@ -589,6 +777,13 @@ export function useData() {
     resumeBot: async () => ({ ok: false }),
     cancelBot: async () => ({ ok: false }),
     creditBotProfit: async () => ({ ok: false }),
+
+    instruments: [],
+    marketRules: [],
+    refreshMarketInstruments: async () => {},
+    refreshMarketRules: async () => {},
+    forceRefreshMarket: async () => {},
+
     cryptoPrices: {},
     assetToSymbol: ASSET_TO_SYMBOL,
     investmentPlans: [],
