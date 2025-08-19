@@ -1,23 +1,55 @@
-import React, { useState } from 'react';
+// src/pages/TradingBotsPage.jsx
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter
+  Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
-  Bot, Zap, TrendingUp, BarChart2, DollarSign, Activity, CheckCircle
+  Bot as BotIcon,
+  Zap,
+  TrendingUp,
+  BarChart2,
+  DollarSign,
+  Activity,
+  CheckCircle,
+  Gauge,
+  Wallet,
+  Target,
+  AlertTriangle,
+  PauseCircle,
+  PlayCircle,
+  XCircle,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSound } from '@/contexts/SoundContext';
 import { toast } from '@/components/ui/use-toast';
 import { useData } from '@/contexts/DataContext';
+import { Link } from 'react-router-dom';
 
+// ====== Helpers ======
+const fmt = (n, dec = 2) => {
+  const v = Number(n);
+  return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
+};
+const clamp = (v, a = 0, b = 100) => Math.min(b, Math.max(a, v));
+const parsePctRange = (txt) => {
+  // "~5-8%" -> { min: 5, max: 8 }
+  const m = String(txt || '').match(/(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*%/);
+  if (m) return { min: Number(m[1]), max: Number(m[2]) };
+  const s = String(txt || '').match(/(\d+(?:\.\d+)?)\s*%/);
+  if (s) return { min: Number(s[1]), max: Number(s[1]) };
+  return { min: 0, max: 0 };
+};
+
+// ====== Catálogo de bots (visible) ======
 const tradingBots = [
   {
     id: 1,
     name: 'Bot Conservador Alfa',
+    risk: 'Bajo',
     strategy: 'Bajo Riesgo, Ingresos Estables',
     monthlyReturn: '~5-8%',
     minInvestment: 250,
@@ -30,6 +62,7 @@ const tradingBots = [
   {
     id: 2,
     name: 'Bot Agresivo Beta',
+    risk: 'Alto',
     strategy: 'Alto Riesgo, Alto Rendimiento Potencial',
     monthlyReturn: '~15-25%',
     minInvestment: 1000,
@@ -42,6 +75,7 @@ const tradingBots = [
   {
     id: 3,
     name: 'Bot Balanceado Gamma',
+    risk: 'Medio',
     strategy: 'Riesgo Moderado, Crecimiento Constante',
     monthlyReturn: '~8-12%',
     minInvestment: 500,
@@ -54,10 +88,10 @@ const tradingBots = [
 ];
 
 const TradingBotsPage = () => {
-  const { user, balances } = useAuth(); // saldo visible (opcional)
+  const { user, balances } = useAuth();
   const { playSound } = useSound();
 
-  // DataContext: RPC reales y listado de activaciones
+  // DataContext: RPC y activaciones
   const {
     botActivations,
     activateBot,
@@ -65,21 +99,69 @@ const TradingBotsPage = () => {
     resumeBot,
     cancelBot,
     refreshBotActivations,
+    creditBotProfit, // opcional para pruebas/acreditaciones futuras
   } = useData();
 
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
+  const [busy, setBusy] = useState(false);
 
+  // ==== Resumen de mis bots (derivados) ====
+  const myActiveBots = useMemo(
+    () => (botActivations || []).filter((b) => (b?.status || '').toLowerCase() === 'active'),
+    [botActivations]
+  );
+  const botsAllocated = useMemo(
+    () => myActiveBots.reduce((a, b) => a + Number(b?.amountUsd || 0), 0),
+    [myActiveBots]
+  );
+  const botsCount = myActiveBots.length;
+
+  // Estimación mensual de los bots activos en conjunto (rango)
+  const activeEstimated = useMemo(() => {
+    // mapeamos por nombre para encontrar el rango del catálogo
+    let minSum = 0;
+    let maxSum = 0;
+    for (const b of myActiveBots) {
+      const cat = tradingBots.find((x) => x.name === b.botName);
+      const { min, max } = parsePctRange(cat?.monthlyReturn);
+      const amt = Number(b?.amountUsd || 0);
+      minSum += (min / 100) * amt;
+      maxSum += (max / 100) * amt;
+    }
+    return { min: minSum, max: maxSum };
+  }, [myActiveBots]);
+
+  // Barra de energía específica para "objetivo de bots"
+  const GOALS = { botsCount: 3, botsUsd: 2000 }; // objetivo simple editable
+  const pctBotsCount = clamp((botsCount / GOALS.botsCount) * 100);
+  const pctBotsUsd = clamp((botsAllocated / GOALS.botsUsd) * 100);
+  const energyBots = clamp((pctBotsCount + pctBotsUsd) / 2);
+
+  // ==== Refresh on mount / user change ====
+  useEffect(() => {
+    if (!user?.id) return;
+    refreshBotActivations?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  const availableUsd = Number(balances?.usdc ?? 0); // saldo disponible para activar
+
+  // ===== Handlers =====
   const handleActivateBot = async () => {
     try {
       playSound?.('invest');
+      if (!user?.id) {
+        toast({ title: 'No autenticado', description: 'Iniciá sesión para continuar.', variant: 'destructive' });
+        return;
+      }
       if (!selectedBot || !investmentAmount) {
-        toast({ title: 'Error', description: 'Selecciona un bot e ingresa un monto.', variant: 'destructive' });
+        toast({ title: 'Error', description: 'Seleccioná un bot e ingresá un monto.', variant: 'destructive' });
         return;
       }
       const amount = parseFloat(investmentAmount);
       if (Number.isNaN(amount) || amount <= 0) {
-        toast({ title: 'Monto inválido', description: 'Ingresa un monto válido.', variant: 'destructive' });
+        toast({ title: 'Monto inválido', description: 'Ingresá un monto válido.', variant: 'destructive' });
         return;
       }
       if (amount < selectedBot.minInvestment) {
@@ -90,8 +172,16 @@ const TradingBotsPage = () => {
         });
         return;
       }
+      if (amount > availableUsd) {
+        toast({
+          title: 'Saldo insuficiente',
+          description: `Tu saldo USDC es $${fmt(availableUsd)}. Depositá o reducí el monto.`,
+          variant: 'destructive',
+        });
+        return;
+      }
 
-      // Llama RPC real; el server valida saldo y devuelve códigos
+      setBusy(true);
       const res = await activateBot({
         botId: selectedBot.id,
         botName: selectedBot.name,
@@ -102,16 +192,15 @@ const TradingBotsPage = () => {
       if (res?.code === 'INSUFFICIENT_FUNDS') {
         toast({
           title: 'Saldo insuficiente',
-          description: `Te faltan $${Number(res.needed || 0).toFixed(2)} para activar este bot.`,
+          description: `Te faltan $${fmt(Number(res?.needed || 0))} para activar este bot.`,
           variant: 'destructive',
         });
-        // acá podés redirigir a tu pantalla de depósito
         return;
       }
       if (!res?.ok) {
         toast({
           title: 'No se pudo activar el bot',
-          description: res?.msg || 'Intenta nuevamente.',
+          description: res?.msg || 'Intentá nuevamente.',
           variant: 'destructive',
         });
         return;
@@ -119,46 +208,110 @@ const TradingBotsPage = () => {
 
       toast({
         title: 'Bot activado',
-        description: `${selectedBot.name} activado por $${amount.toFixed(2)}.`,
+        description: `${selectedBot.name} activado por $${fmt(amount)}.`,
       });
       setSelectedBot(null);
       setInvestmentAmount('');
-      refreshBotActivations(); // por si acaso
+      await refreshBotActivations?.();
     } catch (e) {
       console.error('[handleActivateBot]', e);
       toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
+    } finally {
+      setBusy(false);
     }
   };
+
+  const quickAmounts = useMemo(() => {
+    const base = [250, 500, 1000, 2000];
+    // sugerencias en función del disponible
+    const extra = availableUsd > 0 ? [Math.min(availableUsd, 5000)] : [];
+    return [...base, ...extra.filter((v) => !base.includes(v))];
+  }, [availableUsd]);
 
   return (
     <>
       <div className="space-y-8">
+        {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
+          transition={{ duration: 0.6 }}
         >
           <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
-            <Bot className="h-8 w-8 mr-3 text-purple-400" />
+            <BotIcon className="h-8 w-8 mr-3 text-purple-400" />
             Bots de Trading Automatizado
           </h1>
           <p className="text-slate-300">
-            Maximiza tus ganancias con nuestros bots de trading inteligentes.
+            Maximizá tus ganancias con bots inteligentes conectados a tu saldo.
           </p>
         </motion.div>
 
+        {/* Resumen / energía de bots */}
         <Card className="crypto-card">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-slate-400 text-sm font-medium">Saldo Disponible en App</p>
-                <p className="text-3xl font-bold text-green-400 mt-1">
-                  ${Number(balances?.usdc ?? 0).toFixed(2)}
-                </p>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-white flex items-center gap-2">
+              <Gauge className="h-5 w-5 text-emerald-400" />
+              Estado de tus Bots
+            </CardTitle>
+            <CardDescription className="text-slate-300">
+              Progreso hacia tus objetivos (cantidad y capital asignado).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
+                <div className="text-xs text-slate-400 flex items-center gap-2">
+                  <Wallet className="w-4 h-4 text-emerald-300" />
+                  Saldo USDC
+                </div>
+                <div className="text-2xl text-white font-semibold">${fmt(availableUsd)}</div>
               </div>
-              <div className="p-4 rounded-lg bg-green-500/10">
-                <DollarSign className="h-8 w-8 text-green-400" />
+              <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
+                <div className="text-xs text-slate-400 flex items-center gap-2">
+                  <BotIcon className="w-4 h-4 text-violet-300" />
+                  Bots activos
+                </div>
+                <div className="text-2xl text-white font-semibold">{botsCount}</div>
               </div>
+              <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
+                <div className="text-xs text-slate-400 flex items-center gap-2">
+                  <DollarSign className="w-4 h-4 text-sky-300" />
+                  Capital en bots
+                </div>
+                <div className="text-2xl text-white font-semibold">${fmt(botsAllocated)}</div>
+              </div>
+              <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
+                <div className="text-xs text-slate-400 flex items-center gap-2">
+                  <Target className="w-4 h-4 text-amber-300" />
+                  Estimación mensual
+                </div>
+                <div className="text-2xl text-white font-semibold">
+                  ${fmt(activeEstimated.min)} – ${fmt(activeEstimated.max)}
+                </div>
+              </div>
+            </div>
+
+            <div className="w-full h-5 rounded-full bg-slate-800 overflow-hidden border border-slate-700">
+              <div className="flex h-full">
+                <div
+                  className="h-full bg-gradient-to-r from-violet-500 to-violet-400"
+                  style={{ width: `${(pctBotsCount / 2)}%` }}
+                  title={`Bots activos: ${fmt(pctBotsCount, 0)}%`}
+                />
+                <div
+                  className="h-full bg-gradient-to-r from-sky-500 to-sky-400"
+                  style={{ width: `${(pctBotsUsd / 2)}%` }}
+                  title={`Capital asignado: ${fmt(pctBotsUsd, 0)}%`}
+                />
+              </div>
+            </div>
+            <div className="text-right text-slate-300 text-sm">
+              Energía de bots: <span className="text-white font-semibold">{fmt(energyBots, 0)}%</span>
+            </div>
+
+            <div className="text-xs text-slate-400 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-300" />
+              Las estimaciones son orientativas y pueden variar según condiciones de mercado.
             </div>
           </CardContent>
         </Card>
@@ -174,6 +327,11 @@ const TradingBotsPage = () => {
                 ? 'from-red-500 to-pink-500'
                 : 'from-green-500 to-teal-500';
 
+            const { min, max } = parsePctRange(bot.monthlyReturn);
+            const exAmount = Math.max(bot.minInvestment, Math.min(availableUsd, bot.minInvestment * 2));
+            const estMin = (min / 100) * exAmount;
+            const estMax = (max / 100) * exAmount;
+
             return (
               <motion.div
                 key={bot.id}
@@ -183,33 +341,48 @@ const TradingBotsPage = () => {
               >
                 <Card className={`crypto-card h-full flex flex-col border-l-4 ${bot.bgColor.replace('bg-', 'border-')}`}>
                   <CardHeader>
-                    <div className="flex items-center space-x-3 mb-2">
-                      <div className={`p-2 rounded-lg ${bot.bgColor}`}>
-                        <Icon className={`h-6 w-6 ${bot.color}`} />
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3 mb-2">
+                        <div className={`p-2 rounded-lg ${bot.bgColor}`}>
+                          <Icon className={`h-6 w-6 ${bot.color}`} />
+                        </div>
+                        <CardTitle className={`text-xl ${bot.color}`}>{bot.name}</CardTitle>
                       </div>
-                      <CardTitle className={`text-xl ${bot.color}`}>{bot.name}</CardTitle>
+                      <span
+                        className={`text-xs px-2 py-1 rounded-md border ${
+                          bot.risk === 'Alto'
+                            ? 'text-rose-300 border-rose-500/30 bg-rose-500/10'
+                            : bot.risk === 'Medio'
+                            ? 'text-amber-300 border-amber-500/30 bg-amber-500/10'
+                            : 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10'
+                        }`}
+                      >
+                        Riesgo {bot.risk}
+                      </span>
                     </div>
                     <CardDescription className="text-slate-300">{bot.strategy}</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-3 flex-grow">
-                    <div className="flex items-baseline">
+                    <div className="flex items-baseline gap-2">
                       <p className="text-3xl font-bold text-white">{bot.monthlyReturn}</p>
-                      <p className="text-sm text-slate-400 ml-1">/mes (Estimado)</p>
+                      <p className="text-sm text-slate-400">/mes (estimado)</p>
                     </div>
+
                     <div className="text-sm text-slate-400">
                       <DollarSign className="inline h-4 w-4 mr-1 text-green-400" />
-                      Mínimo:{' '}
-                      <span className="font-semibold text-white">
-                        ${bot.minInvestment}
-                      </span>
+                      Mínimo: <span className="font-semibold text-white">${bot.minInvestment}</span>
                     </div>
                     <div className="text-sm text-slate-400">
                       <Activity className="inline h-4 w-4 mr-1 text-purple-400" />
-                      Pares:{' '}
-                      <span className="font-semibold text-white">
-                        {bot.pairs.join(', ')}
-                      </span>
+                      Pares: <span className="font-semibold text-white">{bot.pairs.join(', ')}</span>
                     </div>
+
+                    {/* Ejemplo de rendimiento con un monto razonable */}
+                    <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3 text-sm">
+                      <div className="text-slate-400">Ej. con ${fmt(exAmount, 0)}:</div>
+                      <div className="text-slate-100 font-semibold">+${fmt(estMin)} – +${fmt(estMax)} / mes</div>
+                    </div>
+
                     <div className="pt-2">
                       <p className="text-sm font-medium text-white mb-1">Características:</p>
                       <ul className="space-y-1">
@@ -222,16 +395,22 @@ const TradingBotsPage = () => {
                       </ul>
                     </div>
                   </CardContent>
-                  <CardFooter>
+                  <CardFooter className="flex gap-2">
                     <Button
                       onClick={() => {
                         playSound?.('click');
                         setSelectedBot(bot);
+                        setInvestmentAmount(String(Math.min(Math.max(bot.minInvestment, 250), Math.max(availableUsd, bot.minInvestment))));
                       }}
                       className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90`}
                     >
                       Activar Bot
                     </Button>
+                    <Link to="/deposit" className="w-full">
+                      <Button variant="outline" className="w-full">
+                        Depositar
+                      </Button>
+                    </Link>
                   </CardFooter>
                 </Card>
               </motion.div>
@@ -241,13 +420,25 @@ const TradingBotsPage = () => {
 
         {/* Modal de activación */}
         {selectedBot && (() => {
-          const ModalIcon = selectedBot.icon; // <- importante: componente dinámico válido
+          const ModalIcon = selectedBot.icon; // componente dinámico válido
           const gradient =
             selectedBot.bgColor.includes('blue')
               ? 'from-blue-500 to-cyan-500'
               : selectedBot.bgColor.includes('red')
               ? 'from-red-500 to-pink-500'
               : 'from-green-500 to-teal-500';
+
+          const { min, max } = parsePctRange(selectedBot.monthlyReturn);
+          const amountNum = Number(investmentAmount || 0);
+          const estMin = (min / 100) * amountNum;
+          const estMax = (max / 100) * amountNum;
+
+          const disabled =
+            busy ||
+            !amountNum ||
+            amountNum < selectedBot.minInvestment ||
+            amountNum > availableUsd ||
+            amountNum <= 0;
 
           return (
             <motion.div
@@ -268,29 +459,73 @@ const TradingBotsPage = () => {
                   <CardDescription className="text-slate-300">{selectedBot.strategy}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <p className="text-white">
-                    Rendimiento Mensual Estimado:{' '}
-                    <span className="font-bold">{selectedBot.monthlyReturn}</span>
-                  </p>
-                  <p className="text-white">
-                    Inversión Mínima:{' '}
-                    <span className="font-bold">${selectedBot.minInvestment}</span>
-                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                      <div className="text-xs text-slate-400">Rango mensual</div>
+                      <div className="text-white font-semibold">{selectedBot.monthlyReturn}</div>
+                    </div>
+                    <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                      <div className="text-xs text-slate-400">Mínimo</div>
+                      <div className="text-white font-semibold">${fmt(selectedBot.minInvestment, 0)}</div>
+                    </div>
+                  </div>
+
                   <div className="space-y-2">
-                    <Label className="text-white">Monto a Invertir (USD)</Label>
+                    <Label className="text-white">Monto a invertir (USD)</Label>
                     <Input
                       type="number"
+                      inputMode="decimal"
+                      min={selectedBot.minInvestment}
+                      step="0.01"
                       value={investmentAmount}
                       onChange={(e) => setInvestmentAmount(e.target.value)}
-                      placeholder={`Mínimo $${selectedBot.minInvestment}${typeof balances?.usdc === 'number' ? `, Disponible: $${(balances.usdc).toFixed(2)}` : ''}`}
+                      placeholder={`Mínimo $${selectedBot.minInvestment}, Disponible: $${fmt(availableUsd)}`}
                       className="bg-slate-800 border-slate-600 text-white"
                     />
+                    <div className="flex flex-wrap gap-2">
+                      {quickAmounts.map((v) => (
+                        <Button key={v} size="sm" variant="secondary" onClick={() => setInvestmentAmount(String(v))}>
+                          ${fmt(v, 0)}
+                        </Button>
+                      ))}
+                    </div>
                   </div>
+
+                  {/* Estimación en vivo */}
+                  <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                    <div className="text-xs text-slate-400">Estimación mensual (según monto ingresado)</div>
+                    <div className="text-white font-semibold">
+                      {amountNum > 0 ? (
+                        <>
+                          +${fmt(estMin)} – +${fmt(estMax)}
+                        </>
+                      ) : (
+                        '—'
+                      )}
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1">
+                      Estimación teórica basada en el rango del bot. No garantiza resultados.
+                    </div>
+                  </div>
+
+                  {/* Validaciones */}
+                  {amountNum > availableUsd && (
+                    <div className="text-xs text-rose-400 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" /> Monto supera tu saldo USDC (${fmt(availableUsd)}).
+                    </div>
+                  )}
+                  {amountNum > 0 && amountNum < selectedBot.minInvestment && (
+                    <div className="text-xs text-amber-400 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" /> Debe ser ≥ ${fmt(selectedBot.minInvestment, 0)}.
+                    </div>
+                  )}
+
                   <Button
                     onClick={handleActivateBot}
-                    className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90`}
+                    disabled={disabled}
+                    className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90 disabled:opacity-60`}
                   >
-                    Activar {selectedBot.name}
+                    {busy ? 'Activando...' : `Activar ${selectedBot.name}`}
                   </Button>
                   <Button variant="outline" onClick={() => setSelectedBot(null)} className="w-full">
                     Cancelar
@@ -304,57 +539,104 @@ const TradingBotsPage = () => {
         {/* Mis bots (activaciones del usuario) */}
         <div className="space-y-4">
           <h2 className="text-xl font-bold text-white">Mis Bots</h2>
-          {botActivations.length === 0 ? (
+          {!botActivations?.length ? (
             <div className="opacity-60">Sin activaciones.</div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {botActivations.map((a) => (
-                <Card key={a.id} className="crypto-card">
-                  <CardHeader>
-                    <CardTitle className="text-white">{a.botName}</CardTitle>
-                    <CardDescription className="text-slate-300">
-                      {a.strategy} · ${a.amountUsd} · {a.status}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="flex gap-2">
-                    {a.status === 'active' && (
-                      <Button
-                        variant="outline"
-                        onClick={async () => {
-                          const r = await pauseBot(a.id);
-                          if (r?.ok) toast({ title: 'Bot pausado' });
-                          else toast({ title: 'No se pudo pausar', variant: 'destructive' });
-                        }}
-                      >
-                        Pausar
-                      </Button>
-                    )}
-                    {a.status === 'paused' && (
-                      <Button
-                        onClick={async () => {
-                          const r = await resumeBot(a.id);
-                          if (r?.ok) toast({ title: 'Bot reanudado' });
-                          else toast({ title: 'No se pudo reanudar', variant: 'destructive' });
-                        }}
-                      >
-                        Reanudar
-                      </Button>
-                    )}
-                    <Button
-                      variant="destructive"
-                      onClick={async () => {
-                        const r = await cancelBot(a.id);
-                        if (r?.ok) toast({ title: 'Bot cancelado' });
-                        else toast({ title: 'No se pudo cancelar', variant: 'destructive' });
-                      }}
-                    >
-                      Cancelar
-                    </Button>
-                  </CardContent>
-                </Card>
-              ))}
+              {botActivations.map((a) => {
+                const status = String(a.status || '').toLowerCase();
+                const cat = tradingBots.find((x) => x.name === a.botName);
+                const { min, max } = parsePctRange(cat?.monthlyReturn);
+                const estMin = (min / 100) * Number(a.amountUsd || 0);
+                const estMax = (max / 100) * Number(a.amountUsd || 0);
+                const isActive = status === 'active';
+                const isPaused = status === 'paused';
+
+                return (
+                  <Card key={a.id} className="crypto-card">
+                    <CardHeader>
+                      <CardTitle className="text-white flex items-center justify-between">
+                        <span>{a.botName}</span>
+                        <span
+                          className={`text-xs px-2 py-1 rounded-md border ${
+                            isActive
+                              ? 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10'
+                              : isPaused
+                              ? 'text-amber-300 border-amber-500/30 bg-amber-500/10'
+                              : 'text-slate-300 border-slate-600 bg-slate-700/30'
+                          }`}
+                        >
+                          {a.status}
+                        </span>
+                      </CardTitle>
+                      <CardDescription className="text-slate-300">
+                        {a.strategy} · Capital: ${fmt(a.amountUsd)}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">Estimación mensual</div>
+                          <div className="text-white font-semibold">+${fmt(estMin)} – +${fmt(estMax)}</div>
+                        </div>
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">Creado</div>
+                          <div className="text-white font-semibold">
+                            {a.createdAt ? new Date(a.createdAt).toLocaleString() : '—'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        {isActive && (
+                          <Button
+                            variant="outline"
+                            onClick={async () => {
+                              const r = await pauseBot(a.id);
+                              if (r?.ok) toast({ title: 'Bot pausado' });
+                              else toast({ title: 'No se pudo pausar', variant: 'destructive' });
+                            }}
+                          >
+                            <PauseCircle className="w-4 h-4 mr-1" />
+                            Pausar
+                          </Button>
+                        )}
+                        {isPaused && (
+                          <Button
+                            onClick={async () => {
+                              const r = await resumeBot(a.id);
+                              if (r?.ok) toast({ title: 'Bot reanudado' });
+                              else toast({ title: 'No se pudo reanudar', variant: 'destructive' });
+                            }}
+                          >
+                            <PlayCircle className="w-4 h-4 mr-1" />
+                            Reanudar
+                          </Button>
+                        )}
+                        <Button
+                          variant="destructive"
+                          onClick={async () => {
+                            const r = await cancelBot(a.id);
+                            if (r?.ok) toast({ title: 'Bot cancelado' });
+                            else toast({ title: 'No se pudo cancelar', variant: 'destructive' });
+                          }}
+                        >
+                          <XCircle className="w-4 h-4 mr-1" />
+                          Cancelar
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
+        </div>
+
+        {/* Tip UX */}
+        <div className="text-xs text-slate-400">
+          <CheckCircle className="w-4 h-4 inline mr-1 text-emerald-400" />
+          Consejo: diversificá entre bots para equilibrar rendimiento y riesgo.
         </div>
       </div>
     </>

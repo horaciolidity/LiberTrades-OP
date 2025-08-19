@@ -1,40 +1,137 @@
-import React, { useState } from 'react';
+// src/pages/RewardsPage.jsx
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
+import {
+  Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter,
+} from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Gift, CheckCircle, Zap, Star, DollarSign, Users, TrendingUp } from 'lucide-react';
+import {
+  Gift,
+  CheckCircle,
+  Zap,
+  Star,
+  DollarSign,
+  Users,
+  TrendingUp,
+  Gauge,
+  Info,
+} from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSound } from '@/contexts/SoundContext';
 import { toast } from '@/components/ui/use-toast';
+import { useData } from '@/contexts/DataContext';
+import { supabase } from '@/lib/supabaseClient';
 
 const initialTasks = [
-  { id: 1, title: 'Primer Depósito', description: 'Realiza tu primer depósito de al menos $50.', reward: '$5 Bonus', icon: DollarSign, completed: false, category: 'Depósito' },
-  { id: 2, title: 'Invierte en un Plan', description: 'Activa tu primer plan de inversión.', reward: '$10 Bonus', icon: TrendingUp, completed: false, category: 'Inversión' },
-  { id: 3, title: 'Verifica tu Cuenta', description: 'Completa la verificación KYC de tu perfil.', reward: 'Acceso a Retiros Mayores', icon: CheckCircle, completed: false, category: 'Perfil' },
-  { id: 4, title: 'Refiere a un Amigo', description: 'Invita a un amigo y que complete su primer depósito.', reward: '$20 Bonus por Amigo', icon: Users, completed: false, category: 'Referidos' },
-  { id: 5, title: 'Completa 10 Trades', description: 'Realiza 10 operaciones en el simulador de trading.', reward: '$1000 Saldo Virtual Extra', icon: Zap, completed: false, category: 'Trading' },
-  { id: 6, title: 'Lealtad Mensual', description: 'Mantén una inversión activa por 30 días consecutivos.', reward: '2% Bonus sobre Ganancias', icon: Star, completed: false, category: 'Lealtad' },
+  {
+    id: 1,
+    key: 'first_deposit',
+    title: 'Primer Depósito',
+    description: 'Realizá tu primer depósito de al menos $50 (equivalente).',
+    reward: '$5 Bonus',
+    icon: DollarSign,
+    category: 'Depósito',
+    goal: 50, // USD
+    link: '/deposit',
+  },
+  {
+    id: 2,
+    key: 'first_investment',
+    title: 'Invertí en un Plan',
+    description: 'Activá tu primer plan de inversión.',
+    reward: '$10 Bonus',
+    icon: TrendingUp,
+    category: 'Inversión',
+    goal: 1, // 1 inversión
+    link: '/plans',
+  },
+  {
+    id: 3,
+    key: 'kyc_verify',
+    title: 'Verificá tu Cuenta',
+    description: 'Completá la verificación KYC de tu perfil.',
+    reward: 'Acceso a retiros mayores',
+    icon: CheckCircle,
+    category: 'Perfil',
+    goal: 1,
+    link: '/profile',
+  },
+  {
+    id: 4,
+    key: 'refer_friend',
+    title: 'Referí a un Amigo',
+    description: 'Invitá a un amigo (cuenta como 1 referido activo).',
+    reward: '$20 Bonus por amigo',
+    icon: Users,
+    category: 'Referidos',
+    goal: 1,
+    link: '/referrals',
+  },
+  {
+    id: 5,
+    key: 'ten_trades',
+    title: 'Completá 10 Trades',
+    description: 'Realizá 10 operaciones (simulador o real).',
+    reward: '$1000 saldo virtual extra',
+    icon: Zap,
+    category: 'Trading',
+    goal: 10, // 10 trades
+    link: '/simulator',
+  },
+  {
+    id: 6,
+    key: 'monthly_loyalty',
+    title: 'Lealtad Mensual',
+    description: 'Mantené una inversión activa por 30 días consecutivos.',
+    reward: '2% Bonus sobre ganancias',
+    icon: Star,
+    category: 'Lealtad',
+    goal: 30, // días
+    link: '/history',
+  },
 ];
 
-// rehidrata íconos solo si son funciones válidas
+// -- rehidrata íconos solo si son funciones válidas
 const restoreIcons = (arr = []) =>
-  arr.map(t => {
-    const fallback = initialTasks.find(x => x.id === t.id)?.icon || Gift;
+  arr.map((t) => {
+    const fallback = initialTasks.find((x) => x.id === t.id)?.icon || Gift;
     const validIcon = typeof t.icon === 'function' ? t.icon : fallback;
     return { ...t, icon: validIcon };
   });
 
 const safeParse = (raw, fallback) => {
-  try { return JSON.parse(raw); } catch { return fallback; }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
 };
 
-const RewardsPage = () => {
+const fmt = (n, dec = 2) => {
+  const v = Number(n);
+  return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
+};
+const clamp = (v, a = 0, b = 100) => Math.min(b, Math.max(a, v));
+
+export default function RewardsPage() {
   const { user } = useAuth();
   const { playSound } = useSound();
+
+  // Datos en vivo para calcular progreso real
+  const {
+    transactions = [],
+    investments = [],
+    referrals = [],
+    cryptoPrices = {},
+  } = useData();
+
+  const [tradesCount, setTradesCount] = useState(0); // desde tabla trades
+  const [loadingTrades, setLoadingTrades] = useState(true);
 
   const keyTasks = user?.id ? `crypto_rewards_tasks_${user.id}` : null;
   const keyClaim = user?.id ? `crypto_claimed_rewards_${user.id}` : null;
 
+  // Estado local (persistido en localStorage por usuario)
   const [tasks, setTasks] = useState(() => {
     const raw = keyTasks ? localStorage.getItem(keyTasks) : null;
     const base = raw ? safeParse(raw, initialTasks) : initialTasks;
@@ -46,44 +143,241 @@ const RewardsPage = () => {
     return raw ? safeParse(raw, []) : [];
   });
 
-  React.useEffect(() => {
+  // Persistir en localStorage (sin funciones)
+  useEffect(() => {
     if (!keyTasks) return;
-    // guardamos sin la función para evitar corrupción
     const toSave = tasks.map(({ icon, ...rest }) => rest);
     localStorage.setItem(keyTasks, JSON.stringify(toSave));
   }, [tasks, keyTasks]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!keyClaim) return;
     localStorage.setItem(keyClaim, JSON.stringify(claimedRewards));
   }, [claimedRewards, keyClaim]);
 
-  const handleClaimReward = (taskId) => {
-    playSound('success');
-    const task = tasks.find(t => t.id === taskId);
-    if (task && !task.completed) {
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, completed: true } : t));
-      setClaimedRewards(prev => [...prev, { id: task.id, title: task.title, reward: task.reward, claimedAt: new Date().toISOString() }]);
-      toast({ title: '¡Recompensa Reclamada!', description: `Has reclamado "${task.reward}" por completar "${task.title}".` });
-    } else {
-      toast({ title: 'Tarea ya completada', description: `Ya has reclamado la recompensa por "${task?.title || ''}".`, variant: 'destructive' });
+  // === Cargar cantidad de trades desde Supabase ===
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (!user?.id) return;
+      setLoadingTrades(true);
+      const { count, error } = await supabase
+        .from('trades')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', user.id);
+      if (!active) return;
+      if (error) {
+        console.error('[rewards] trades count error:', error);
+        setTradesCount(0);
+      } else {
+        setTradesCount(Number(count || 0));
+      }
+      setLoadingTrades(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
+
+  // === Derivar progreso/eligibilidad por tarea a partir de datos ===
+  const depositUsdTotal = useMemo(() => {
+    const toUsd = (amt, cur) => {
+      const c = String(cur || '').toUpperCase();
+      if (c === 'USDT' || c === 'USDC' || c === 'USD') return Number(amt) || 0;
+      if (c === 'BTC') return (Number(amt) || 0) * (Number(cryptoPrices?.BTC?.price || 0) || 0);
+      if (c === 'ETH') return (Number(amt) || 0) * (Number(cryptoPrices?.ETH?.price || 0) || 0);
+      return 0; // otras monedas no consideradas
+    };
+    const completedDeposits = (Array.isArray(transactions) ? transactions : []).filter(
+      (t) => (t?.type || '').toLowerCase() === 'deposit' && (t?.status || '').toLowerCase() === 'completed'
+    );
+    return completedDeposits.reduce((sum, t) => sum + toUsd(t.amount, t.currency), 0);
+  }, [transactions, cryptoPrices]);
+
+  const kycVerified = useMemo(() => {
+    // intentamos leer metadatos comunes
+    const meta = user?.user_metadata || {};
+    return Boolean(
+      meta.kyc === true ||
+        meta.kyc_verified === true ||
+        meta.isVerified === true ||
+        meta.verified === true
+    );
+  }, [user?.user_metadata]);
+
+  const activeInvestments = useMemo(
+    () => (Array.isArray(investments) ? investments : []).filter(
+      (i) => (i?.status || '').toLowerCase() === 'active'
+    ),
+    [investments]
+  );
+
+  const loyaltyDays = useMemo(() => {
+    // máximo daysElapsed en inversiones activas (mapeado por DataContext)
+    const days = activeInvestments.map((i) => Number(i?.daysElapsed || 0));
+    return days.length ? Math.max(...days) : 0;
+  }, [activeInvestments]);
+
+  const referralsCount = useMemo(
+    () => (Array.isArray(referrals) ? referrals.length : 0),
+    [referrals]
+  );
+
+  const eligibility = useMemo(() => {
+    const map = new Map();
+    for (const t of initialTasks) {
+      switch (t.key) {
+        case 'first_deposit': {
+          const progress = depositUsdTotal;
+          const pct = clamp((progress / t.goal) * 100);
+          map.set(t.id, { eligible: progress >= t.goal, progress, pct, hint: `Depositado: $${fmt(progress)} / $${fmt(t.goal, 0)}` });
+          break;
+        }
+        case 'first_investment': {
+          const count = activeInvestments.length || (Array.isArray(investments) ? investments.length : 0);
+          const pct = clamp((count / t.goal) * 100);
+          map.set(t.id, { eligible: count >= t.goal, progress: count, pct, hint: `Inversiones: ${count}/${t.goal}` });
+          break;
+        }
+        case 'kyc_verify': {
+          map.set(t.id, { eligible: kycVerified, progress: kycVerified ? 1 : 0, pct: kycVerified ? 100 : 0, hint: kycVerified ? 'KYC verificado' : 'KYC pendiente' });
+          break;
+        }
+        case 'refer_friend': {
+          const count = referralsCount;
+          const pct = clamp((count / t.goal) * 100);
+          map.set(t.id, { eligible: count >= t.goal, progress: count, pct, hint: `Referidos: ${count}/${t.goal}` });
+          break;
+        }
+        case 'ten_trades': {
+          const cnt = Number(tradesCount || 0);
+          const pct = clamp((cnt / t.goal) * 100);
+          map.set(t.id, { eligible: cnt >= t.goal, progress: cnt, pct, hint: `Trades: ${cnt}/${t.goal}` });
+          break;
+        }
+        case 'monthly_loyalty': {
+          const days = Number(loyaltyDays || 0);
+          const pct = clamp((days / t.goal) * 100);
+          map.set(t.id, { eligible: days >= t.goal, progress: days, pct, hint: `Días acumulados: ${days}/${t.goal}` });
+          break;
+        }
+        default:
+          map.set(t.id, { eligible: false, progress: 0, pct: 0, hint: '' });
+      }
     }
+    return map;
+  }, [depositUsdTotal, activeInvestments, investments, kycVerified, referralsCount, tradesCount, loyaltyDays]);
+
+  // === Estado de reclamo (completed = reclamado) ===
+  const isClaimed = (id) => claimedRewards.some((r) => r.id === id);
+
+  const handleClaimReward = (taskId) => {
+    const task = tasks.find((t) => t.id === taskId) || initialTasks.find((t) => t.id === taskId);
+    const info = eligibility.get(taskId);
+    if (!task) return;
+
+    // Solo permitir reclamo si es elegible y no fue reclamado
+    if (!info?.eligible) {
+      playSound?.('error');
+      toast({
+        title: 'Aún no disponible',
+        description: `Completá los requisitos primero. ${info?.hint ? `(${info.hint})` : ''}`,
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (isClaimed(taskId)) {
+      playSound?.('click');
+      toast({
+        title: 'Ya reclamado',
+        description: `Ya reclamaste la recompensa de "${task.title}".`,
+      });
+      return;
+    }
+
+    playSound?.('success');
+    setClaimedRewards((prev) => [
+      ...prev,
+      { id: task.id, title: task.title, reward: task.reward, claimedAt: new Date().toISOString() },
+    ]);
+
+    toast({
+      title: '¡Recompensa reclamada!',
+      description: `Obtuviste ${task.reward} por completar "${task.title}".`,
+    });
   };
 
-  const categories = [...new Set(tasks.map(task => task.category))];
+  const categories = useMemo(
+    () => [...new Set(tasks.map((t) => t.category))],
+    [tasks]
+  );
+
+  const overallPct = useMemo(() => {
+    // porcentaje de tareas elegibles vs. total (no confundir con "reclamadas")
+    const eligibleCount = tasks.filter((t) => eligibility.get(t.id)?.eligible).length;
+    return clamp((eligibleCount / tasks.length) * 100);
+  }, [tasks, eligibility]);
+
+  const claimedPct = useMemo(() => {
+    const pct = clamp((claimedRewards.length / tasks.length) * 100);
+    return pct;
+  }, [claimedRewards.length, tasks.length]);
 
   return (
     <>
       <div className="space-y-8">
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8 }}>
+        {/* Header + progreso global */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8 }}
+        >
           <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
             <Gift className="h-8 w-8 mr-3 text-yellow-400" />
             Centro de Recompensas
           </h1>
-          <p className="text-slate-300">Completa tareas y gana recompensas exclusivas para potenciar tus inversiones.</p>
+          <p className="text-slate-300">
+            Completá tareas y ganá recompensas para potenciar tus inversiones.
+          </p>
         </motion.div>
 
-        {categories.map(category => (
+        <Card className="crypto-card">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-white flex items-center gap-2">
+              <Gauge className="h-5 w-5 text-emerald-400" />
+              Progreso General
+            </CardTitle>
+            <CardDescription className="text-slate-300">
+              Verde: tareas reclamadas · Celeste: tareas listas para reclamar
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="w-full h-5 rounded-full bg-slate-800 overflow-hidden border border-slate-700">
+              <div className="flex h-full">
+                {/* barra reclamadas */}
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400"
+                  style={{ width: `${claimedPct}%` }}
+                  title={`Reclamadas: ${fmt(claimedPct, 0)}%`}
+                />
+                {/* barra elegibles pero no reclamadas */}
+                <div
+                  className="h-full bg-gradient-to-r from-sky-500 to-sky-400"
+                  style={{ width: `${Math.max(overallPct - claimedPct, 0)}%` }}
+                  title={`Listas para reclamar: ${fmt(Math.max(overallPct - claimedPct, 0), 0)}%`}
+                />
+              </div>
+            </div>
+            <div className="text-xs text-slate-400 flex items-center gap-2">
+              <Info className="w-4 h-4" />
+              {claimedRewards.length}/{tasks.length} reclamadas ·{' '}
+              {tasks.filter((t) => eligibility.get(t.id)?.eligible && !isClaimed(t.id)).length}/{tasks.length} listas para reclamar
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Grupos por categoría */}
+        {categories.map((category) => (
           <motion.div
             key={category}
             initial={{ opacity: 0, y: 20 }}
@@ -92,46 +386,120 @@ const RewardsPage = () => {
           >
             <h2 className="text-2xl font-semibold text-purple-300 mb-4 mt-6">{category}</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {tasks.filter(task => task.category === category).map((task) => {
-                const Icon = typeof task.icon === 'function' ? task.icon : Gift; // <- blindado
-                return (
-                  <Card key={task.id} className={`crypto-card h-full flex flex-col ${task.completed ? 'opacity-60 border-green-500' : 'border-purple-500'}`}>
-                    <CardHeader>
-                      <div className="flex items-center space-x-3 mb-2">
-                        <div className={`p-2 rounded-lg ${task.completed ? 'bg-green-500/20' : 'bg-purple-500/20'}`}>
-                          <Icon className={`h-6 w-6 ${task.completed ? 'text-green-400' : 'text-purple-400'}`} />
+              {tasks
+                .filter((task) => task.category === category)
+                .map((task) => {
+                  const Icon = typeof task.icon === 'function' ? task.icon : Gift;
+                  const info = eligibility.get(task.id) || { eligible: false, pct: 0, hint: '' };
+                  const claimed = isClaimed(task.id);
+                  const canClaim = info.eligible && !claimed;
+                  const busy = task.key === 'ten_trades' && loadingTrades;
+
+                  return (
+                    <Card
+                      key={task.id}
+                      className={`crypto-card h-full flex flex-col border ${
+                        claimed
+                          ? 'border-emerald-500/60'
+                          : canClaim
+                          ? 'border-sky-500/60'
+                          : 'border-purple-500/40'
+                      }`}
+                    >
+                      <CardHeader>
+                        <div className="flex items-center space-x-3 mb-2">
+                          <div
+                            className={`p-2 rounded-lg ${
+                              claimed ? 'bg-emerald-500/20' : canClaim ? 'bg-sky-500/20' : 'bg-purple-500/20'
+                            }`}
+                          >
+                            <Icon
+                              className={`h-6 w-6 ${
+                                claimed ? 'text-emerald-400' : canClaim ? 'text-sky-400' : 'text-purple-400'
+                              }`}
+                            />
+                          </div>
+                          <CardTitle className="text-lg text-white">{task.title}</CardTitle>
                         </div>
-                        <CardTitle className="text-lg text-white">{task.title}</CardTitle>
-                      </div>
-                      <CardDescription className="text-slate-300 text-sm h-12 overflow-hidden">{task.description}</CardDescription>
-                    </CardHeader>
-                    <CardContent className="flex-grow">
-                      <p className="text-green-400 font-semibold">Recompensa: {task.reward}</p>
-                    </CardContent>
-                    <CardFooter>
-                      <Button
-                        onClick={() => handleClaimReward(task.id)}
-                        disabled={task.completed}
-                        className={`w-full ${task.completed ? 'bg-green-700 hover:bg-green-800 cursor-not-allowed' : 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600'}`}
-                      >
-                        {task.completed ? <><CheckCircle className="mr-2 h-4 w-4" />Reclamado</> : 'Reclamar Recompensa'}
-                      </Button>
-                    </CardFooter>
-                  </Card>
-                );
-              })}
+                        <CardDescription className="text-slate-300 text-sm h-12 overflow-hidden">
+                          {task.description}
+                        </CardDescription>
+                      </CardHeader>
+
+                      {/* Barra de progreso por tarea */}
+                      <CardContent className="flex-grow space-y-3">
+                        <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                          <div
+                            className={`h-full ${
+                              claimed
+                                ? 'bg-emerald-500'
+                                : canClaim
+                                ? 'bg-sky-500'
+                                : 'bg-purple-500'
+                            }`}
+                            style={{ width: `${info.pct || 0}%` }}
+                          />
+                        </div>
+                        <div className="text-xs text-slate-400">{info.hint}</div>
+                        <p className="text-green-400 font-semibold">Recompensa: {task.reward}</p>
+                      </CardContent>
+
+                      <CardFooter className="flex gap-2">
+                        <Button
+                          onClick={() => handleClaimReward(task.id)}
+                          disabled={!canClaim || busy}
+                          className={`w-full ${
+                            claimed
+                              ? 'bg-green-700 hover:bg-green-800 cursor-not-allowed'
+                              : canClaim
+                              ? 'bg-gradient-to-r from-sky-500 to-emerald-500 hover:from-sky-600 hover:to-emerald-600'
+                              : 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600'
+                          }`}
+                        >
+                          {claimed ? (
+                            <>
+                              <CheckCircle className="mr-2 h-4 w-4" />
+                              Reclamado
+                            </>
+                          ) : canClaim ? (
+                            'Reclamar Recompensa'
+                          ) : busy ? (
+                            'Calculando…'
+                          ) : (
+                            'En progreso'
+                          )}
+                        </Button>
+
+                        {task.link && (
+                          <a href={task.link}>
+                            <Button variant="outline">Ir</Button>
+                          </a>
+                        )}
+                      </CardFooter>
+                    </Card>
+                  );
+                })}
             </div>
           </motion.div>
         ))}
 
         {claimedRewards.length > 0 && (
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.1 * categories.length }}>
-            <h2 className="text-2xl font-semibold text-green-300 mb-4 mt-8">Recompensas Reclamadas</h2>
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.1 * categories.length }}
+          >
+            <h2 className="text-2xl font-semibold text-green-300 mb-4 mt-8">
+              Recompensas Reclamadas
+            </h2>
             <Card className="crypto-card">
               <CardContent className="pt-6">
                 <ul className="space-y-3">
-                  {claimedRewards.map(reward => (
-                    <li key={reward.id} className="flex justify-between items-center p-3 bg-slate-800/50 rounded-md">
+                  {claimedRewards.map((reward) => (
+                    <li
+                      key={reward.id}
+                      className="flex justify-between items-center p-3 bg-slate-800/50 rounded-md"
+                    >
                       <div className="flex items-center">
                         <Gift className="h-5 w-5 mr-3 text-yellow-400" />
                         <div>
@@ -139,7 +507,9 @@ const RewardsPage = () => {
                           <p className="text-sm text-green-400">+{reward.reward}</p>
                         </div>
                       </div>
-                      <p className="text-xs text-slate-500">Reclamado: {new Date(reward.claimedAt).toLocaleDateString()}</p>
+                      <p className="text-xs text-slate-500">
+                        Reclamado: {new Date(reward.claimedAt).toLocaleDateString()}
+                      </p>
                     </li>
                   ))}
                 </ul>
@@ -150,6 +520,4 @@ const RewardsPage = () => {
       </div>
     </>
   );
-};
-
-export default RewardsPage;
+}

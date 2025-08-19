@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+// src/pages/InvestmentPlans.jsx
+import React, { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Wallet,
@@ -8,7 +9,8 @@ import {
   CheckCircle,
   Star,
   Zap,
-  ShoppingBag
+  ShoppingBag,
+  AlertTriangle,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -27,127 +29,175 @@ const fmt = (n, dec = 2) => {
 };
 
 export default function InvestmentPlans() {
-  const { investmentPlans: defaultPlans, cryptoPrices } = useData();
+  const {
+    investmentPlans: defaultPlans,
+    cryptoPrices = {},
+    addInvestment,
+    addTransaction,
+    refreshInvestments,
+    refreshTransactions,
+  } = useData();
+
   const { user, balances } = useAuth();
   const { playSound } = useSound();
 
   // agrego lista de monedas aceptadas por plan
-  const investmentPlans = (defaultPlans || []).map((plan) => ({
-    ...plan,
-    currencies: ['USDT', 'BTC', 'ETH'],
-  }));
+  const investmentPlans = useMemo(
+    () => (defaultPlans || []).map((plan) => ({ ...plan, currencies: ['USDT', 'BTC', 'ETH'] })),
+    [defaultPlans]
+  );
 
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
   const [selectedCurrency, setSelectedCurrency] = useState('USDT');
   const [isInvesting, setIsInvesting] = useState(false);
 
-  const calculateEquivalentValue = (amount, currency) => {
+  const usdBalance = Number(balances?.usdc ?? 0);
+
+  const getPrice = (symbol) => {
+    if (symbol === 'USDT' || symbol === 'USDC' || symbol === 'USD') return 1;
+    return Number(cryptoPrices?.[symbol]?.price ?? 0);
+  };
+
+  const toUsd = (amount, currency) => {
     const a = Number(amount || 0);
-    if (!a) return 0;
-    if (currency === 'USDT') return a;
-    const price = Number(cryptoPrices?.[currency]?.price ?? 0);
-    return price > 0 ? a * price : 0;
+    const p = getPrice(currency);
+    return p > 0 ? a * p : 0;
+  };
+
+  const fromUsd = (usd, currency) => {
+    const p = getPrice(currency);
+    if (currency === 'USDT') return usd;
+    return p > 0 ? usd / p : 0;
+  };
+
+  const amountUsd = toUsd(investmentAmount, selectedCurrency);
+
+  const handleQuickPct = (pct) => {
+    // Quick buttons usando saldo USD de la app
+    const usd = usdBalance * pct;
+    const inCurr = fromUsd(usd, selectedCurrency);
+    setInvestmentAmount(
+      selectedCurrency === 'USDT' ? fmt(inCurr, 2) : fmt(inCurr, 8)
+    );
+  };
+
+  const handleMin = () => {
+    if (!selectedPlan) return;
+    const inCurr = fromUsd(Number(selectedPlan.minAmount || 0), selectedCurrency);
+    setInvestmentAmount(selectedCurrency === 'USDT' ? fmt(inCurr, 2) : fmt(inCurr, 8));
+  };
+
+  const handleMax = () => {
+    if (!selectedPlan) return;
+    const maxUsd = Math.min(Number(selectedPlan.maxAmount || Infinity), usdBalance);
+    const inCurr = fromUsd(maxUsd, selectedCurrency);
+    setInvestmentAmount(selectedCurrency === 'USDT' ? fmt(inCurr, 2) : fmt(inCurr, 8));
   };
 
   const handleInvest = async () => {
     if (!user?.id) {
-      playSound('error');
-      toast({ title: 'Sin sesión', description: 'Inicia sesión para invertir.', variant: 'destructive' });
+      playSound?.('error');
+      toast({ title: 'Sin sesión', description: 'Iniciá sesión para invertir.', variant: 'destructive' });
       return;
     }
     if (!selectedPlan || !investmentAmount) {
-      playSound('error');
-      toast({
-        title: 'Error',
-        description: 'Selecciona un plan e ingresa un monto.',
-        variant: 'destructive',
-      });
+      playSound?.('error');
+      toast({ title: 'Error', description: 'Seleccioná un plan e ingresá un monto.', variant: 'destructive' });
       return;
     }
 
-    const amount = Number(investmentAmount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      playSound('error');
-      toast({ title: 'Monto inválido', description: 'Ingresa un monto válido.', variant: 'destructive' });
+    const amt = Number(investmentAmount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      playSound?.('error');
+      toast({ title: 'Monto inválido', description: 'Ingresá un monto válido.', variant: 'destructive' });
       return;
     }
 
-    let amountInUSD = amount;
-    if (selectedCurrency !== 'USDT') {
-      const price = Number(cryptoPrices?.[selectedCurrency]?.price ?? 0);
-      if (!price) {
-        playSound('error');
-        toast({
-          title: 'Error de Precio',
-          description: `No se pudo obtener el precio de ${selectedCurrency}.`,
-          variant: 'destructive',
-        });
-        return;
-      }
-      amountInUSD = amount * price;
+    const price = getPrice(selectedCurrency);
+    if (!price) {
+      playSound?.('error');
+      toast({ title: 'Precio no disponible', description: `No se pudo obtener el precio de ${selectedCurrency}.`, variant: 'destructive' });
+      return;
     }
 
+    const amountInUSD = amt * price;
     const min = Number(selectedPlan?.minAmount || 0);
     const max = Number(selectedPlan?.maxAmount || 0);
-    if (amountInUSD < min || (max > 0 && amountInUSD > max)) {
-      playSound('error');
+
+    if (amountInUSD < min || (Number.isFinite(max) && max > 0 && amountInUSD > max)) {
+      playSound?.('error');
       toast({
-        title: 'Monto inválido',
+        title: 'Monto fuera de rango',
         description: `El monto en USD ($${fmt(amountInUSD)}) debe estar entre $${fmt(min)} y $${fmt(max)}.`,
         variant: 'destructive',
       });
       return;
     }
 
-    const currentUsdc = Number(balances?.usdc ?? 0);
-    if (amountInUSD > currentUsdc) {
-      playSound('error');
+    if (amountInUSD > usdBalance) {
+      playSound?.('error');
       toast({
         title: 'Fondos insuficientes',
-        description: 'No tienes suficiente saldo en la app para esta inversión.',
+        description: 'No tenés suficiente saldo en la app para esta inversión.',
         variant: 'destructive',
       });
       return;
     }
 
     setIsInvesting(true);
-    playSound('invest');
+    playSound?.('invest');
 
     try {
-      // 1) Insertar inversión (ajusta columnas si tu tabla difiere)
-      const { error: invErr } = await supabase.from('investments').insert({
-        user_id: user.id,
-        plan_name: selectedPlan.name,
+      // 1) Crear inversión usando el DataContext (inserta en DB y mapea para la UI)
+      const inv = await addInvestment?.({
+        planName: selectedPlan.name,
         amount: amountInUSD,
-        daily_return: selectedPlan.dailyReturn,
+        dailyReturn: selectedPlan.dailyReturn,
         duration: selectedPlan.duration,
-        currency_input: selectedCurrency, // opcional: guarda en qué moneda invirtió
+        currency: selectedCurrency, // guarda en qué moneda el usuario ingresó
       });
-      if (invErr) throw invErr;
 
-      // 2) Actualizar balance USDC
-      const newUsdc = Math.max(0, currentUsdc - amountInUSD);
+      if (!inv) throw new Error('No se pudo crear la inversión');
+
+      // 2) Registrar el movimiento en el wallet (plan_purchase) para el historial
+      await addTransaction?.({
+        amount: amountInUSD,
+        type: 'plan_purchase',
+        currency: 'USDC', // la app descuenta USD del saldo interno
+        description: `Compra de ${selectedPlan.name} (${fmt(amt, selectedCurrency === 'USDT' ? 2 : 8)} ${selectedCurrency} ≈ $${fmt(amountInUSD)})`,
+        referenceType: 'investment',
+        referenceId: inv.id,
+        status: 'completed',
+      });
+
+      // 3) Descontar el saldo interno en la tabla balances (USDC)
       const { error: balErr } = await supabase
         .from('balances')
-        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
+        .update({ usdc: Math.max(0, usdBalance - amountInUSD), updated_at: new Date().toISOString() })
         .eq('user_id', user.id);
-      if (balErr) throw balErr;
+
+      if (balErr) {
+        // No frenamos la UX si falló, pero avisamos
+        console.error('[balances update] error:', balErr);
+      }
+
+      // 4) Refresh listas para reflejar en UI
+      await Promise.all([refreshInvestments?.(), refreshTransactions?.()]);
 
       toast({
         title: '¡Inversión exitosa!',
-        description: `Invertiste ${fmt(amount)} ${selectedCurrency} (≈ $${fmt(amountInUSD)}) en ${selectedPlan.name}.`,
+        description: `Invertiste ${fmt(amt, selectedCurrency === 'USDT' ? 2 : 8)} ${selectedCurrency} (≈ $${fmt(amountInUSD)}) en ${selectedPlan.name}.`,
       });
 
-      // reset modal
       setSelectedPlan(null);
       setInvestmentAmount('');
       setSelectedCurrency('USDT');
     } catch (error) {
       console.error('Error al invertir:', error?.message || error);
-      playSound('error');
+      playSound?.('error');
       toast({
-        title: 'Error de Inversión',
+        title: 'Error de inversión',
         description: 'Hubo un problema al procesar tu inversión.',
         variant: 'destructive',
       });
@@ -186,11 +236,18 @@ export default function InvestmentPlans() {
     }
   };
 
+  const minWarning =
+    selectedPlan && amountUsd > 0 && amountUsd < Number(selectedPlan.minAmount || 0);
+  const maxWarning =
+    selectedPlan &&
+    Number(selectedPlan.maxAmount || 0) > 0 &&
+    amountUsd > Number(selectedPlan.maxAmount);
+
   return (
     <div className="space-y-8">
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8 }}>
         <h1 className="text-3xl font-bold text-white mb-2">Planes de Inversión</h1>
-        <p className="text-slate-300">Elige el plan que mejor se adapte a tu perfil de inversor.</p>
+        <p className="text-slate-300">Elegí el plan que mejor se adapte a tu perfil de inversor.</p>
       </motion.div>
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.1 }}>
@@ -199,7 +256,7 @@ export default function InvestmentPlans() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-slate-400 text-sm font-medium">Saldo Disponible (App)</p>
-                <p className="text-3xl font-bold text-green-400 mt-1">${fmt(balances?.usdc ?? 0)}</p>
+                <p className="text-3xl font-bold text-green-400 mt-1">${fmt(usdBalance)}</p>
               </div>
               <div className="p-4 rounded-lg bg-green-500/10">
                 <Wallet className="h-8 w-8 text-green-400" />
@@ -226,7 +283,7 @@ export default function InvestmentPlans() {
                   isSelected ? 'ring-2 ring-green-400 scale-105' : 'hover:scale-105'
                 }`}
                 onClick={() => {
-                  playSound('click');
+                  playSound?.('click');
                   setSelectedPlan(plan);
                   setSelectedCurrency('USDT');
                   setInvestmentAmount('');
@@ -279,7 +336,7 @@ export default function InvestmentPlans() {
                   <Button
                     onClick={(e) => {
                       e.stopPropagation();
-                      playSound('click');
+                      playSound?.('click');
                       setSelectedPlan(plan);
                       setSelectedCurrency('USDT');
                       setInvestmentAmount('');
@@ -307,7 +364,7 @@ export default function InvestmentPlans() {
             <CardHeader className="text-center">
               <CardTitle className="text-white">Invertir en {selectedPlan.name}</CardTitle>
               <CardDescription className="text-slate-300">
-                Ingresa el monto en la moneda seleccionada.
+                Ingresá el monto en la moneda seleccionada.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -316,7 +373,7 @@ export default function InvestmentPlans() {
                 <Select
                   value={selectedCurrency}
                   onValueChange={(value) => {
-                    playSound('click');
+                    playSound?.('click');
                     setSelectedCurrency(value);
                   }}
                 >
@@ -346,11 +403,32 @@ export default function InvestmentPlans() {
                 />
                 {investmentAmount && (
                   <p className="text-xs text-slate-400">
-                    Equivalente a: ${fmt(calculateEquivalentValue(investmentAmount, selectedCurrency), 2)} USD
+                    Equivalente a: ${fmt(amountUsd, 2)} USD
                   </p>
                 )}
               </div>
 
+              {/* Quick actions */}
+              <div className="grid grid-cols-4 gap-2">
+                <Button type="button" variant="secondary" className="bg-slate-800 text-slate-200" onClick={() => handleQuickPct(0.25)}>
+                  25%
+                </Button>
+                <Button type="button" variant="secondary" className="bg-slate-800 text-slate-200" onClick={() => handleQuickPct(0.5)}>
+                  50%
+                </Button>
+                <Button type="button" variant="secondary" className="bg-slate-800 text-slate-200" onClick={() => handleQuickPct(0.75)}>
+                  75%
+                </Button>
+                <Button type="button" variant="secondary" className="bg-slate-800 text-slate-200" onClick={() => handleQuickPct(1)}>
+                  100%
+                </Button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Button type="button" variant="outline" onClick={handleMin}>Mínimo</Button>
+                <Button type="button" variant="outline" onClick={handleMax}>Máximo</Button>
+              </div>
+
+              {/* Resumen */}
               {investmentAmount && (
                 <div className="bg-slate-800/50 p-4 rounded-lg space-y-2 text-sm">
                   <div className="flex justify-between">
@@ -361,18 +439,14 @@ export default function InvestmentPlans() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-400">Equivalente USD:</span>
-                    <span className="text-white">
-                      ${fmt(calculateEquivalentValue(investmentAmount, selectedCurrency), 2)}
-                    </span>
+                    <span className="text-white">${fmt(amountUsd, 2)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-400">Retorno diario (USD):</span>
                     <span className="text-green-400">
                       $
                       {fmt(
-                        calculateEquivalentValue(investmentAmount, selectedCurrency) *
-                          Number(selectedPlan.dailyReturn || 0) /
-                          100,
+                        amountUsd * Number(selectedPlan.dailyReturn || 0) / 100,
                         2
                       )}
                     </span>
@@ -382,22 +456,47 @@ export default function InvestmentPlans() {
                     <span className="text-green-400 font-semibold">
                       $
                       {fmt(
-                        calculateEquivalentValue(investmentAmount, selectedCurrency) *
+                        amountUsd *
                           Number(selectedPlan.dailyReturn || 0) *
-                          Number(selectedPlan.duration || 0) /
-                          100,
+                          Number(selectedPlan.duration || 0) / 100,
                         2
                       )}
                     </span>
                   </div>
+
+                  {(minWarning || maxWarning) && (
+                    <div className="mt-2 flex items-start gap-2 text-amber-300">
+                      <AlertTriangle className="h-4 w-4 mt-0.5" />
+                      <span>
+                        El monto debe estar entre <b>${fmt(selectedPlan.minAmount)}</b> y{' '}
+                        <b>${fmt(selectedPlan.maxAmount)}</b> (equivalente en USD).
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
               <div className="flex space-x-4">
-                <Button onClick={() => { playSound('click'); setSelectedPlan(null); }} variant="outline" className="flex-1">
+                <Button
+                  onClick={() => {
+                    playSound?.('click');
+                    setSelectedPlan(null);
+                  }}
+                  variant="outline"
+                  className="flex-1"
+                >
                   Cancelar
                 </Button>
-                <Button onClick={handleInvest} disabled={isInvesting || !investmentAmount} className="flex-1 bg-gradient-to-r from-green-500 to-blue-500">
+                <Button
+                  onClick={handleInvest}
+                  disabled={
+                    isInvesting ||
+                    !investmentAmount ||
+                    getPrice(selectedCurrency) <= 0 ||
+                    amountUsd <= 0
+                  }
+                  className="flex-1 bg-gradient-to-r from-green-500 to-blue-500"
+                >
                   {isInvesting ? 'Procesando...' : 'Invertir Ahora'}
                 </Button>
               </div>
