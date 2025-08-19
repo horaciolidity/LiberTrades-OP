@@ -11,11 +11,12 @@ import {
   DollarSign,
   Copy,
   QrCode,
-  CreditCard,
   Info,
   CheckCircle2,
   Timer,
   AlertTriangle,
+  Upload,
+  Download,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
@@ -30,108 +31,67 @@ const fmt = (n, dec = 2) => {
 
 export default function DepositPage() {
   const { user, balances } = useAuth();
-  const { addTransaction, transactions = [], cryptoPrices = {} } = useData();
+  const { addTransaction, transactions = [] } = useData();
   const { playSound } = useSound();
 
-  const [depositMethod, setDepositMethod] = useState('crypto'); // 'crypto' | 'fiat'
-  const [cryptoCurrency, setCryptoCurrency] = useState('USDT');
-  const [network, setNetwork] = useState('ERC20'); // por defecto para USDT/ETH
-  const [fiatMethod, setFiatMethod] = useState('alias');
+  // ======= Estado general =======
+  const [tab, setTab] = useState('deposit'); // deposit | withdraw
+
+  // ======= DEPÓSITO (solo USDC) =======
+  const [network, setNetwork] = useState('ERC20'); // ERC20 | BEP20 | OPTIMISM
   const [amount, setAmount] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // ===== Direcciones configurables (placeholder) =====
-  // Podés reemplazarlas por las reales. Si una no aplica, dejála igual a la principal.
-  const cryptoAddressBook = {
-    USDT: {
-      ERC20: '0xUSDT_ERC20_DEPOSIT_ADDRESS_EXAMPLE',
-      TRC20: 'TRC20USDT_DEPOSIT_ADDRESS_EXAMPLE',
-      BEP20: '0xUSDT_BEP20_DEPOSIT_ADDRESS_EXAMPLE',
-    },
-    BTC: {
-      BTC: 'bc1qBTC_DEPOSIT_ADDRESS_EXAMPLE',
-    },
-    ETH: {
-      ERC20: '0xETH_DEPOSIT_ADDRESS_EXAMPLE',
-    },
-  };
+  // Dirección única provista (EVM – sirve para ERC20, BEP20, Optimism)
+  const MASTER_DEPOSIT_ADDRESS = '0xBAeaDE80A2A1064E4F8f372cd2ADA9a00daB4BBE';
 
-  const fiatAliases = {
-    ARS: 'ALIAS.CRYPTOINVEST.ARS',
-    BRL: 'ALIAS.CRYPTOINVEST.BRL',
-    COP: 'ALIAS.CRYPTOINVEST.COP',
-    MXN: 'ALIAS.CRYPTOINVEST.MXN',
-  };
-
-  // ===== Cálculos auxiliares =====
-  const MIN_DEPOSIT_USD = 10;
-
-  const address = useMemo(() => {
-    const book = cryptoAddressBook[cryptoCurrency] || {};
-    // si no existe la network actual, toma la primera disponible
-    if (!book[network]) {
-      const firstNet = Object.keys(book)[0];
-      return book[firstNet];
-    }
-    return book[network];
-  }, [cryptoCurrency, network]);
-
-  const priceUSDT = useMemo(() => {
-    // precios vienen de DataContext con pares *USDT* (BTCUSDT, ETHUSDT)
-    if (cryptoCurrency === 'USDT') return 1;
-    const p = Number(cryptoPrices?.[cryptoCurrency]?.price ?? 0);
-    return Number.isFinite(p) && p > 0 ? p : 0;
-  }, [cryptoPrices, cryptoCurrency]);
-
-  const estTokens = useMemo(() => {
-    const a = Number(amount);
-    if (!a || a <= 0) return 0;
-    if (cryptoCurrency === 'USDT') return a; // 1 USDT ~ 1 USD
-    if (!priceUSDT) return 0;
-    return a / priceUSDT;
-  }, [amount, priceUSDT, cryptoCurrency]);
-
+  // Stepper visual
   const step = useMemo(() => {
-    // stepper básico para sensación de progreso
-    if (depositMethod === 'fiat') {
-      return Number(amount) > 0 ? 4 : 3;
-    }
-    // crypto
-    if (!address) return 1;
+    if (!MASTER_DEPOSIT_ADDRESS) return 1;
     if (Number(amount) > 0) return 4;
     return 2;
-  }, [depositMethod, amount, address]);
+  }, [amount]);
 
-  // ===== Handlers =====
+  // ======= RETIRO (solo USDC) =======
+  const [wNetwork, setwNetwork] = useState('ERC20');
+  const [wAmount, setwAmount] = useState('');
+  const [wAddress, setwAddress] = useState('');
+  const [wBusy, setwBusy] = useState(false);
+
+  // ===== Handlers comunes =====
   const handleCopy = (text) => {
-    playSound('click');
+    if (!text) return;
+    playSound?.('click');
     navigator.clipboard.writeText(text);
     toast({ title: 'Copiado', description: `${text} copiado al portapapeles.` });
   };
 
   const handleQuickAmount = (v) => {
-    playSound('click');
+    playSound?.('click');
     setAmount(String(v));
   };
 
+  // ====== Enviar DEPÓSITO (pendiente) ======
+  const MIN_DEPOSIT_USD = 10;
+
   const handleDeposit = async () => {
     if (!user?.id) {
-      playSound('error');
+      playSound?.('error');
       toast({ title: 'No autenticado', description: 'Iniciá sesión para continuar.', variant: 'destructive' });
       return;
     }
 
     const depositAmount = Number(amount);
     if (!depositAmount || depositAmount <= 0) {
-      playSound('error');
+      playSound?.('error');
       toast({ title: 'Monto inválido', description: 'Ingresá un monto válido.', variant: 'destructive' });
       return;
     }
     if (depositAmount < MIN_DEPOSIT_USD) {
-      playSound('error');
+      playSound?.('error');
       toast({
         title: 'Monto mínimo',
-        description: `El depósito mínimo es de ${MIN_DEPOSIT_USD} USD.`,
+        description: `El depósito mínimo es de ${MIN_DEPOSIT_USD} USDC.`,
         variant: 'destructive',
       });
       return;
@@ -139,26 +99,23 @@ export default function DepositPage() {
 
     setBusy(true);
     try {
-      const res = await addTransaction?.({
+      await addTransaction?.({
         type: 'deposit',
         amount: depositAmount,
-        currency: depositMethod === 'crypto' ? cryptoCurrency : 'USD',
-        description:
-          depositMethod === 'crypto'
-            ? `Depósito ${cryptoCurrency} (${network})`
-            : `Depósito vía ${fiatMethod}`,
+        currency: 'USDC',
+        description: `Depósito USDC (${network}) → ${MASTER_DEPOSIT_ADDRESS.slice(0, 6)}…${MASTER_DEPOSIT_ADDRESS.slice(-4)}`,
         status: 'pending',
       });
 
-      playSound('success');
+      playSound?.('success');
       toast({
         title: 'Solicitud enviada',
-        description: `Tu depósito de ${fmt(depositAmount, 2)} quedó pendiente de confirmación.`,
+        description: `Tu depósito de ${fmt(depositAmount, 2)} USDC quedó pendiente de confirmación.`,
       });
       setAmount('');
     } catch (err) {
       console.error('[deposit] error:', err);
-      playSound('error');
+      playSound?.('error');
       toast({
         title: 'Error',
         description: 'No se pudo registrar el depósito. Intentá nuevamente.',
@@ -169,12 +126,90 @@ export default function DepositPage() {
     }
   };
 
-  // ===== Últimos 5 depósitos =====
+  // ====== Enviar RETIRO (pendiente) ======
+  const MIN_WITHDRAW_USDC = 10;
+
+  const handleWithdraw = async () => {
+    if (!user?.id) {
+      playSound?.('error');
+      toast({ title: 'No autenticado', description: 'Iniciá sesión para continuar.', variant: 'destructive' });
+      return;
+    }
+
+    const amt = Number(wAmount);
+    if (!amt || amt <= 0) {
+      playSound?.('error');
+      toast({ title: 'Monto inválido', description: 'Ingresá un monto válido.', variant: 'destructive' });
+      return;
+    }
+    if (amt < MIN_WITHDRAW_USDC) {
+      playSound?.('error');
+      toast({
+        title: 'Monto mínimo',
+        description: `El retiro mínimo es de ${MIN_WITHDRAW_USDC} USDC.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!wAddress || !/^0x[a-fA-F0-9]{40}$/.test(wAddress.trim())) {
+      playSound?.('error');
+      toast({
+        title: 'Dirección inválida',
+        description: 'Ingresá una dirección EVM válida (0x...).',
+        variant: 'destructive',
+      });
+      return;
+    }
+    const currentUsdc = Number(balances?.usdc ?? 0);
+    if (amt > currentUsdc) {
+      playSound?.('error');
+      toast({
+        title: 'Saldo insuficiente',
+        description: 'No tenés suficiente USDC para este retiro.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setwBusy(true);
+    try {
+      await addTransaction?.({
+        type: 'withdrawal',
+        amount: amt,
+        currency: 'USDC',
+        description: `Retiro USDC (${wNetwork}) → ${wAddress.slice(0, 6)}…${wAddress.slice(-4)}`,
+        status: 'pending',
+      });
+
+      playSound?.('success');
+      toast({
+        title: 'Retiro solicitado',
+        description: `Tu retiro de ${fmt(amt, 2)} USDC quedó pendiente de aprobación.`,
+      });
+      setwAmount('');
+      setwAddress('');
+    } catch (err) {
+      console.error('[withdraw] error:', err);
+      playSound?.('error');
+      toast({
+        title: 'Error',
+        description: 'No se pudo registrar el retiro. Intentá nuevamente.',
+        variant: 'destructive',
+      });
+    } finally {
+      setwBusy(false);
+    }
+  };
+
+  // ===== Últimos movimientos =====
   const lastDeposits = useMemo(() => {
     const list = Array.isArray(transactions) ? transactions : [];
-    return list
-      .filter((t) => (t?.type || '').toLowerCase() === 'deposit')
-      .slice(0, 5);
+    return list.filter((t) => (t?.type || '').toLowerCase() === 'deposit').slice(0, 5);
+  }, [transactions]);
+
+  const lastWithdrawals = useMemo(() => {
+    const list = Array.isArray(transactions) ? transactions : [];
+    return list.filter((t) => (t?.type || '').toLowerCase() === 'withdrawal').slice(0, 5);
   }, [transactions]);
 
   return (
@@ -185,350 +220,353 @@ export default function DepositPage() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
       >
-        <h1 className="text-3xl font-bold text-white mb-2">Realizar Depósito</h1>
-        <p className="text-slate-300">Recargá tu saldo para comenzar a invertir.</p>
-        <div className="text-slate-400 mt-2 space-x-3">
-          <span>
-            Saldo USDC:{' '}
-            <span className="text-green-400 font-semibold">
-              ${fmt(balances?.usdc ?? 0, 2)}
-            </span>
-          </span>
-          <span className="hidden sm:inline">•</span>
-          <span>
-            Saldo USDT:{' '}
-            <span className="text-teal-400 font-semibold">
-              ${fmt(balances?.usdt ?? 0, 2)}
-            </span>
+        <h1 className="text-3xl font-bold text-white mb-2">Depósitos y Retiros</h1>
+        <p className="text-slate-300">Gestioná fondos en tu cuenta usando USDC.</p>
+        <div className="text-slate-400 mt-2">
+          Saldo USDC:{' '}
+          <span className="text-green-400 font-semibold">
+            ${fmt(balances?.usdc ?? 0, 2)}
           </span>
         </div>
       </motion.div>
 
-      <Card className="crypto-card">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-white flex items-center">
-            <DollarSign className="h-6 w-6 mr-2 text-green-400" />
-            Seleccioná el método
-          </CardTitle>
-          <CardDescription className="text-slate-300">
-            Podés depositar con criptomonedas o dinero fiat.
-          </CardDescription>
-        </CardHeader>
+      <Tabs value={tab} onValueChange={setTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-2 bg-slate-800">
+          <TabsTrigger value="deposit" className="text-white">
+            <Download className="h-4 w-4 mr-2" /> Depositar
+          </TabsTrigger>
+          <TabsTrigger value="withdraw" className="text-white">
+            <Upload className="h-4 w-4 mr-2" /> Retirar
+          </TabsTrigger>
+        </TabsList>
 
-        <CardContent className="space-y-6">
-          {/* Stepper (sensación de progreso) */}
-          <div className="grid grid-cols-4 gap-3 text-xs">
-            {[
-              ['1', 'Elegir método'],
-              ['2', 'Copiar dirección / Alias'],
-              ['3', 'Enviar fondos'],
-              ['4', 'Notificar depósito'],
-            ].map(([num, label], i) => {
-              const idx = i + 1;
-              const active = step >= idx;
-              return (
-                <div key={num} className={`rounded-xl p-2 border ${active ? 'border-emerald-500/60 bg-emerald-500/10' : 'border-slate-700 bg-slate-800/40'}`}>
-                  <div className="flex items-center gap-2 text-slate-200">
-                    {active ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <Timer className="w-4 h-4 text-slate-500" />}
-                    <span className="font-semibold">{num}</span> {label}
+        {/* ===================== DEPÓSITO ===================== */}
+        <TabsContent value="deposit">
+          <Card className="crypto-card mt-6">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-white flex items-center">
+                <DollarSign className="h-6 w-6 mr-2 text-green-400" />
+                Depositar USDC
+              </CardTitle>
+              <CardDescription className="text-slate-300">
+                Enviá USDC a nuestra dirección y notificá tu depósito. Quedará <b>pendiente</b> hasta su acreditación.
+              </CardDescription>
+            </CardHeader>
+
+            <CardContent className="space-y-6">
+              {/* Stepper */}
+              <div className="grid grid-cols-4 gap-3 text-xs">
+                {[
+                  ['1', 'Elegir red'],
+                  ['2', 'Copiar dirección'],
+                  ['3', 'Enviar fondos'],
+                  ['4', 'Notificar depósito'],
+                ].map(([num, label], i) => {
+                  const idx = i + 1;
+                  const active = step >= idx;
+                  return (
+                    <div key={num} className={`rounded-xl p-2 border ${active ? 'border-emerald-500/60 bg-emerald-500/10' : 'border-slate-700 bg-slate-800/40'}`}>
+                      <div className="flex items-center gap-2 text-slate-200">
+                        {active ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <Timer className="w-4 h-4 text-slate-500" />}
+                        <span className="font-semibold">{num}</span> {label}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Red */}
+                <div className="space-y-2">
+                  <Label className="text-white">Red</Label>
+                  <Select value={network} onValueChange={setNetwork}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      <SelectItem value="ERC20">ERC20 (Ethereum)</SelectItem>
+                      <SelectItem value="BEP20">BEP20 (BNB Smart Chain)</SelectItem>
+                      <SelectItem value="OPTIMISM">Optimism (OP Mainnet)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Dirección + copiar */}
+                <div className="space-y-2">
+                  <Label className="text-white">Dirección de depósito (USDC · {network})</Label>
+                  <div className="flex items-center space-x-2">
+                    <Input
+                      readOnly
+                      value={MASTER_DEPOSIT_ADDRESS}
+                      className="bg-slate-700 border-slate-600 text-slate-300"
+                    />
+                    <Button variant="outline" size="icon" onClick={() => handleCopy(MASTER_DEPOSIT_ADDRESS)}>
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => {
+                        playSound?.('click');
+                        toast({
+                          title: 'QR',
+                          description: 'Pegá la dirección en tu billetera para generar el QR automáticamente.',
+                        });
+                      }}
+                    >
+                      <QrCode className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              </div>
 
-          <Tabs defaultValue="crypto" onValueChange={(v) => setDepositMethod(v)} className="w-full">
-            <TabsList className="grid w-full grid-cols-2 bg-slate-800">
-              <TabsTrigger value="crypto" className="text-white">Criptomonedas</TabsTrigger>
-              <TabsTrigger value="fiat" className="text-white">Dinero Fiat</TabsTrigger>
-            </TabsList>
+              {/* Monto */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="amount" className="text-white">Monto a depositar (USDC)</Label>
+                  <Input
+                    id="amount"
+                    type="number"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder="Ej: 100"
+                    className="bg-slate-800 border-slate-600 text-white"
+                    min="0"
+                    step="0.01"
+                  />
+                  <div className="flex gap-2">
+                    {[50, 100, 250, 500].map((v) => (
+                      <Button key={v} variant="secondary" size="xs" onClick={() => handleQuickAmount(v)}>
+                        {v}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
 
-            {/* ===== Crypto ===== */}
-            <TabsContent value="crypto" className="mt-6">
-              <Card className="bg-slate-800/50 border-slate-700">
-                <CardHeader>
-                  <CardTitle className="text-white">Depositar con Criptomonedas</CardTitle>
-                  <CardDescription className="text-slate-300">
-                    Enviá la criptomoneda seleccionada a la dirección indicada.
-                  </CardDescription>
-                </CardHeader>
+                <div className="bg-slate-900/50 border border-slate-700 rounded-lg p-3">
+                  <div className="text-slate-400 text-xs">Moneda</div>
+                  <div className="text-white font-semibold text-lg">USDC (≈ 1.00 USD)</div>
+                  <div className="text-slate-500 text-xs mt-1">Stablecoin soportada.</div>
+                </div>
 
-                <CardContent className="space-y-4">
-                  {/* Moneda */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label className="text-white">Criptomoneda</Label>
-                      <Select value={cryptoCurrency} onValueChange={(v) => {
-                        setCryptoCurrency(v);
-                        // ajustar network por defecto según moneda
-                        if (v === 'BTC') setNetwork('BTC');
-                        if (v === 'ETH') setNetwork('ERC20');
-                        if (v === 'USDT') setNetwork('ERC20');
-                      }}>
-                        <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-slate-700 border-slate-600">
-                          <SelectItem value="USDT">USDT (Tether)</SelectItem>
-                          <SelectItem value="BTC">BTC (Bitcoin)</SelectItem>
-                          <SelectItem value="ETH">ETH (Ethereum)</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
+                <div className="bg-slate-900/50 border border-slate-700 rounded-lg p-3">
+                  <div className="text-slate-400 text-xs">Vas a enviar</div>
+                  <div className="text-emerald-300 font-semibold text-lg">
+                    {fmt(Number(amount || 0), 2)} USDC
+                  </div>
+                  <div className="text-slate-500 text-xs mt-1">Sin contar fees de red.</div>
+                </div>
+              </div>
 
-                    {/* Red */}
-                    <div className="space-y-2">
-                      <Label className="text-white">Red</Label>
-                      <Select value={network} onValueChange={setNetwork}>
-                        <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-slate-700 border-slate-600">
-                          {cryptoCurrency === 'USDT' && (
-                            <>
-                              <SelectItem value="ERC20">ERC20 (Ethereum)</SelectItem>
-                              <SelectItem value="TRC20">TRC20 (Tron)</SelectItem>
-                              <SelectItem value="BEP20">BEP20 (BSC)</SelectItem>
-                            </>
+              {/* Aviso */}
+              <div className="flex items-start space-x-2 p-3 bg-blue-900/30 rounded-lg border border-blue-700">
+                <Info className="h-5 w-5 text-blue-400 mt-1 shrink-0" />
+                <p className="text-sm text-blue-300">
+                  Enviá <b>USDC</b> únicamente a esta dirección en la red seleccionada ({network}). Enviar activos o redes incorrectas puede resultar en pérdida de fondos.
+                </p>
+              </div>
+
+              <Button
+                onClick={handleDeposit}
+                disabled={busy}
+                className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 disabled:opacity-60"
+              >
+                {busy ? 'Enviando...' : 'Notificar Depósito'}
+              </Button>
+              <p className="text-xs text-center text-slate-400">
+                Al hacer clic, tu transacción quedará <b>pendiente</b> de confirmación por nuestro equipo.
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Últimos depósitos */}
+          <Card className="crypto-card mt-6">
+            <CardHeader>
+              <CardTitle className="text-white">Tus últimos depósitos</CardTitle>
+              <CardDescription className="text-slate-300">
+                Resumen de solicitudes recientes. <Link to="/history" className="text-emerald-400 underline">Ver historial completo</Link>
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {lastDeposits.length ? (
+                <div className="space-y-3">
+                  {lastDeposits.map((t) => {
+                    const dt = new Date(t.createdAt || t.created_at || Date.now());
+                    const s = (t.status || '').toLowerCase();
+                    const isPending = s === 'pending';
+                    const isCompleted = s === 'completed';
+                    const isFailed = s === 'failed' || s === 'cancelled';
+                    return (
+                      <div key={t.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                        <div className="flex items-center gap-3">
+                          {isCompleted ? (
+                            <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                          ) : isFailed ? (
+                            <AlertTriangle className="w-5 h-5 text-rose-400" />
+                          ) : (
+                            <Timer className="w-5 h-5 text-amber-400" />
                           )}
-                          {cryptoCurrency === 'BTC' && <SelectItem value="BTC">Bitcoin</SelectItem>}
-                          {cryptoCurrency === 'ETH' && <SelectItem value="ERC20">ERC20 (Ethereum)</SelectItem>}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  {/* Dirección + copiar */}
-                  <div className="space-y-2">
-                    <Label className="text-white">Dirección de depósito ({cryptoCurrency} · {network})</Label>
-                    <div className="flex items-center space-x-2">
-                      <Input readOnly value={address || ''} className="bg-slate-700 border-slate-600 text-slate-300" />
-                      <Button variant="outline" size="icon" onClick={() => handleCopy(address || '')}>
-                        <Copy className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => {
-                          playSound('click');
-                          toast({
-                            title: 'QR',
-                            description: 'Podés usar esta dirección en tu billetera para generar el QR automáticamente.',
-                          });
-                        }}
-                      >
-                        <QrCode className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Estimación en tokens */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="amount" className="text-white">Monto a depositar (USD)</Label>
-                      <Input
-                        id="amount"
-                        type="number"
-                        value={amount}
-                        onChange={(e) => setAmount(e.target.value)}
-                        placeholder="Ej: 100"
-                        className="bg-slate-800 border-slate-600 text-white"
-                        min="0"
-                        step="0.01"
-                      />
-                      <div className="flex gap-2">
-                        {[50, 100, 250, 500].map((v) => (
-                          <Button key={v} variant="secondary" size="xs" onClick={() => handleQuickAmount(v)}>
-                            {v}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="bg-slate-900/50 border border-slate-700 rounded-lg p-3">
-                      <div className="text-slate-400 text-xs">Precio {cryptoCurrency}</div>
-                      <div className="text-white font-semibold text-lg">
-                        {cryptoCurrency === 'USDT' ? '≈ 1.00 USDT' : (priceUSDT ? `≈ ${fmt(priceUSDT, 2)} USDT` : '—')}
-                      </div>
-                      <div className="text-slate-500 text-xs mt-1">
-                        Fuente: stream en tiempo real.
-                      </div>
-                    </div>
-
-                    <div className="bg-slate-900/50 border border-slate-700 rounded-lg p-3">
-                      <div className="text-slate-400 text-xs">Vas a enviar aprox.</div>
-                      <div className="text-emerald-300 font-semibold text-lg">
-                        {fmt(estTokens, cryptoCurrency === 'BTC' ? 6 : cryptoCurrency === 'ETH' ? 6 : 2)} {cryptoCurrency}
-                      </div>
-                      <div className="text-slate-500 text-xs mt-1">Sin contar fees de red.</div>
-                    </div>
-                  </div>
-
-                  {/* Avisos */}
-                  <div className="flex items-start space-x-2 p-3 bg-blue-900/30 rounded-lg border border-blue-700">
-                    <Info className="h-5 w-5 text-blue-400 mt-1 shrink-0" />
-                    <p className="text-sm text-blue-300">
-                      Enviá <b>{cryptoCurrency}</b> en la red <b>{network}</b> únicamente a esta dirección.
-                      Enviar otra moneda/red puede resultar en pérdida del depósito. Las confirmaciones pueden demorar.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* ===== Fiat ===== */}
-            <TabsContent value="fiat" className="mt-6">
-              <Card className="bg-slate-800/50 border-slate-700">
-                <CardHeader>
-                  <CardTitle className="text-white">Depositar con Dinero Fiat</CardTitle>
-                  <CardDescription className="text-slate-300">
-                    Transferí al alias de tu país y notificá el depósito.
-                  </CardDescription>
-                </CardHeader>
-
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label className="text-white">Método de pago</Label>
-                    <Select value={fiatMethod} onValueChange={setFiatMethod}>
-                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600">
-                        <SelectItem value="alias">Transferencia con Alias (ARS, BRL, COP, MXN)</SelectItem>
-                        <SelectItem value="card" disabled>Tarjeta (Próximamente)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {fiatMethod === 'alias' && (
-                    <div className="space-y-3">
-                      <div className="space-y-2">
-                        <Label className="text-white">Alias de envío</Label>
-                        <Select
-                          onValueChange={(value) => {
-                            playSound('click');
-                            const alias = fiatAliases[value];
-                            handleCopy(alias);
-                            toast({ title: 'Alias Copiado', description: `Alias para ${value}: ${alias}` });
-                          }}
-                        >
-                          <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
-                            <SelectValue placeholder="Seleccioná tu país para ver el alias" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-700 border-slate-600">
-                            {Object.entries(fiatAliases).map(([country, alias]) => (
-                              <SelectItem key={country} value={country}>
-                                {country} — {alias}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="flex items-start space-x-2 p-3 bg-yellow-900/30 rounded-lg border border-yellow-700">
-                        <AlertTriangle className="h-5 w-5 text-yellow-400 mt-1 shrink-0" />
-                        <p className="text-sm text-yellow-300">
-                          Trasferí al alias correspondiente y luego notificá el depósito.
-                          La acreditación puede demorar hasta 24 hs.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {fiatMethod === 'card' && (
-                    <div className="flex items-center justify-center p-4 bg-slate-700 rounded-lg">
-                      <CreditCard className="h-6 w-6 mr-2 text-slate-300" />
-                      <p className="text-slate-300">Pagos con tarjeta estarán disponibles pronto.</p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
-
-          {/* Monto + CTA */}
-          <div className="space-y-2 pt-2">
-            <Label htmlFor="amount2" className="text-white">Monto del Depósito (USD)</Label>
-            <Input
-              id="amount2"
-              type="number"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="Ej: 100"
-              className="bg-slate-800 border-slate-600 text-white"
-              min="0"
-              step="0.01"
-            />
-          </div>
-
-          <Button
-            onClick={handleDeposit}
-            disabled={busy}
-            className="w-full bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 disabled:opacity-60"
-          >
-            {busy ? 'Enviando...' : 'Notificar Depósito'}
-          </Button>
-          <p className="text-xs text-center text-slate-400">
-            Al hacer clic, tu transacción quedará <b>pendiente</b> de confirmación por nuestro equipo.
-          </p>
-        </CardContent>
-      </Card>
-
-      {/* ===== Últimos depósitos del usuario ===== */}
-      <Card className="crypto-card">
-        <CardHeader>
-          <CardTitle className="text-white">Tus últimos depósitos</CardTitle>
-          <CardDescription className="text-slate-300">
-            Un resumen rápido de tus solicitudes recientes. <Link to="/history" className="text-emerald-400 underline">Ver historial completo</Link>
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {lastDeposits.length ? (
-            <div className="space-y-3">
-              {lastDeposits.map((t) => {
-                const dt = new Date(t.createdAt || t.created_at || Date.now());
-                const isPending = (t.status || '').toLowerCase() === 'pending';
-                const isCompleted = (t.status || '').toLowerCase() === 'completed';
-                const isFailed = (t.status || '').toLowerCase() === 'failed' || (t.status || '').toLowerCase() === 'cancelled';
-                return (
-                  <div
-                    key={t.id}
-                    className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-slate-700"
-                  >
-                    <div className="flex items-center gap-3">
-                      {isCompleted ? (
-                        <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                      ) : isFailed ? (
-                        <AlertTriangle className="w-5 h-5 text-rose-400" />
-                      ) : (
-                        <Timer className="w-5 h-5 text-amber-400" />
-                      )}
-                      <div>
-                        <div className="text-slate-200 text-sm">
-                          {String(t.currency || '').toUpperCase()} • {t.description || 'Depósito'}
+                          <div>
+                            <div className="text-slate-200 text-sm">
+                              USDC • {t.description || 'Depósito'}
+                            </div>
+                            <div className="text-slate-500 text-xs">{dt.toLocaleString()}</div>
+                          </div>
                         </div>
-                        <div className="text-slate-500 text-xs">
-                          {dt.toLocaleString()}
+                        <div className="text-right">
+                          <div className="text-white font-semibold">+{fmt(t.amount, 2)} USDC</div>
+                          <div className={`text-xs ${isCompleted ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400'}`}>
+                            {t.status}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-white font-semibold">+{fmt(t.amount, 2)} {String(t.currency || '').toUpperCase()}</div>
-                      <div className={`text-xs ${isCompleted ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400'}`}>
-                        {t.status}
-                      </div>
-                    </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-slate-400 text-sm">Aún no registraste depósitos.</div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ===================== RETIRO ===================== */}
+        <TabsContent value="withdraw">
+          <Card className="crypto-card mt-6">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-white">Solicitar Retiro (USDC)</CardTitle>
+              <CardDescription className="text-slate-300">
+                Enviá USDC a tu propia billetera. La solicitud quedará <b>pendiente</b> hasta su aprobación.
+              </CardDescription>
+            </CardHeader>
+
+            <CardContent className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-white">Red de retiro</Label>
+                  <Select value={wNetwork} onValueChange={setwNetwork}>
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      <SelectItem value="ERC20">ERC20 (Ethereum)</SelectItem>
+                      <SelectItem value="BEP20">BEP20 (BNB Smart Chain)</SelectItem>
+                      <SelectItem value="OPTIMISM">Optimism (OP Mainnet)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-white">Dirección de tu billetera (EVM)</Label>
+                  <Input
+                    value={wAddress}
+                    onChange={(e) => setwAddress(e.target.value)}
+                    placeholder="0x..."
+                    className="bg-slate-800 border-slate-600 text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-white">Monto a retirar (USDC)</Label>
+                  <Input
+                    type="number"
+                    value={wAmount}
+                    onChange={(e) => setwAmount(e.target.value)}
+                    placeholder="Ej: 100"
+                    className="bg-slate-800 border-slate-600 text-white"
+                    min="0"
+                    step="0.01"
+                  />
+                </div>
+
+                <div className="bg-slate-900/50 border border-slate-700 rounded-lg p-3">
+                  <div className="text-slate-400 text-xs">Disponible</div>
+                  <div className="text-white font-semibold text-lg">
+                    {fmt(balances?.usdc ?? 0, 2)} USDC
                   </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-slate-400 text-sm">
-              Aún no registraste depósitos.
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                </div>
+
+                <div className="bg-slate-900/50 border border-slate-700 rounded-lg p-3">
+                  <div className="text-slate-400 text-xs">A retirar</div>
+                  <div className="text-emerald-300 font-semibold text-lg">
+                    {fmt(Number(wAmount || 0), 2)} USDC
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-start space-x-2 p-3 bg-yellow-900/30 rounded-lg border border-yellow-700">
+                <AlertTriangle className="h-5 w-5 text-yellow-400 mt-1 shrink-0" />
+                <p className="text-sm text-yellow-300">
+                  Verificá la red y la dirección cuidadosamente. Los retiros, una vez aprobados y enviados on-chain, no pueden revertirse.
+                </p>
+              </div>
+
+              <Button
+                onClick={handleWithdraw}
+                disabled={wBusy}
+                className="w-full bg-gradient-to-r from-rose-500 to-orange-500 hover:from-rose-600 hover:to-orange-600 disabled:opacity-60"
+              >
+                {wBusy ? 'Enviando...' : 'Solicitar Retiro'}
+              </Button>
+              <p className="text-xs text-center text-slate-400">
+                La solicitud se registrará como <b>pendiente</b> hasta ser revisada por el equipo.
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Últimos retiros */}
+          <Card className="crypto-card mt-6">
+            <CardHeader>
+              <CardTitle className="text-white">Tus últimos retiros</CardTitle>
+              <CardDescription className="text-slate-300">
+                Estado de tus solicitudes de retiro. <Link to="/history" className="text-emerald-400 underline">Ver historial completo</Link>
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {lastWithdrawals.length ? (
+                <div className="space-y-3">
+                  {lastWithdrawals.map((t) => {
+                    const dt = new Date(t.createdAt || t.created_at || Date.now());
+                    const s = (t.status || '').toLowerCase();
+                    const isPending = s === 'pending';
+                    const isCompleted = s === 'completed';
+                    const isFailed = s === 'failed' || s === 'cancelled';
+                    return (
+                      <div key={t.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                        <div className="flex items-center gap-3">
+                          {isCompleted ? (
+                            <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                          ) : isFailed ? (
+                            <AlertTriangle className="w-5 h-5 text-rose-400" />
+                          ) : (
+                            <Timer className="w-5 h-5 text-amber-400" />
+                          )}
+                          <div>
+                            <div className="text-slate-200 text-sm">
+                              USDC • {t.description || 'Retiro'}
+                            </div>
+                            <div className="text-slate-500 text-xs">{dt.toLocaleString()}</div>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-white font-semibold">-{fmt(t.amount, 2)} USDC</div>
+                          <div className={`text-xs ${isCompleted ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400'}`}>
+                            {t.status}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-slate-400 text-sm">Aún no registraste retiros.</div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
