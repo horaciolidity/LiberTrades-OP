@@ -1,5 +1,5 @@
 // src/pages/InvestmentPlans.jsx
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Wallet,
@@ -11,6 +11,9 @@ import {
   Zap,
   ShoppingBag,
   AlertTriangle,
+  BarChart2,
+  LineChart as LineChartIcon,
+  Info,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -22,11 +25,34 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from '@/components/ui/use-toast';
 import { useSound } from '@/contexts/SoundContext';
 import { supabase } from '@/lib/supabaseClient';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  Legend,
+  ReferenceLine,
+} from 'recharts';
 
 const fmt = (n, dec = 2) => {
   const num = Number(n);
   return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
 };
+const daysBetween = (from, to) => {
+  const A = new Date(from);
+  const B = new Date(to);
+  return Math.max(0, Math.floor((B.getTime() - A.getTime()) / (1000 * 60 * 60 * 24)));
+};
+const addDays = (d, days) => {
+  const base = new Date(d);
+  base.setDate(base.getDate() + days);
+  return base;
+};
+const shortDate = (d) =>
+  new Date(d).toLocaleDateString(undefined, { month: 'short', day: '2-digit' });
 
 export default function InvestmentPlans() {
   const {
@@ -36,21 +62,42 @@ export default function InvestmentPlans() {
     addTransaction,
     refreshInvestments,
     refreshTransactions,
+    getInvestments,
   } = useData();
 
   const { user, balances } = useAuth();
   const { playSound } = useSound();
 
-  // agrego lista de monedas aceptadas por plan
+  // ================= Plans (catálogo) =================
   const investmentPlans = useMemo(
     () => (defaultPlans || []).map((plan) => ({ ...plan, currencies: ['USDT', 'BTC', 'ETH'] })),
     [defaultPlans]
   );
 
+  // ================= Mi portfolio (del usuario) =================
+  const [myInvestments, setMyInvestments] = useState([]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    // refresca y sincroniza con DataContext
+    (async () => {
+      await refreshInvestments?.();
+      const arr = (getInvestments?.() || []).filter(
+        (inv) => (inv.user_id ?? inv.userId) === user.id
+      );
+      setMyInvestments(arr);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // ================= Comprar plan (modal) =================
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
   const [selectedCurrency, setSelectedCurrency] = useState('USDT');
   const [isInvesting, setIsInvesting] = useState(false);
+
+  // ================= Detalle de progreso (modal) =================
+  const [inspectInvestment, setInspectInvestment] = useState(null);
 
   const usdBalance = Number(balances?.usdc ?? 0);
 
@@ -74,12 +121,9 @@ export default function InvestmentPlans() {
   const amountUsd = toUsd(investmentAmount, selectedCurrency);
 
   const handleQuickPct = (pct) => {
-    // Quick buttons usando saldo USD de la app
     const usd = usdBalance * pct;
     const inCurr = fromUsd(usd, selectedCurrency);
-    setInvestmentAmount(
-      selectedCurrency === 'USDT' ? fmt(inCurr, 2) : fmt(inCurr, 8)
-    );
+    setInvestmentAmount(selectedCurrency === 'USDT' ? fmt(inCurr, 2) : fmt(inCurr, 8));
   };
 
   const handleMin = () => {
@@ -117,7 +161,11 @@ export default function InvestmentPlans() {
     const price = getPrice(selectedCurrency);
     if (!price) {
       playSound?.('error');
-      toast({ title: 'Precio no disponible', description: `No se pudo obtener el precio de ${selectedCurrency}.`, variant: 'destructive' });
+      toast({
+        title: 'Precio no disponible',
+        description: `No se pudo obtener el precio de ${selectedCurrency}.`,
+        variant: 'destructive',
+      });
       return;
     }
 
@@ -149,45 +197,48 @@ export default function InvestmentPlans() {
     playSound?.('invest');
 
     try {
-      // 1) Crear inversión usando el DataContext (inserta en DB y mapea para la UI)
+      // 1) Crear inversión
       const inv = await addInvestment?.({
         planName: selectedPlan.name,
         amount: amountInUSD,
         dailyReturn: selectedPlan.dailyReturn,
         duration: selectedPlan.duration,
-        currency: selectedCurrency, // guarda en qué moneda el usuario ingresó
+        currency: selectedCurrency,
       });
-
       if (!inv) throw new Error('No se pudo crear la inversión');
 
-      // 2) Registrar el movimiento en el wallet (plan_purchase) para el historial
+      // 2) Registrar movimiento
       await addTransaction?.({
         amount: amountInUSD,
         type: 'plan_purchase',
-        currency: 'USDC', // la app descuenta USD del saldo interno
-        description: `Compra de ${selectedPlan.name} (${fmt(amt, selectedCurrency === 'USDT' ? 2 : 8)} ${selectedCurrency} ≈ $${fmt(amountInUSD)})`,
+        currency: 'USDC',
+        description: `Compra de ${selectedPlan.name} (${fmt(amt, selectedCurrency === 'USDT' ? 2 : 8)} ${selectedCurrency} ≈ $${fmt(
+          amountInUSD
+        )})`,
         referenceType: 'investment',
         referenceId: inv.id,
         status: 'completed',
       });
 
-      // 3) Descontar el saldo interno en la tabla balances (USDC)
+      // 3) Descontar saldo interno
       const { error: balErr } = await supabase
         .from('balances')
         .update({ usdc: Math.max(0, usdBalance - amountInUSD), updated_at: new Date().toISOString() })
         .eq('user_id', user.id);
+      if (balErr) console.error('[balances update] error:', balErr);
 
-      if (balErr) {
-        // No frenamos la UX si falló, pero avisamos
-        console.error('[balances update] error:', balErr);
-      }
-
-      // 4) Refresh listas para reflejar en UI
+      // 4) Refrescar UI + portfolio local
       await Promise.all([refreshInvestments?.(), refreshTransactions?.()]);
+      const arr = (getInvestments?.() || []).filter(
+        (it) => (it.user_id ?? it.userId) === user.id
+      );
+      setMyInvestments(arr);
 
       toast({
         title: '¡Inversión exitosa!',
-        description: `Invertiste ${fmt(amt, selectedCurrency === 'USDT' ? 2 : 8)} ${selectedCurrency} (≈ $${fmt(amountInUSD)}) en ${selectedPlan.name}.`,
+        description: `Invertiste ${fmt(amt, selectedCurrency === 'USDT' ? 2 : 8)} ${selectedCurrency} (≈ $${fmt(
+          amountInUSD
+        )}) en ${selectedPlan.name}.`,
       });
 
       setSelectedPlan(null);
@@ -236,12 +287,51 @@ export default function InvestmentPlans() {
     }
   };
 
-  const minWarning =
-    selectedPlan && amountUsd > 0 && amountUsd < Number(selectedPlan.minAmount || 0);
+  const minWarning = selectedPlan && amountUsd > 0 && amountUsd < Number(selectedPlan.minAmount || 0);
   const maxWarning =
-    selectedPlan &&
-    Number(selectedPlan.maxAmount || 0) > 0 &&
-    amountUsd > Number(selectedPlan.maxAmount);
+    selectedPlan && Number(selectedPlan.maxAmount || 0) > 0 && amountUsd > Number(selectedPlan.maxAmount);
+
+  // ================= Helpers de progreso para mis inversiones =================
+  const computeStats = (inv) => {
+    const amount = Number(inv?.amount ?? 0);
+    const dailyPct = Number(inv?.dailyReturn ?? inv?.daily_return ?? 0);
+    const duration = Number(inv?.duration ?? 0);
+    const created = inv?.createdAt ?? inv?.created_at ?? new Date().toISOString();
+    const elapsed = Math.min(daysBetween(created, Date.now()), duration);
+    const remaining = Math.max(0, duration - elapsed);
+    const dailyUsd = (amount * dailyPct) / 100;
+    const earnedUsd = dailyUsd * elapsed;
+    const projectedTotal = amount + dailyUsd * duration;
+    const progressPct = duration > 0 ? (elapsed / duration) * 100 : 0;
+
+    return {
+      amount,
+      dailyPct,
+      duration,
+      created,
+      elapsed,
+      remaining,
+      dailyUsd,
+      earnedUsd,
+      projectedTotal,
+      progressPct,
+      endDate: addDays(created, duration),
+    };
+  };
+
+  const buildSeries = (inv) => {
+    const s = computeStats(inv);
+    const out = [];
+    for (let i = 0; i <= s.duration; i++) {
+      out.push({
+        day: i,
+        date: shortDate(addDays(s.created, i)),
+        actual: s.amount + s.dailyUsd * Math.min(i, s.elapsed),
+        projected: s.amount + s.dailyUsd * i,
+      });
+    }
+    return out;
+  };
 
   return (
     <div className="space-y-8">
@@ -250,6 +340,7 @@ export default function InvestmentPlans() {
         <p className="text-slate-300">Elegí el plan que mejor se adapte a tu perfil de inversor.</p>
       </motion.div>
 
+      {/* Saldo */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.1 }}>
         <Card className="crypto-card">
           <CardContent className="p-6">
@@ -266,6 +357,7 @@ export default function InvestmentPlans() {
         </Card>
       </motion.div>
 
+      {/* Catálogo de planes */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {(investmentPlans || []).map((plan, index) => {
           const Icon = getPlanIcon(plan.name);
@@ -352,6 +444,118 @@ export default function InvestmentPlans() {
         })}
       </div>
 
+      {/* Mis Planes Activos (progreso y estadísticas) */}
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.25 }}>
+        <Card className="crypto-card">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center">
+              <BarChart2 className="h-5 w-5 mr-2 text-blue-400" />
+              Mis Planes Activos
+            </CardTitle>
+            <CardDescription className="text-slate-300">
+              Seguimiento en tiempo real de tus inversiones.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {myInvestments.length === 0 && (
+              <div className="text-slate-400 text-sm">Aún no tenés inversiones activas.</div>
+            )}
+
+            {myInvestments.map((inv) => {
+              const stats = computeStats(inv);
+              const pct = Math.min(100, Math.max(0, stats.progressPct));
+              const daysLabel = `${stats.elapsed}/${stats.duration} días`;
+              const Icon = getPlanIcon(inv.planName || inv.plan_name || 'Plan');
+
+              return (
+                <div
+                  key={inv.id}
+                  className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/60 hover:border-slate-600/80 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-slate-700/70 flex items-center justify-center">
+                        <Icon className="h-5 w-5 text-slate-200" />
+                      </div>
+                      <div>
+                        <div className="text-white font-semibold">
+                          {inv.planName || inv.plan_name || 'Plan'}
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          Inicio: {new Date(inv.createdAt ?? inv.created_at).toLocaleDateString()} •
+                          Fin: {new Date(stats.endDate).toLocaleDateString()}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      <div className="text-slate-400 text-xs">Invertido</div>
+                      <div className="text-white font-semibold">${fmt(stats.amount)}</div>
+                    </div>
+                  </div>
+
+                  {/* Barra de progreso */}
+                  <div className="mt-3">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-400">Progreso</span>
+                      <span className="text-slate-300">{daysLabel} • {fmt(pct, 1)}%</span>
+                    </div>
+                    <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+                      <div
+                        className="h-2 rounded-full bg-gradient-to-r from-green-500 to-blue-500"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* KPIs */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-3">
+                    <div>
+                      <div className="text-slate-400 text-xs">Ganado (acum.)</div>
+                      <div className="text-green-400 font-semibold">${fmt(stats.earnedUsd)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400 text-xs">Diario estimado</div>
+                      <div className="text-slate-200 font-semibold">${fmt(stats.dailyUsd)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400 text-xs">ROI a hoy</div>
+                      <div className="text-slate-200 font-semibold">
+                        {fmt((stats.earnedUsd / Math.max(1e-9, stats.amount)) * 100, 2)}%
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400 text-xs">Total proyectado</div>
+                      <div className="text-slate-200 font-semibold">${fmt(stats.projectedTotal)}</div>
+                    </div>
+                  </div>
+
+                  {/* Acciones */}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      variant="secondary"
+                      className="bg-slate-800 text-slate-200"
+                      onClick={() => {
+                        playSound?.('click');
+                        setInspectInvestment(inv);
+                      }}
+                    >
+                      <LineChartIcon className="h-4 w-4 mr-2" />
+                      Ver detalle
+                    </Button>
+                    <div className="flex items-center text-xs text-slate-400 gap-2">
+                      <Info className="h-4 w-4" />
+                      Rendimiento diario fijo de {fmt(stats.dailyPct, 2)}% sobre capital.
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* Modal de Compra */}
       {selectedPlan && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -363,9 +567,7 @@ export default function InvestmentPlans() {
           <Card className="crypto-card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
             <CardHeader className="text-center">
               <CardTitle className="text-white">Invertir en {selectedPlan.name}</CardTitle>
-              <CardDescription className="text-slate-300">
-                Ingresá el monto en la moneda seleccionada.
-              </CardDescription>
+              <CardDescription className="text-slate-300">Ingresá el monto en la moneda seleccionada.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="space-y-2">
@@ -396,16 +598,10 @@ export default function InvestmentPlans() {
                   type="number"
                   value={investmentAmount}
                   onChange={(e) => setInvestmentAmount(e.target.value)}
-                  placeholder={`Ej: ${
-                    selectedCurrency === 'USDT' ? '100' : selectedCurrency === 'BTC' ? '0.01' : '0.1'
-                  }`}
+                  placeholder={`Ej: ${selectedCurrency === 'USDT' ? '100' : selectedCurrency === 'BTC' ? '0.01' : '0.1'}`}
                   className="bg-slate-800 border-slate-600 text-white"
                 />
-                {investmentAmount && (
-                  <p className="text-xs text-slate-400">
-                    Equivalente a: ${fmt(amountUsd, 2)} USD
-                  </p>
-                )}
+                {investmentAmount && <p className="text-xs text-slate-400">Equivalente a: ${fmt(amountUsd, 2)} USD</p>}
               </div>
 
               {/* Quick actions */}
@@ -424,8 +620,12 @@ export default function InvestmentPlans() {
                 </Button>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <Button type="button" variant="outline" onClick={handleMin}>Mínimo</Button>
-                <Button type="button" variant="outline" onClick={handleMax}>Máximo</Button>
+                <Button type="button" variant="outline" onClick={handleMin}>
+                  Mínimo
+                </Button>
+                <Button type="button" variant="outline" onClick={handleMax}>
+                  Máximo
+                </Button>
               </div>
 
               {/* Resumen */}
@@ -433,9 +633,7 @@ export default function InvestmentPlans() {
                 <div className="bg-slate-800/50 p-4 rounded-lg space-y-2 text-sm">
                   <div className="flex justify-between">
                     <span className="text-slate-400">Inversión ({selectedCurrency}):</span>
-                    <span className="text-white">
-                      {fmt(investmentAmount, selectedCurrency === 'USDT' ? 2 : 8)}
-                    </span>
+                    <span className="text-white">{fmt(investmentAmount, selectedCurrency === 'USDT' ? 2 : 8)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-400">Equivalente USD:</span>
@@ -444,11 +642,7 @@ export default function InvestmentPlans() {
                   <div className="flex justify-between">
                     <span className="text-slate-400">Retorno diario (USD):</span>
                     <span className="text-green-400">
-                      $
-                      {fmt(
-                        amountUsd * Number(selectedPlan.dailyReturn || 0) / 100,
-                        2
-                      )}
+                      ${fmt((amountUsd * Number(selectedPlan.dailyReturn || 0)) / 100, 2)}
                     </span>
                   </div>
                   <div className="flex justify-between">
@@ -456,9 +650,8 @@ export default function InvestmentPlans() {
                     <span className="text-green-400 font-semibold">
                       $
                       {fmt(
-                        amountUsd *
-                          Number(selectedPlan.dailyReturn || 0) *
-                          Number(selectedPlan.duration || 0) / 100,
+                        (amountUsd * Number(selectedPlan.dailyReturn || 0) * Number(selectedPlan.duration || 0)) /
+                          100,
                         2
                       )}
                     </span>
@@ -489,12 +682,7 @@ export default function InvestmentPlans() {
                 </Button>
                 <Button
                   onClick={handleInvest}
-                  disabled={
-                    isInvesting ||
-                    !investmentAmount ||
-                    getPrice(selectedCurrency) <= 0 ||
-                    amountUsd <= 0
-                  }
+                  disabled={isInvesting || !investmentAmount || getPrice(selectedCurrency) <= 0 || amountUsd <= 0}
                   className="flex-1 bg-gradient-to-r from-green-500 to-blue-500"
                 >
                   {isInvesting ? 'Procesando...' : 'Invertir Ahora'}
@@ -504,6 +692,95 @@ export default function InvestmentPlans() {
           </Card>
         </motion.div>
       )}
+
+      {/* Modal Detalle del Plan (gráficos + estadísticas) */}
+      {inspectInvestment && (() => {
+        const s = computeStats(inspectInvestment);
+        const data = buildSeries(inspectInvestment);
+        const planTitle = inspectInvestment.planName || inspectInvestment.plan_name || 'Plan';
+
+        return (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+            className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={() => setInspectInvestment(null)}
+          >
+            <Card className="crypto-card w-full max-w-3xl" onClick={(e) => e.stopPropagation()}>
+              <CardHeader>
+                <CardTitle className="text-white flex items-center">
+                  <LineChartIcon className="h-5 w-5 mr-2 text-cyan-400" />
+                  Progreso de {planTitle}
+                </CardTitle>
+                <CardDescription className="text-slate-300">
+                  Inicio {new Date(s.created).toLocaleDateString()} • Fin {new Date(s.endDate).toLocaleDateString()} • {fmt(s.progressPct, 1)}% completado
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                {/* KPIs */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="p-3 bg-slate-800/50 rounded-md">
+                    <div className="text-xs text-slate-400">Capital</div>
+                    <div className="text-white font-semibold">${fmt(s.amount)}</div>
+                  </div>
+                  <div className="p-3 bg-slate-800/50 rounded-md">
+                    <div className="text-xs text-slate-400">Diario</div>
+                    <div className="text-slate-100 font-semibold">
+                      ${fmt(s.dailyUsd)} <span className="text-slate-400 text-xs">({fmt(s.dailyPct, 2)}%)</span>
+                    </div>
+                  </div>
+                  <div className="p-3 bg-slate-800/50 rounded-md">
+                    <div className="text-xs text-slate-400">Ganado</div>
+                    <div className="text-green-400 font-semibold">${fmt(s.earnedUsd)}</div>
+                  </div>
+                  <div className="p-3 bg-slate-800/50 rounded-md">
+                    <div className="text-xs text-slate-400">Proyectado</div>
+                    <div className="text-slate-100 font-semibold">${fmt(s.projectedTotal)}</div>
+                  </div>
+                </div>
+
+                {/* Gráfico */}
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="actual" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#22c55e" stopOpacity={0.8} />
+                          <stop offset="95%" stopColor="#22c55e" stopOpacity={0.05} />
+                        </linearGradient>
+                        <linearGradient id="proj" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.6} />
+                          <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.05} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="rgba(148,163,184,0.15)" />
+                      <XAxis dataKey="date" tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                      <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(v) => `$${fmt(v, 0)}`} />
+                      <Tooltip
+                        cursor={{ fill: 'rgba(100,116,139,0.1)' }}
+                        contentStyle={{ backgroundColor: 'rgba(30,41,59,0.95)', border: 'none', borderRadius: 8 }}
+                        labelStyle={{ color: '#cbd5e1' }}
+                        formatter={(val, name) => [`$${fmt(val)}`, name === 'actual' ? 'Valor actual' : 'Proyección']}
+                      />
+                      <Legend wrapperStyle={{ color: '#cbd5e1' }} />
+                      <ReferenceLine x={shortDate(Date.now())} stroke="#eab308" strokeDasharray="3 3" />
+                      <Area type="monotone" dataKey="actual" name="Valor actual" stroke="#22c55e" fill="url(#actual)" strokeWidth={2} />
+                      <Area type="monotone" dataKey="projected" name="Proyección" stroke="#3b82f6" fill="url(#proj)" strokeWidth={2} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="flex flex-wrap gap-2 justify-end">
+                  <Button variant="outline" onClick={() => setInspectInvestment(null)}>
+                    Cerrar
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        );
+      })()}
     </div>
   );
 }
