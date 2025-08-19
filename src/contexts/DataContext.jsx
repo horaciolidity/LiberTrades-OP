@@ -13,69 +13,108 @@ import { useAuth } from '@/contexts/AuthContext';
 
 const DataContext = createContext(null);
 
-// Utilidad
+// ---------- Utils ----------
 const ensureArray = (v) => (Array.isArray(v) ? v : []);
+const nowMs = () => Date.now();
 
-// ==== Config de cotizaciones reales (Binance) ====
-// Mapea símbolo interno -> par de Binance
-const ASSET_TO_SYMBOL = {
+// Fallback de pares conocidos (si el admin aún no los cargó)
+const DEFAULT_BINANCE_MAP = {
   BTC: 'BTCUSDT',
   ETH: 'ETHUSDT',
   BNB: 'BNBUSDT',
   ADA: 'ADAUSDT',
-  // Podés agregar más: SOL: 'SOLUSDT', etc.
 };
-const HISTORY_MAX = 600; // ~20 min si llega un tick cada 2s aprox.
-const TICK_MS = 10_000;  // cada 10s consolidamos y empujamos a history
 
-/**
- * DataProvider
- * - Lee: investments, wallet_transactions, referrals (profiles.referred_by), bot_activations
- * - Mercado configurable: market_instruments + market_rules (Supabase)
- * - Cotizaciones reales: WebSocket de Binance (@miniTicker) + fallback REST de arranque
- * - Aplica reglas a precios y expone cryptoPrices finales con history
- * - Métodos addInvestment / addTransaction / acciones de bots
- */
+// Historial y tick del consolidado
+const HISTORY_MAX = 600;     // puntos guardados por símbolo (~10 min a 1s)
+const TICK_MS = 1200;        // ~1.2s para fluidez visual
+
+// ---------- Reglas por hora UTC ----------
+const inWindowUTC = (hour, start, end) => {
+  // Ventana [start, end) con cruce de medianoche soportado
+  return (start < end && hour >= start && hour < end) ||
+         (start > end && (hour >= start || hour < end)) ||
+         (start === end); // si start==end => 24h
+};
+
+const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
+  if (!basePrice) return basePrice;
+  const hour = now.getUTCHours();
+  let price = basePrice;
+
+  for (const r of ensureArray(rules)) {
+    if (!r?.active) continue;
+    const sym = r.symbol || r.asset_symbol;
+    if (sym !== symbol) continue;
+
+    const sh = Number(r.start_hour ?? 0);
+    const eh = Number(r.end_hour ?? 0);
+    if (!inWindowUTC(hour, sh, eh)) continue;
+
+    const type = String(r.type || '').toLowerCase(); // 'percent' | 'abs'
+    const v = Number(r.value ?? 0);
+    if (type === 'percent') price *= (1 + v / 100);
+    else price += v;
+  }
+  return price;
+};
+
 export function DataProvider({ children }) {
   const { user } = useAuth();
 
-  // ======= Estado que la UI consume =======
-  const [investments, setInvestments] = useState([]);   // []
-  const [transactions, setTransactions] = useState([]); // []
-  const [referrals, setReferrals] = useState([]);       // []
+  // ---------- Estado negocio ----------
+  const [investments, setInvestments] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [referrals, setReferrals] = useState([]);
   const [botActivations, setBotActivations] = useState([]);
 
-  // ======= Mercado configurable =======
-  const [instruments, setInstruments] = useState([]); // market_instruments habilitados o todos (se usan todos para edición desde Admin)
-  const [marketRules, setMarketRules] = useState([]); // reglas activas
+  // ---------- Mercado (admin) ----------
+  /**
+   * market_instruments (ejemplo de columnas esperadas):
+   * - symbol (TEXT, PK lógica UX)
+   * - enabled (BOOL)
+   * - source ('binance' | 'simulated' | 'manual')
+   * - binance_symbol (TEXT)   // ej: 'SOLUSDT'
+   * - base_price (NUMERIC)    // si manual/simulated
+   * - decimals (INT)          // presentación
+   * - quote (TEXT)            // 'USDT' | 'USDC' (visual)
+   * - volatility_bps (INT)    // solo simulated: magnitud de variación por tick
+   */
+  const [instruments, setInstruments] = useState([]);
 
-  // ======= Precios (feed real + cálculo final con reglas) =======
-  // realQuotes: precios "reales" crudos (REST/WS) por símbolo simple (BTC, ETH, etc.)
+  /**
+   * market_rules (activas) — ejemplo de columnas:
+   * - symbol (TEXT)               // a qué asset aplica
+   * - active (BOOL)
+   * - type ('percent'|'abs')
+   * - value (NUMERIC)
+   * - start_hour (INT 0..23)
+   * - end_hour   (INT 0..23)
+   */
+  const [marketRules, setMarketRules] = useState([]);
+
+  // ---------- Precios ----------
+  // Último precio crudo (ya sea live, simulated o manual)
   const [realQuotes, setRealQuotes] = useState({
-    BTC: { price: 0, change: 0 },
-    ETH: { price: 0, change: 0 },
-    BNB: { price: 0, change: 0 },
-    ADA: { price: 0, change: 0 },
-    USDT: { price: 1.0, change: 0 }, // estable
+    USDT: { price: 1, change: 0 },
+    USDC: { price: 1, change: 0 },
   });
 
-  // priceHistories: diccionario de histories por símbolo
+  // Historial por símbolo
   const [priceHistories, setPriceHistories] = useState({
-    USDT: [{ time: Date.now(), value: 1 }],
+    USDT: [{ time: nowMs(), value: 1 }],
+    USDC: [{ time: nowMs(), value: 1 }],
   });
 
-  // cryptoPrices finales (lo que ve la UI)
-  const [cryptoPrices, setCryptoPrices] = useState({
-    BTC: { price: 0, change: 0, history: [] },
-    ETH: { price: 0, change: 0, history: [] },
-    USDT: { price: 1.0, change: 0, history: [{ time: Date.now(), value: 1 }] },
-    BNB: { price: 0, change: 0, history: [] },
-    ADA: { price: 0, change: 0, history: [] },
-  });
+  // Precios finales para la UI: {SYM: {price, change, history}}
+  const [cryptoPrices, setCryptoPrices] = useState({});
 
-  // ===========================
-  // Mercado: cargar instrumentos y reglas
-  // ===========================
+  // Refs
+  const wsRef = useRef(null);
+  const simIntervalsRef = useRef({});
+  const lastTickRef = useRef(0);
+
+  // ---------- Fetch + realtime instrumentos/reglas ----------
   const refreshMarketInstruments = async () => {
     const { data, error } = await supabase
       .from('market_instruments')
@@ -97,21 +136,12 @@ export function DataProvider({ children }) {
     await Promise.all([refreshMarketInstruments(), refreshMarketRules()]);
   };
 
-  // Suscripción en tiempo real (opcional, si no está habilitado en tu proyecto no rompe)
   useEffect(() => {
     forceRefreshMarket();
     const ch = supabase
       .channel('market_realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'market_instruments' },
-        () => refreshMarketInstruments()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'market_rules' },
-        () => refreshMarketRules()
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_instruments' }, () => refreshMarketInstruments())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_rules' }, () => refreshMarketRules())
       .subscribe();
     return () => {
       try { supabase.removeChannel(ch); } catch (_) {}
@@ -119,211 +149,216 @@ export function DataProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ===========================
-  // Feed real: REST init + WS
-  // ===========================
+  // ---------- Mapa dinámico a Binance (solo enabled & source=binance) ----------
+  const liveBinanceMap = useMemo(() => {
+    const map = { ...DEFAULT_BINANCE_MAP }; // fallback
+    instruments.forEach((i) => {
+      const enabled = (i.enabled ?? true) === true;
+      const src = String(i.source || '').toLowerCase();
+      if (!enabled || src !== 'binance') return;
+      if (i.binance_symbol) map[i.symbol] = i.binance_symbol;
+    });
+    return map; // { BTC:'BTCUSDT', MIKO:'MIKOUSDT', ...}
+  }, [instruments]);
+
+  // ---------- Inicializa REST/WS para live + simuladores para simulated ----------
   useEffect(() => {
-    let ws;
-    let reconnectTimer;
     let alive = true;
 
-    const pairs = Object.values(ASSET_TO_SYMBOL);
-    const streams = pairs.map((s) => `${s.toLowerCase()}@miniTicker`).join('/');
+    const teardown = () => {
+      // WS
+      try { wsRef.current?.close(); } catch (_) {}
+      wsRef.current = null;
+      // simuladores
+      const ints = simIntervalsRef.current || {};
+      Object.values(ints).forEach(clearInterval);
+      simIntervalsRef.current = {};
+    };
 
-    async function initFromREST() {
-      try {
-        const entries = await Promise.all(
-          Object.entries(ASSET_TO_SYMBOL).map(async ([asset, symbol]) => {
-            const res = await fetch(
-              `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`
-            );
-            const j = await res.json();
-            const price = Number(j.lastPrice ?? j.c ?? 0);
-            const change = Number(j.priceChangePercent ?? j.P ?? 0);
-            return [asset, { price, change }];
-          })
-        );
-        setRealQuotes((prev) => {
-          const next = { ...prev };
-          entries.forEach(([asset, val]) => {
-            next[asset] = { ...next[asset], ...val };
-          });
-          // USDT estable
-          next.USDT = { price: 1, change: 0 };
-          return next;
-        });
+    const init = async () => {
+      teardown();
 
-        // seed de histories (solo para los que llegaron)
-        const now = Date.now();
-        setPriceHistories((prev) => {
-          const next = { ...prev };
-          entries.forEach(([asset, val]) => {
-            const arr = prev[asset]?.length ? prev[asset] : [{ time: now, value: val.price }];
-            next[asset] = arr;
-          });
-          if (!next.USDT) next.USDT = [{ time: now, value: 1 }];
-          return next;
-        });
-      } catch (e) {
-        console.warn('[Binance REST] init fallo:', e?.message || e);
-      }
-    }
-
-    function connectWS() {
-      ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
-
-      ws.onmessage = (evt) => {
+      // Seed REST para pares live
+      const liveEntries = Object.entries(liveBinanceMap);
+      if (liveEntries.length) {
         try {
-          const payload = JSON.parse(evt.data);
-          const t = payload?.data;
-          const pair = t?.s; // e.g. 'BTCUSDT'
-          if (!pair) return;
-
-          const asset = Object.keys(ASSET_TO_SYMBOL).find(
-            (k) => ASSET_TO_SYMBOL[k] === pair
+          const results = await Promise.all(
+            liveEntries.map(async ([sym, pair]) => {
+              const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`;
+              const res = await fetch(url);
+              const j = await res.json();
+              const price = Number(j.lastPrice ?? j.c ?? 0);
+              const change = Number(j.priceChangePercent ?? j.P ?? 0);
+              return [sym, { price, change }];
+            })
           );
-          if (!asset) return;
+          if (!alive) return;
 
-          const price = Number(t.c);  // last price
-          const change = Number(t.P); // 24h percent
+          setRealQuotes((prev) => {
+            const next = { ...prev, USDT: { price: 1, change: 0 }, USDC: { price: 1, change: 0 } };
+            for (const [sym, val] of results) next[sym] = val;
+            return next;
+          });
 
-          setRealQuotes((prev) => ({
-            ...prev,
-            [asset]: { price, change },
-          }));
+          const t0 = nowMs();
+          setPriceHistories((prev) => {
+            const next = { ...prev };
+            for (const [sym, val] of results) {
+              const seed = prev[sym]?.length ? prev[sym] : [{ time: t0, value: val.price }];
+              next[sym] = seed.slice(-HISTORY_MAX);
+            }
+            next.USDT = next.USDT ?? [{ time: t0, value: 1 }];
+            next.USDC = next.USDC ?? [{ time: t0, value: 1 }];
+            return next;
+          });
         } catch (e) {
-          console.warn('[Binance WS] parse error:', e?.message || e);
+          console.warn('[Binance REST seed] error:', e?.message || e);
         }
-      };
+      }
 
-      ws.onclose = () => {
-        if (!alive) return;
-        reconnectTimer = setTimeout(connectWS, 1500);
-      };
+      // WS live
+      if (liveEntries.length) {
+        const streams = liveEntries
+          .map(([, pair]) => `${String(pair).toLowerCase()}@miniTicker`)
+          .join('/');
 
-      ws.onerror = () => {
-        try { ws.close(); } catch (_) {}
-      };
-    }
+        const ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
+        wsRef.current = ws;
 
-    (async () => {
-      await initFromREST();
-      connectWS();
-    })();
+        ws.onmessage = (evt) => {
+          try {
+            const payload = JSON.parse(evt.data);
+            const t = payload?.data;
+            const pair = t?.s;
+            if (!pair) return;
 
+            const sym = Object.keys(liveBinanceMap).find((k) => liveBinanceMap[k] === pair);
+            if (!sym) return;
+
+            const price = Number(t?.c);
+            const change = Number(t?.P ?? 0);
+            setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
+          } catch (e) {
+            console.warn('[Binance WS parse] error:', e?.message || e);
+          }
+        };
+
+        ws.onerror = () => {
+          try { ws.close(); } catch (_) {}
+        };
+      }
+
+      // Simuladores
+      const sims = instruments.filter(
+        (i) => (i.enabled ?? true) && String(i.source || '').toLowerCase() === 'simulated'
+      );
+
+      sims.forEach((i) => {
+        const sym = i.symbol;
+        const volBps = Number(i.volatility_bps ?? 50); // 50 bps ≈ ±0.5% por tick
+        const decimals = Number(i.decimals ?? 2);
+        const base0 = Number(i.base_price ?? 1);
+
+        // seed si hacía falta
+        setRealQuotes((prev) => {
+          if (prev[sym]?.price) return prev;
+          return { ...prev, [sym]: { price: base0, change: 0 } };
+        });
+        setPriceHistories((prev) => {
+          if (prev[sym]?.length) return prev;
+          return { ...prev, [sym]: [{ time: nowMs(), value: base0 }] };
+        });
+
+        const iv = setInterval(() => {
+          setRealQuotes((prev) => {
+            const p = Number(prev[sym]?.price ?? base0);
+            const r = (Math.random() - 0.5) * 2;     // [-1..1]
+            const pct = (volBps / 10000) * r;        // bps -> proporción
+            let next = p * (1 + pct);
+            next = Number(next.toFixed(Number.isFinite(decimals) ? decimals : 2));
+            return { ...prev, [sym]: { price: next, change: 0 } };
+          });
+        }, Math.max(800, TICK_MS)); // ligeramente rápido para naturalidad
+        simIntervalsRef.current[sym] = iv;
+      });
+    };
+
+    init();
     return () => {
       alive = false;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      try { ws?.close(); } catch (_) {}
+      teardown();
     };
-  }, []);
+  }, [instruments, liveBinanceMap]);
 
-  // ===========================
-  // Aplicar reglas + consolidar precios finales + history
-  // ===========================
-  const lastTickRef = useRef(0);
-
-  const applyRulesForSymbol = (symbol, basePrice, now = new Date()) => {
-    // Reglas activas para este símbolo y hora UTC actual
-    const hour = now.getUTCHours();
-    const hits = marketRules.filter(
-      (r) =>
-        r.symbol === symbol &&
-        r.active &&
-        (
-          (r.start_hour < r.end_hour && hour >= r.start_hour && hour < r.end_hour) ||
-          (r.start_hour > r.end_hour && (hour >= r.start_hour || hour < r.end_hour)) // cruza medianoche
-        )
-    );
-    let price = basePrice;
-    for (const r of hits) {
-      const v = Number(r.value || 0);
-      if (r.type === 'percent') price *= (1 + v / 100);
-      else price += v;
-    }
-    return price;
-  };
-
-  // Cada TICK_MS consolidamos precios finales y actualizamos histories
+  // ---------- Consolidación final + histories cada ~1.2s ----------
   useEffect(() => {
     const tick = () => {
-      const now = Date.now();
+      const t = nowMs();
+      if (t - lastTickRef.current < TICK_MS * 0.6) return; // anti-spam
+      lastTickRef.current = t;
 
-      // Evita ticks más rápidos que TICK_MS si hay muchos ws updates
-      if (now - lastTickRef.current < TICK_MS / 2) return;
-      lastTickRef.current = now;
+      // Símbolos visibles: enabled + live + estables
+      const enabledSyms = instruments
+        .filter((i) => (i.enabled ?? true))
+        .map((i) => i.symbol);
+      const liveSyms = Object.keys(liveBinanceMap);
+      const symbolsSet = new Set([...enabledSyms, ...liveSyms, 'USDT', 'USDC']);
 
-      // Conjunto de símbolos a publicar:
-      // - todos los market_instruments (activos o no, para que aparezcan)
-      // - + los "conocidos" por el feed real (BTC/ETH/BNB/ADA)
-      // - + USDT
-      const symbolsSet = new Set([
-        ...Object.keys(ASSET_TO_SYMBOL),
-        ...instruments.map((i) => i.symbol),
-        'USDT',
-      ]);
-
+      const nextHist = { ...priceHistories };
       const nextPrices = {};
-      const nextHistories = { ...priceHistories };
 
-      symbolsSet.forEach((sym) => {
+      for (const sym of symbolsSet) {
         const inst = instruments.find((i) => i.symbol === sym);
+        const src = String(inst?.source || '').toLowerCase();
         const decimals = Number(inst?.decimals ?? 2);
 
-        // base: según source (real/manual) con fallback
+        // base:
+        // manual -> base_price
+        // simulated/binance -> realQuotes
         let base = 0;
-        if (inst?.source === 'manual') {
-          base = Number(inst?.base_price ?? 0);
-        } else {
-          // real o sin inst -> intentar feed real
+        if (src === 'manual') base = Number(inst?.base_price ?? 0);
+        else {
           base = Number(realQuotes?.[sym]?.price ?? 0);
           if (!base && inst) base = Number(inst.base_price ?? 0);
         }
 
-        // aplicar reglas
-        let finalPrice =
-          sym === 'USDT' ? 1 : applyRulesForSymbol(sym, base, new Date());
+        // reglas
+        let finalPrice = (sym === 'USDT' || sym === 'USDC')
+          ? 1
+          : applyRulesForSymbol(sym, base, marketRules, new Date());
 
-        // normalize decimales
-        if (Number.isFinite(decimals) && decimals >= 0) {
-          finalPrice = Number(finalPrice.toFixed(decimals));
-        } else {
-          finalPrice = Number(finalPrice.toFixed(2));
-        }
+        // normaliza
+        finalPrice = Number(finalPrice.toFixed(Number.isFinite(decimals) ? decimals : 2));
 
-        // calcular change (si tenemos realQuotes -> usar, sino % vs primer punto del history)
+        // change %
         let changePct = 0;
         if (realQuotes?.[sym]?.change != null) {
           changePct = Number(realQuotes[sym].change || 0);
         } else {
-          const h = ensureArray(nextHistories[sym]);
-          const baseRef = h?.[0]?.value ?? finalPrice;
-          if (baseRef) changePct = ((finalPrice - baseRef) / baseRef) * 100;
+          const h = ensureArray(nextHist[sym]);
+          const ref = h?.[0]?.value ?? finalPrice;
+          if (ref) changePct = ((finalPrice - ref) / ref) * 100;
         }
 
         // history
-        const prevH = ensureArray(nextHistories[sym]);
-        const newH = [...prevH, { time: now, value: finalPrice }].slice(-HISTORY_MAX);
-        nextHistories[sym] = newH;
+        const prevH = ensureArray(nextHist[sym]);
+        const newH = [...prevH, { time: t, value: finalPrice }].slice(-HISTORY_MAX);
+        nextHist[sym] = newH;
 
         nextPrices[sym] = { price: finalPrice, change: changePct, history: newH };
-      });
+      }
 
-      setPriceHistories(nextHistories);
+      setPriceHistories(nextHist);
       setCryptoPrices((prev) => ({ ...prev, ...nextPrices }));
     };
 
     const id = setInterval(tick, TICK_MS);
-    // ejecuta una consolidación inicial rápida al montar / al cambiar dependencias
-    tick();
-
+    tick(); // primera
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instruments, marketRules, realQuotes]);
 
-  // ===========================
-  // Planes (estáticos)
-  // ===========================
+  // ---------- Planes (estáticos) ----------
   const investmentPlans = useMemo(
     () => [
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
@@ -334,9 +369,7 @@ export function DataProvider({ children }) {
     []
   );
 
-  // ===========================
-  // Fetchers (async) que ACTUALIZAN el estado
-  // ===========================
+  // ---------- Fetchers negocio ----------
   async function refreshInvestments() {
     if (!user?.id) {
       setInvestments([]);
@@ -365,7 +398,6 @@ export function DataProvider({ children }) {
       return {
         user_id: inv.user_id,
         userId: inv.user_id,
-
         id: inv.id,
         planName: inv.plan_name,
         amount: Number(inv.amount || 0),
@@ -413,13 +445,12 @@ export function DataProvider({ children }) {
       return {
         user_id: tx.user_id,
         userId: tx.user_id,
-
         id: tx.id,
         type: displayType,
         rawType: tx.type,
         status: tx.status,
         amount: Number(tx.amount || 0),
-        currency: tx.currency || 'USDT',
+        currency: tx.currency || 'USDC', // 👈 default USDC
         description: tx.description || '',
         createdAt: tx.created_at,
         referenceType: tx.reference_type,
@@ -480,7 +511,6 @@ export function DataProvider({ children }) {
     setBotActivations(mapped);
   }
 
-  // ======= Refetch al loguear/cambiar de user =======
   useEffect(() => {
     setInvestments([]);
     setTransactions([]);
@@ -496,13 +526,9 @@ export function DataProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ======= Mutaciones (insert) =======
+  // ---------- Mutaciones ----------
   async function addInvestment({
-    planName,
-    amount,
-    dailyReturn,
-    duration,
-    currency = 'USDT',
+    planName, amount, dailyReturn, duration, currency = 'USDC', // 👈 default USDC
   }) {
     if (!user?.id) return null;
     const payload = {
@@ -530,7 +556,6 @@ export function DataProvider({ children }) {
     return {
       user_id: data.user_id,
       userId: data.user_id,
-
       id: data.id,
       planName: data.plan_name,
       amount: Number(data.amount || 0),
@@ -547,7 +572,7 @@ export function DataProvider({ children }) {
   async function addTransaction({
     amount,
     type,
-    currency = 'USDT',
+    currency = 'USDC', // 👈 default USDC
     description = '',
     referenceType = null,
     referenceId = null,
@@ -558,9 +583,9 @@ export function DataProvider({ children }) {
     const payload = {
       user_id: user.id,
       amount: Number(amount),
-      type, // 'deposit' | 'withdrawal' | 'plan_purchase' | 'admin_credit' | ...
+      type,               // 'deposit' | 'withdrawal' | 'plan_purchase' | 'admin_credit' | ...
       status,
-      currency,
+      currency,           // preferimos USDC
       description,
       reference_type: referenceType,
       reference_id: referenceId,
@@ -585,12 +610,11 @@ export function DataProvider({ children }) {
     return {
       user_id: data.user_id,
       userId: data.user_id,
-
       id: data.id,
       type: mappedType,
       status: data.status,
       amount: Number(data.amount || 0),
-      currency: data.currency || 'USDT',
+      currency: data.currency || 'USDC',
       description: data.description || '',
       createdAt: data.created_at,
       referenceType: data.reference_type,
@@ -598,7 +622,7 @@ export function DataProvider({ children }) {
     };
   }
 
-  // ======= Acciones de bots (RPC opcionales) =======
+  // ---------- RPC de Bots (restauradas) ----------
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
@@ -699,28 +723,35 @@ export function DataProvider({ children }) {
     }
   }
 
-  // ======= API pública =======
+  // ---------- Derivados para UI (pares disponibles) ----------
+  const pairOptions = useMemo(() => {
+    const enabled = instruments.filter((i) => (i.enabled ?? true));
+    const list = enabled.map((i) => `${i.symbol}/${i.quote || 'USDT'}`);
+    // asegura básicos si aún no están cargados
+    const s = new Set(list);
+    if (!s.has('BTC/USDT')) s.add('BTC/USDT');
+    if (!s.has('ETH/USDT')) s.add('ETH/USDT');
+    return Array.from(s);
+  }, [instruments]);
+
+  // ---------- API pública ----------
   const value = useMemo(
     () => ({
-      // datos listos para usar sin await
+      // negocio
       investments,
       transactions,
       referrals,
       botActivations,
-
-      // getters sincrónicos (compat UI)
       getInvestments: () => investments,
       getTransactions: () => transactions,
       getReferrals: () => referrals,
-
-      // acciones y refrescos
       refreshInvestments,
       refreshTransactions,
       refreshReferrals,
       addInvestment,
       addTransaction,
 
-      // Bots
+      // bots (RPC reales restauradas)
       refreshBotActivations,
       activateBot,
       pauseBot,
@@ -728,26 +759,23 @@ export function DataProvider({ children }) {
       cancelBot,
       creditBotProfit,
 
-      // Mercado configurable
+      // mercado
       instruments,
       marketRules,
       refreshMarketInstruments,
       refreshMarketRules,
       forceRefreshMarket,
 
-      // datos para Trading / UI
-      cryptoPrices,          // { SYM: {price, change, history[]}, ... }
-      assetToSymbol: ASSET_TO_SYMBOL, // por si la UI necesita el par exacto
+      // precios/pares para Trading
+      cryptoPrices,            // {SYM: {price, change, history[]}}
+      pairOptions,             // ['BTC/USDT','ETH/USDT','MIKO/USDT', ...]
+      assetToSymbol: liveBinanceMap, // mapa dinámico símbolo->par de Binance
+
       investmentPlans,
     }),
     [
-      investments,
-      transactions,
-      referrals,
-      botActivations,
-      cryptoPrices,
-      instruments,
-      marketRules,
+      investments, transactions, referrals, botActivations,
+      instruments, marketRules, cryptoPrices, pairOptions, liveBinanceMap,
       investmentPlans,
     ]
   );
@@ -755,7 +783,7 @@ export function DataProvider({ children }) {
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
 
-// Hook con fallback seguro
+// ---------- Hook con fallback ----------
 export function useData() {
   const ctx = useContext(DataContext);
   return ctx || {
@@ -785,7 +813,8 @@ export function useData() {
     forceRefreshMarket: async () => {},
 
     cryptoPrices: {},
-    assetToSymbol: ASSET_TO_SYMBOL,
+    pairOptions: ['BTC/USDT', 'ETH/USDT'],
+    assetToSymbol: DEFAULT_BINANCE_MAP,
     investmentPlans: [],
   };
 }
