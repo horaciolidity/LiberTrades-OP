@@ -3,85 +3,152 @@ import { createChart, ColorType } from 'lightweight-charts';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { TrendingUp } from 'lucide-react';
 
-const TradingChart = ({ priceHistory, selectedPair, cryptoPrices }) => {
-  const chartContainerRef = useRef();
+const LAST_N_BARS = 120; // zoom cercano
+
+const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) => {
+  const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+  const lastBarTimeRef = useRef(undefined); // epoch seconds del último bar dibujado
 
+  // ---- crear/destruir chart ----
   useEffect(() => {
-    if (!chartContainerRef.current) return;
+    if (!containerRef.current) return;
 
-    if (!chartRef.current) {
-      chartRef.current = createChart(chartContainerRef.current, {
-        width: chartContainerRef.current.clientWidth,
-        height: chartContainerRef.current.clientHeight, // Make chart responsive
-        layout: {
-          background: { type: ColorType.Solid, color: 'transparent' },
-          textColor: '#D1D5DB',
-        },
-        grid: {
-          vertLines: { color: 'rgba(71, 85, 105, 0.5)' },
-          horzLines: { color: 'rgba(71, 85, 105, 0.5)' },
-        },
-        timeScale: {
-          borderColor: '#4B5563',
-          timeVisible: true,
-          secondsVisible: false,
-        },
-        crosshair: {
-          mode: 0, 
-        },
-      });
-      seriesRef.current = chartRef.current.addCandlestickSeries({
-        upColor: '#22c55e',
-        downColor: '#ef4444',
-        borderDownColor: '#ef4444',
-        borderUpColor: '#22c55e',
-        wickDownColor: '#ef4444',
-        wickUpColor: '#22c55e',
-      });
-    }
+    const chart = createChart(containerRef.current, {
+      width: containerRef.current.clientWidth,
+      height: containerRef.current.clientHeight,
+      layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: '#D1D5DB',
+      },
+      grid: {
+        vertLines: { color: 'rgba(71, 85, 105, 0.35)' },
+        horzLines: { color: 'rgba(71, 85, 105, 0.35)' },
+      },
+      rightPriceScale: {
+        borderColor: '#4B5563',
+        scaleMargins: { top: 0.1, bottom: 0.1 },
+      },
+      timeScale: {
+        borderColor: '#4B5563',
+        timeVisible: true,
+        secondsVisible: true,
+      },
+      crosshair: { mode: 0 },
+    });
 
-    const handleResize = () => {
-      if (chartRef.current && chartContainerRef.current) {
-        chartRef.current.resize(chartContainerRef.current.clientWidth, chartContainerRef.current.clientHeight);
-      }
-    };
+    const series = chart.addCandlestickSeries({
+      upColor: '#22c55e',
+      downColor: '#ef4444',
+      borderDownColor: '#ef4444',
+      borderUpColor: '#22c55e',
+      wickDownColor: '#ef4444',
+      wickUpColor: '#22c55e',
+      priceLineVisible: true,
+    });
 
-    window.addEventListener('resize', handleResize);
-    handleResize(); 
-    
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    // Responsivo con ResizeObserver
+    const ro = new ResizeObserver((entries) => {
+      if (!entries.length) return;
+      const { width, height } = entries[0].contentRect;
+      chart.applyOptions({ width, height });
+    });
+    ro.observe(containerRef.current);
+
     return () => {
-      window.removeEventListener('resize', handleResize);
+      try { ro.disconnect(); } catch {}
+      try { chart.remove(); } catch {}
+      chartRef.current = null;
+      seriesRef.current = null;
+      lastBarTimeRef.current = undefined;
     };
   }, []);
 
+  // ---- set/actualizar datos de velas ----
   useEffect(() => {
-    if (seriesRef.current && priceHistory && priceHistory.length > 0) {
-      const sortedPriceHistory = [...priceHistory].sort((a, b) => a.time - b.time);
-      
-      const candlestickData = sortedPriceHistory.map((data, index) => {
-        const prevData = sortedPriceHistory[index - 1] || data;
+    const series = seriesRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart) return;
+
+    const hist = Array.isArray(priceHistory) ? priceHistory : [];
+    if (!hist.length) {
+      series.setData([]);
+      lastBarTimeRef.current = undefined;
+      return;
+    }
+
+    // Ordena por tiempo ascendente
+    const sorted = [...hist].sort((a, b) => a.time - b.time);
+
+    // Si nunca dibujamos: seed inicial (solo últimos LAST_N_BARS)
+    if (!lastBarTimeRef.current) {
+      const seed = sorted.slice(-LAST_N_BARS);
+      const seedCandles = seed.map((p, idx) => {
+        const prev = seed[idx - 1] || p;
         return {
-          time: data.time / 1000, 
-          open: prevData.value,
-          high: Math.max(prevData.value, data.value),
-          low: Math.min(prevData.value, data.value),
-          close: data.value,
+          time: Math.floor(p.time / 1000),
+          open: Number(prev.value) || Number(p.value) || 0,
+          high: Math.max(Number(prev.value) || 0, Number(p.value) || 0),
+          low: Math.min(Number(prev.value) || 0, Number(p.value) || 0),
+          close: Number(p.value) || 0,
         };
       });
-
-      if (candlestickData.length > 0) {
-        seriesRef.current.setData(candlestickData);
-        chartRef.current.timeScale().fitContent();
+      series.setData(seedCandles);
+      if (seedCandles.length) {
+        lastBarTimeRef.current = seedCandles[seedCandles.length - 1].time;
+        // zoom cercano
+        const first = seedCandles[Math.max(0, seedCandles.length - LAST_N_BARS)].time;
+        const last = seedCandles[seedCandles.length - 1].time;
+        chart.timeScale().setVisibleRange({ from: first, to: last });
       }
-    } else if (seriesRef.current) {
-      seriesRef.current.setData([]); 
+      return;
+    }
+
+    // Incremental: si hay nuevos puntos, agrega/actualiza el último bar
+    const lastPoint = sorted[sorted.length - 1];
+    const prevPoint = sorted[sorted.length - 2] || lastPoint;
+    const lastSec = Math.floor(lastPoint.time / 1000);
+
+    if (lastSec > lastBarTimeRef.current) {
+      // nuevo bar
+      const candle = {
+        time: lastSec,
+        open: Number(prevPoint.value) || Number(lastPoint.value) || 0,
+        high: Math.max(Number(prevPoint.value) || 0, Number(lastPoint.value) || 0),
+        low: Math.min(Number(prevPoint.value) || 0, Number(lastPoint.value) || 0),
+        close: Number(lastPoint.value) || 0,
+      };
+      series.update(candle);
+      lastBarTimeRef.current = lastSec;
+
+      // mantener zoom a últimos N
+      const to = lastSec;
+      const from = to - (LAST_N_BARS * 2); // ~ventana razonable
+      chart.timeScale().setVisibleRange({ from, to });
+    } else if (lastSec === lastBarTimeRef.current) {
+      // mismo segundo: actualiza vela actual (mejora fluidez)
+      const candle = {
+        time: lastSec,
+        open: Number(prevPoint.value) || Number(lastPoint.value) || 0,
+        high: Math.max(Number(prevPoint.value) || 0, Number(lastPoint.value) || 0),
+        low: Math.min(Number(prevPoint.value) || 0, Number(lastPoint.value) || 0),
+        close: Number(lastPoint.value) || 0,
+      };
+      series.update(candle);
     }
   }, [priceHistory]);
 
-  const currentCrypto = selectedPair.split('/')[0];
-  const currentPriceData = cryptoPrices[currentCrypto];
+  // ---- cabecera: precio/cambio actuales (con guards) ----
+  const pair = typeof selectedPair === 'string' && selectedPair ? selectedPair : 'BTC/USDT';
+  const base = (pair.split?.('/')?.[0] || 'BTC').toUpperCase();
+  const info = cryptoPrices?.[base] || {};
+  const priceStr = Number.isFinite(Number(info.price)) ? Number(info.price).toFixed(2) : '--';
+  const chgStr = Number.isFinite(Number(info.change)) ? Number(info.change).toFixed(2) : '--';
+  const chgPos = Number(info.change) >= 0;
 
   return (
     <Card className="crypto-card h-full flex flex-col">
@@ -90,24 +157,25 @@ const TradingChart = ({ priceHistory, selectedPair, cryptoPrices }) => {
           <div>
             <CardTitle className="text-white flex items-center text-lg sm:text-xl">
               <TrendingUp className="h-5 w-5 mr-2 text-green-400" />
-              Gráfico de {selectedPair}
+              Gráfico de {pair}
             </CardTitle>
             <CardDescription className="text-slate-300 text-xs sm:text-sm">
-              Visualiza el precio en tiempo real
+              Precio en tiempo real (zoom a {LAST_N_BARS} ticks)
             </CardDescription>
           </div>
-          {currentPriceData && (
-            <div className="text-right">
-              <p className="text-xl sm:text-2xl font-bold text-white">${currentPriceData.price.toFixed(2)}</p>
-              <p className={`text-xs sm:text-sm ${currentPriceData.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {currentPriceData.change.toFixed(2)}% (24h)
-              </p>
-            </div>
-          )}
+          <div className="text-right">
+            <p className="text-xl sm:text-2xl font-bold text-white">${priceStr}</p>
+            <p className={`text-xs sm:text-sm ${chgPos ? 'text-green-400' : 'text-red-400'}`}>
+              {chgStr}% (24h)
+            </p>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="flex-grow p-2 sm:p-4">
-        <div ref={chartContainerRef} className="w-full h-full min-h-[300px] sm:min-h-[400px] trading-chart rounded-lg" />
+        <div
+          ref={containerRef}
+          className="w-full h-full min-h-[300px] sm:min-h-[400px] rounded-lg"
+        />
       </CardContent>
     </Card>
   );

@@ -2,9 +2,53 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { BarChart3, Activity, Square, Clock } from 'lucide-react';
+import { BarChart3, Activity, Clock } from 'lucide-react';
 
-const TradesHistory = ({ trades, cryptoPrices, closeTrade }) => {
+const safeArr = (a) => (Array.isArray(a) ? a : []);
+const fmt = (n, d = 2) => {
+  const x = Number(n);
+  return Number.isFinite(x) ? x.toFixed(d) : (0).toFixed(d);
+};
+
+const baseFromPair = (pair) => {
+  if (!pair || typeof pair !== 'string') return 'BTC';
+  const [b] = pair.split('/');
+  return (b || 'BTC').toUpperCase();
+};
+
+// Fallback por si no viene upnl desde el container
+const calcUPnL = (trade, cryptoPrices = {}) => {
+  const base = baseFromPair(trade?.pair);
+  const current = Number(cryptoPrices?.[base]?.price ?? 0);
+  const entry = Number(trade?.price ?? trade?.priceAtExecution ?? 0);
+  const notional = Number(trade?.amount ?? 0);
+  if (!current || !entry || !notional) return 0;
+
+  const qty = notional / entry;
+  const side = String(trade?.type || '').toLowerCase(); // buy | sell
+  return side === 'sell' ? (entry - current) * qty : (current - entry) * qty;
+};
+
+const remainingSeconds = (trade) => {
+  if (!trade || String(trade.status || '').toLowerCase() !== 'open') return null;
+
+  // Soporta closeAt/closeat (ISO o epoch), o calcula si viene durationSeconds
+  const closeAtIso = trade.closeAt || trade.closeat;
+  let closeAtMs = closeAtIso ? new Date(closeAtIso).getTime() : NaN;
+
+  if (!Number.isFinite(closeAtMs)) {
+    const ts = new Date(trade.timestamp || Date.now()).getTime();
+    const dur = Number(trade.durationSeconds || trade.duration || 0) * 1000;
+    if (dur > 0) closeAtMs = ts + dur;
+  }
+  if (!Number.isFinite(closeAtMs)) return null;
+
+  return Math.max(0, Math.floor((closeAtMs - Date.now()) / 1000));
+};
+
+const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }) => {
+  const list = safeArr(trades);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -21,76 +65,92 @@ const TradesHistory = ({ trades, cryptoPrices, closeTrade }) => {
             Tus trades recientes y activos
           </CardDescription>
         </CardHeader>
+
         <CardContent>
           <div className="space-y-4 max-h-96 overflow-y-auto scrollbar-hide">
-            {trades.length > 0 ? (
-              trades.map((trade) => {
-                const crypto = trade.pair.split('/')[0];
-                const currentPrice = cryptoPrices[crypto]?.price || 0;
-                const unrealizedProfit = trade.status === 'open' 
-                  ? trade.type === 'buy' 
-                    ? (currentPrice - trade.priceAtExecution) * (trade.amount / trade.priceAtExecution)
-                    : (trade.priceAtExecution - currentPrice) * (trade.amount / trade.priceAtExecution)
-                  : trade.profit;
+            {list.length > 0 ? (
+              list.map((t) => {
+                const pair = typeof t.pair === 'string' ? t.pair : 'BTC/USDT';
+                const side = String(t.type || '').toLowerCase(); // buy|sell
+                const amount = Number(t.amount ?? 0);
+                const entry = Number(t.price ?? t.priceAtExecution ?? 0);
+                const upnl = Number(t.upnl ?? calcUPnL(t, cryptoPrices));
+                const isOpen = String(t.status || '').toLowerCase() === 'open';
+                const ts = t.timestamp ? new Date(t.timestamp) : new Date();
 
-                const timeLeft = trade.status === 'open' 
-                  ? Math.max(0, Math.floor((trade.closeAt - Date.now()) / 1000))
-                  : 0;
+                const secs = remainingSeconds(t); // puede ser null
+                const mm = Number.isFinite(secs) ? Math.floor(secs / 60) : null;
+                const ss = Number.isFinite(secs) ? String(secs % 60).padStart(2, '0') : null;
+
+                // Ganancia mostrada: uPnL si abierto, profit si cerrado
+                const pnlShown = isOpen ? upnl : Number(t.profit ?? 0);
+                const pnlPos = pnlShown >= 0;
 
                 return (
-                  <div key={trade.id} className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg">
+                  <motion.div
+                    key={t.id ?? `${pair}-${ts.getTime()}`}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.18 }}
+                    className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg border border-slate-700/50"
+                  >
                     <div className="flex-1">
                       <div className="flex items-center space-x-4">
-                        <div className={`px-2 py-1 rounded text-xs font-medium ${
-                          trade.type === 'buy' 
-                            ? 'bg-green-500/20 text-green-400' 
-                            : 'bg-red-500/20 text-red-400'
-                        }`}>
-                          {trade.type.toUpperCase()}
+                        <div
+                          className={`px-2 py-1 rounded text-xs font-medium ${
+                            side === 'buy'
+                              ? 'bg-green-500/20 text-green-400'
+                              : 'bg-red-500/20 text-red-400'
+                          }`}
+                        >
+                          {side === 'buy' ? 'BUY' : 'SELL'}
                         </div>
                         <div>
-                          <p className="text-white font-medium">{trade.pair}</p>
+                          <p className="text-white font-medium">{pair}</p>
                           <p className="text-slate-400 text-sm">
-                            ${trade.amount.toFixed(2)} @ ${trade.priceAtExecution.toFixed(2)}
+                            ${fmt(amount)} @ ${fmt(entry)}
                           </p>
                         </div>
                       </div>
                     </div>
+
                     <div className="text-right">
-                      <p className={`font-semibold ${
-                        unrealizedProfit >= 0 ? 'text-green-400' : 'text-red-400'
-                      }`}>
-                        {unrealizedProfit >= 0 ? '+' : ''}${unrealizedProfit.toFixed(2)}
+                      <p className={`font-semibold ${pnlPos ? 'text-green-400' : 'text-red-400'}`}>
+                        {pnlPos ? '+' : ''}${fmt(pnlShown)}
                       </p>
                       <p className="text-slate-400 text-sm">
-                        {new Date(trade.timestamp).toLocaleTimeString()}
+                        {ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
                     </div>
-                    <div className="ml-4 w-28 text-center">
-                      {trade.status === 'open' ? (
+
+                    <div className="ml-4 w-32 text-center">
+                      {isOpen ? (
                         <div className="flex flex-col items-center">
-                           <div className="flex items-center text-yellow-400 text-sm">
+                          <div className="flex items-center text-yellow-400 text-sm">
                             <Clock className="h-3 w-3 mr-1" />
-                            {`${Math.floor(timeLeft / 60)}:${(timeLeft % 60).toString().padStart(2, '0')}`}
+                            {Number.isFinite(secs) ? `${mm}:${ss}` : '—'}
                           </div>
                           <Button
                             size="sm"
                             variant="ghost"
                             className="text-red-400 hover:text-red-500 hover:bg-red-500/10 mt-1"
-                            onClick={() => closeTrade(trade.id, true)} 
+                            // 👇 no mandamos "true" como profit; dejamos que el contenedor calcule
+                            onClick={() => closeTrade(t.id)}
                           >
                             Cerrar Manual
                           </Button>
                         </div>
                       ) : (
-                        <span className={`px-2 py-1 rounded text-xs ${
-                          trade.profit >= 0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                        }`}>
-                          {trade.profit >= 0 ? 'Ganancia' : 'Pérdida'}
+                        <span
+                          className={`px-2 py-1 rounded text-xs ${
+                            pnlPos ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                          }`}
+                        >
+                          {pnlPos ? 'Ganancia' : 'Pérdida'}
                         </span>
                       )}
                     </div>
-                  </div>
+                  </motion.div>
                 );
               })
             ) : (
