@@ -73,8 +73,7 @@ export default function TradingSimulator() {
       .toLowerCase()
       .replace(/[^a-z]/g, '');
 
-  // ====== Par seleccionado seguro (evita value undefined en <Select>) ======
-  // Si el hook aún no lo inicializó, usamos BTC/USDT y lo “curamos” en el hook
+  // ====== Par seleccionado seguro ======
   const selectedPair = useMemo(
     () => tradingLogic?.selectedPair || DEFAULT_PAIR,
     [tradingLogic?.selectedPair]
@@ -219,7 +218,7 @@ export default function TradingSimulator() {
   const computeLivePnL = (trade) => {
     const base = parseBaseFromPair(trade?.pair || selectedPair);
     const current = Number(marketPrices?.[base]?.price ?? 0);
-    const entry = Number(trade?.price ?? 0);
+    const entry = Number(trade?.price ?? trade?.priceAtExecution ?? 0); // soporta real y demo
     const amountUsd = Number(trade?.amount ?? 0);
     if (!current || !entry || !amountUsd) return { upnl: 0, livePrice: current || null };
 
@@ -241,7 +240,7 @@ export default function TradingSimulator() {
   const realTradesWithLive = useMemo(() => {
     return safe(realTrades).map((t) => {
       const { upnl, livePrice } = computeLivePnL(t);
-      return { ...t, upnl, livePrice };
+      return { ...t, upnl, livePrice, priceAtExecution: t.priceAtExecution ?? t.price };
     });
   }, [realTrades, marketPrices, selectedPair]);
 
@@ -260,7 +259,7 @@ export default function TradingSimulator() {
       amount: Number(tradeData.amount),
       price: Number(tradeData.price),
       status: 'open',
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(), // BIGINT ms
     };
 
     const { error: tErr } = await supabase.from('trades').insert(payload);
@@ -289,9 +288,9 @@ export default function TradingSimulator() {
     fetchRealData();
   };
 
-  const handleCloseTrade = async (tradeId, profitOverride) => {
+  const handleCloseTrade = async (tradeId, manual = false) => {
     if (mode === 'demo') {
-      tradingLogic.closeTrade(tradeId, profitOverride);
+      tradingLogic.closeTrade(tradeId, manual);
       return;
     }
     if (!tradeId) return;
@@ -307,15 +306,17 @@ export default function TradingSimulator() {
       return;
     }
 
-    let realized = Number(profitOverride || 0);
-    if (profitOverride == null) {
-      const { upnl } = computeLivePnL(tr);
-      realized = Number(upnl || 0);
-    }
+    // Calcular profit al cierre con precio de mercado actual
+    const { upnl } = computeLivePnL(tr);
+    const realized = Number(upnl || 0);
 
     const { error: uErr } = await supabase
       .from('trades')
-      .update({ status: 'closed', profit: realized, closeat: new Date().toISOString() })
+      .update({
+        status: 'closed',
+        profit: realized,
+        closeat: Date.now(), // BIGINT ms
+      })
       .eq('id', tradeId);
 
     if (uErr) {
@@ -342,6 +343,25 @@ export default function TradingSimulator() {
 
     playSound?.('success');
     fetchRealData();
+  };
+
+  // Bridge único para el Panel (demo/real)
+  const executeTradeFromPanel = () => {
+    const base = (selectedPair || DEFAULT_PAIR).split('/')[0];
+    const px = Number(marketPrices?.[base]?.price || 0);
+    const amt = Number(tradingLogic.tradeAmount || 0);
+    if (!amt || !px) return;
+
+    if (mode === 'demo') {
+      tradingLogic.executeTrade();
+    } else {
+      handleTrade({
+        pair: selectedPair,
+        type: tradingLogic.tradeType, // 'buy' | 'sell'
+        amount: amt,
+        price: px,
+      });
+    }
   };
 
   // =================== Stats (con unrealized) ===================
@@ -476,25 +496,28 @@ export default function TradingSimulator() {
           </div>
         </div>
 
-        {/* IMPORTANTE: en real no pases todo el tradingLogic */}
+        {/* Panel: pasar todas las props controladas para que el input funcione */}
         <TradingPanel
           selectedPair={selectedPair}
           setSelectedPair={tradingLogic.setSelectedPair}
-          onTrade={handleTrade}
-          openTrade={handleTrade}
-          closeTrade={handleCloseTrade}
-          balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
-          mode={mode}
-          openTrades={mode === 'demo'
-            ? demoTradesWithLive.filter(t => (t.status || '').toLowerCase() === 'open')
-            : realTradesWithLive.filter(t => (t.status || '').toLowerCase() === 'open')}
+          tradeAmount={tradingLogic.tradeAmount}
+          setTradeAmount={tradingLogic.setTradeAmount}
+          tradeType={tradingLogic.tradeType}
+          setTradeType={tradingLogic.setTradeType}
+          tradeDuration={tradingLogic.tradeDuration}
+          setTradeDuration={tradingLogic.setTradeDuration}
+          isTrading={tradingLogic.isTrading}
+          executeTrade={executeTradeFromPanel}   // puente demo/real
+          resetBalance={tradingLogic.resetBalance}
           cryptoPrices={marketPrices}
         />
 
         <TradesHistory
-          trades={mode === 'demo' ? demoTradesWithLive : realTradesWithLive}
+          trades={mode === 'demo'
+            ? demoTradesWithLive
+            : realTradesWithLive}
           cryptoPrices={marketPrices}
-          closeTrade={handleCloseTrade}
+          closeTrade={handleCloseTrade} // acepta (id, manual?)
         />
       </div>
     </>
