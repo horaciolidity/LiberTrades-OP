@@ -1,3 +1,4 @@
+// src/contexts/DataContext.jsx
 import React, {
   createContext,
   useContext,
@@ -14,6 +15,23 @@ const DataContext = createContext(null);
 // Utilidad
 const ensureArray = (v) => (Array.isArray(v) ? v : []);
 
+// ==== Config de cotizaciones reales (Binance) ====
+const ASSET_TO_SYMBOL = {
+  BTC: 'BTCUSDT',
+  ETH: 'ETHUSDT',
+  BNB: 'BNBUSDT',
+  ADA: 'ADAUSDT',
+  // Podés agregar más: SOL: 'SOLUSDT', etc.
+};
+const HISTORY_MAX = 600; // ~20 min si llega un tick cada 2s aprox.
+
+/**
+ * DataProvider
+ * - Lee: investments, wallet_transactions, referrals (profiles.referred_by), bot_activations
+ * - Cotizaciones reales: WebSocket de Binance (@miniTicker) + fallback REST de arranque
+ * - Métodos addInvestment / addTransaction
+ * - Acciones de bots (RPC opcionales; si no existen, no rompen)
+ */
 export function DataProvider({ children }) {
   const { user } = useAuth();
 
@@ -21,95 +39,120 @@ export function DataProvider({ children }) {
   const [investments, setInvestments] = useState([]);   // []
   const [transactions, setTransactions] = useState([]); // []
   const [referrals, setReferrals] = useState([]);       // []
-
-  // ======= NUEVO: Bot activations =======
   const [botActivations, setBotActivations] = useState([]);
 
-  // ======= Precios (mock) =======
+  // ======= Precios (reales) =======
   const [cryptoPrices, setCryptoPrices] = useState({
-    BTC: { price: 45000, change: 2.5, history: [] },
-    ETH: { price: 3200, change: -1.2, history: [] },
-    USDT: { price: 1.0, change: 0.1, history: [] },
-    BNB: { price: 320, change: 3.8, history: [] },
-    ADA: { price: 0.85, change: -2.1, history: [] },
+    BTC: { price: 0, change: 0, history: [] },
+    ETH: { price: 0, change: 0, history: [] },
+    USDT: { price: 1.0, change: 0, history: [{ time: Date.now(), value: 1 }] }, // estable
+    BNB: { price: 0, change: 0, history: [] },
+    ADA: { price: 0, change: 0, history: [] },
   });
 
+  // ----- Inicialización con REST + stream en vivo con WS -----
   useEffect(() => {
-    const initialHistoryLength = 60;
-    const next = JSON.parse(JSON.stringify(cryptoPrices));
-    Object.keys(next).forEach((k) => {
-      let p = next[k].price;
-      const hist = [];
-      for (let i = 0; i < initialHistoryLength; i++) {
-        const ch = (Math.random() - 0.5) * 2;
-        p = Math.max(0.01, p * (1 + ch / 100));
-        hist.unshift({
-          time: Date.now() - (initialHistoryLength - i) * 2000,
-          value: p,
+    let ws;
+    let reconnectTimer;
+    let alive = true;
+
+    const pairs = Object.values(ASSET_TO_SYMBOL);
+    const streams = pairs.map((s) => `${s.toLowerCase()}@miniTicker`).join('/');
+
+    async function initFromREST() {
+      try {
+        const entries = await Promise.all(
+          Object.entries(ASSET_TO_SYMBOL).map(async ([asset, symbol]) => {
+            const res = await fetch(
+              `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`
+            );
+            const j = await res.json();
+            const price = Number(j.lastPrice ?? j.c ?? 0);
+            const change = Number(j.priceChangePercent ?? j.P ?? 0);
+            return [asset, { price, change, history: [{ time: Date.now(), value: price }] }];
+          })
+        );
+
+        setCryptoPrices((prev) => {
+          const next = { ...prev };
+          entries.forEach(([asset, val]) => {
+            next[asset] = {
+              ...(prev[asset] || {}),
+              ...val,
+              history: (prev[asset]?.history?.length ? prev[asset].history : val.history),
+            };
+          });
+          // USDT se mantiene estable en 1
+          if (!next.USDT) {
+            next.USDT = { price: 1, change: 0, history: [{ time: Date.now(), value: 1 }] };
+          }
+          return next;
         });
+      } catch (e) {
+        console.warn('[Binance REST] init fallo:', e?.message || e);
       }
-      next[k].history = hist;
-      next[k].price = p;
-    });
-    setCryptoPrices(next);
+    }
 
-    const id = setInterval(() => {
-      setCryptoPrices((prev) => {
-        const up = { ...prev };
-        Object.keys(up).forEach((k) => {
-          const ch = (Math.random() - 0.5) * 2;
-          const np = Math.max(0.01, up[k].price * (1 + ch / 100));
-          const nh = [...up[k].history, { time: Date.now(), value: np }].slice(
-            -100
+    function connectWS() {
+      ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
+
+      ws.onmessage = (evt) => {
+        try {
+          const payload = JSON.parse(evt.data);
+          const t = payload?.data;
+          const pair = t?.s; // e.g. 'BTCUSDT'
+          if (!pair) return;
+
+          const asset = Object.keys(ASSET_TO_SYMBOL).find(
+            (k) => ASSET_TO_SYMBOL[k] === pair
           );
-          up[k] = { price: np, change: ch, history: nh };
-        });
-        return up;
-      });
-    }, 2000);
+          if (!asset) return;
 
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+          const price = Number(t.c);     // last price
+          const change = Number(t.P);    // 24h percent
+          const now = Date.now();
+
+          setCryptoPrices((prev) => {
+            const prevEntry = prev[asset] || { price: 0, change: 0, history: [] };
+            const history = [...(prevEntry.history || []), { time: now, value: price }].slice(-HISTORY_MAX);
+            return {
+              ...prev,
+              [asset]: { price, change, history },
+            };
+          });
+        } catch (e) {
+          console.warn('[Binance WS] parse error:', e?.message || e);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!alive) return;
+        reconnectTimer = setTimeout(connectWS, 1500);
+      };
+
+      ws.onerror = () => {
+        try { ws.close(); } catch (_) {}
+      };
+    }
+
+    (async () => {
+      await initFromREST();
+      connectWS();
+    })();
+
+    return () => {
+      alive = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { ws?.close(); } catch (_) {}
+    };
   }, []);
 
   const investmentPlans = useMemo(
     () => [
-      {
-        id: 1,
-        name: 'Plan Básico',
-        minAmount: 100,
-        maxAmount: 999,
-        dailyReturn: 1.5,
-        duration: 30,
-        description: 'Perfecto para principiantes',
-      },
-      {
-        id: 2,
-        name: 'Plan Estándar',
-        minAmount: 1000,
-        maxAmount: 4999,
-        dailyReturn: 2.0,
-        duration: 30,
-        description: 'Para inversores intermedios',
-      },
-      {
-        id: 3,
-        name: 'Plan Premium',
-        minAmount: 5000,
-        maxAmount: 19999,
-        dailyReturn: 2.5,
-        duration: 30,
-        description: 'Para inversores avanzados',
-      },
-      {
-        id: 4,
-        name: 'Plan VIP',
-        minAmount: 20000,
-        maxAmount: 100000,
-        dailyReturn: 3.0,
-        duration: 30,
-        description: 'Para grandes inversores',
-      },
+      { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
+      { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
+      { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para inversores avanzados' },
+      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
     ],
     []
   );
@@ -141,7 +184,6 @@ export function DataProvider({ children }) {
       const earnings = dailyReturn * daysElapsed;
 
       return {
-        // compat filtros
         user_id: inv.user_id,
         userId: inv.user_id,
 
@@ -162,59 +204,52 @@ export function DataProvider({ children }) {
   }
 
   async function refreshTransactions() {
-  if (!user?.id) {
-    setTransactions([]);
-    return;
+    if (!user?.id) {
+      setTransactions([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('wallet_transactions')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[refreshTransactions] error:', error);
+      setTransactions([]);
+      return;
+    }
+
+    const mapped = ensureArray(data).map((tx) => {
+      let base = (tx.type || '').toLowerCase();
+      if (base === 'plan_purchase') base = 'investment';
+
+      const ref = (tx.reference_type || '').toLowerCase();
+      let displayType = base;
+      if (ref === 'bot_activation') displayType = 'bot_activation';
+      if (ref === 'bot_profit')     displayType = 'bot_profit';
+      if (ref === 'bot_refund')     displayType = 'bot_refund';
+      if (ref === 'bot_fee')        displayType = 'bot_fee';
+
+      return {
+        user_id: tx.user_id,
+        userId: tx.user_id,
+
+        id: tx.id,
+        type: displayType,
+        rawType: tx.type,
+        status: tx.status,
+        amount: Number(tx.amount || 0),
+        currency: tx.currency || 'USDT',
+        description: tx.description || '',
+        createdAt: tx.created_at,
+        referenceType: tx.reference_type,
+        referenceId: tx.reference_id,
+      };
+    });
+
+    setTransactions(mapped);
   }
-  const { data, error } = await supabase
-    .from('wallet_transactions')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.error('[refreshTransactions] error:', error);
-    setTransactions([]);
-    return;
-  }
-
-  const mapped = (Array.isArray(data) ? data : []).map((tx) => {
-    // tipo base que viene de la tabla
-    let base = (tx.type || '').toLowerCase();
-
-    // normalización por compat
-    if (base === 'plan_purchase') base = 'investment';
-
-    // mapeo “amigable” si viene de bots (usa reference_type)
-    const ref = (tx.reference_type || '').toLowerCase();
-    let displayType = base;
-
-    if (ref === 'bot_activation') displayType = 'bot_activation';
-    if (ref === 'bot_profit')     displayType = 'bot_profit';
-    if (ref === 'bot_refund')     displayType = 'bot_refund';
-    if (ref === 'bot_fee')        displayType = 'bot_fee';
-
-    return {
-      // compat filtros
-      user_id: tx.user_id,
-      userId: tx.user_id,
-
-      id: tx.id,
-      type: displayType,                   // <<< usar este en la UI
-      rawType: tx.type,                    // (por si lo necesitás)
-      status: tx.status,
-      amount: Number(tx.amount || 0),
-      currency: tx.currency || 'USDT',
-      description: tx.description || '',
-      createdAt: tx.created_at,
-      referenceType: tx.reference_type,    // bot_activation | bot_profit | ...
-      referenceId: tx.reference_id,
-    };
-  });
-
-  setTransactions(mapped);
-}
-
 
   async function refreshReferrals() {
     if (!user?.id) {
@@ -235,16 +270,22 @@ export function DataProvider({ children }) {
     setReferrals(ensureArray(data));
   }
 
-  // ======= NUEVO: Bots =======
   async function refreshBotActivations() {
-    if (!user?.id) { setBotActivations([]); return; }
+    if (!user?.id) {
+      setBotActivations([]);
+      return;
+    }
     const { data, error } = await supabase
       .from('bot_activations')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
-    if (error) { console.error('[refreshBotActivations] error:', error); setBotActivations([]); return; }
+    if (error) {
+      console.error('[refreshBotActivations] error:', error);
+      setBotActivations([]);
+      return;
+    }
 
     const mapped = ensureArray(data).map((b) => ({
       id: b.id,
@@ -260,67 +301,6 @@ export function DataProvider({ children }) {
     setBotActivations(mapped);
   }
 
-  async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    const { data, error } = await supabase.rpc('rent_trading_bot', {
-      p_user_id: user.id,
-      p_bot_id: botId,
-      p_bot_name: botName,
-      p_strategy: strategy,
-      p_amount_usd: Number(amountUsd),
-    });
-    if (error) { console.error('[activateBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
-    if (!data?.ok) return data; // puede devolver INSUFFICIENT_FUNDS
-    await Promise.all([refreshBotActivations(), refreshTransactions()]);
-    return data;
-  }
-
-  async function pauseBot(activationId) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    const { data, error } = await supabase.rpc('pause_trading_bot', {
-      p_activation_id: activationId,
-      p_user_id: user.id,
-    });
-    if (error) { console.error('[pauseBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
-    await refreshBotActivations();
-    return data;
-  }
-
-  async function resumeBot(activationId) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    const { data, error } = await supabase.rpc('resume_trading_bot', {
-      p_activation_id: activationId,
-      p_user_id: user.id,
-    });
-    if (error) { console.error('[resumeBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
-    await refreshBotActivations();
-    return data;
-  }
-
-  async function cancelBot(activationId) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    const { data, error } = await supabase.rpc('cancel_trading_bot', {
-      p_activation_id: activationId,
-      p_user_id: user.id,
-    });
-    if (error) { console.error('[cancelBot] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
-    await refreshBotActivations();
-    return data;
-  }
-
-  async function creditBotProfit(activationId, amountUsd, note = null) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    const { data, error } = await supabase.rpc('credit_bot_profit', {
-      p_activation_id: activationId,
-      p_user_id: user.id,
-      p_amount_usd: Number(amountUsd),
-      p_note: note,
-    });
-    if (error) { console.error('[creditBotProfit] error:', error); return { ok:false, code:'RPC_ERROR', error }; }
-    await refreshTransactions(); // refleja el crédito en el historial
-    return data;
-  }
-
   // ======= Efecto: refetch al loguear/cambiar de user =======
   useEffect(() => {
     setInvestments([]);
@@ -328,10 +308,12 @@ export function DataProvider({ children }) {
     setReferrals([]);
     setBotActivations([]);
 
-    refreshInvestments();
-    refreshTransactions();
-    refreshReferrals();
-    refreshBotActivations();
+    if (user?.id) {
+      refreshInvestments();
+      refreshTransactions();
+      refreshReferrals();
+      refreshBotActivations();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
@@ -367,7 +349,6 @@ export function DataProvider({ children }) {
     await refreshInvestments();
 
     return {
-      // compat filtros
       user_id: data.user_id,
       userId: data.user_id,
 
@@ -398,7 +379,7 @@ export function DataProvider({ children }) {
     const payload = {
       user_id: user.id,
       amount: Number(amount),
-      type, // 'deposit' | 'withdrawal' | 'plan_purchase' | ...
+      type, // 'deposit' | 'withdrawal' | 'plan_purchase' | 'admin_credit' | ...
       status,
       currency,
       description,
@@ -423,7 +404,6 @@ export function DataProvider({ children }) {
     if (mappedType === 'plan_purchase') mappedType = 'investment';
 
     return {
-      // compat filtros
       user_id: data.user_id,
       userId: data.user_id,
 
@@ -439,7 +419,108 @@ export function DataProvider({ children }) {
     };
   }
 
-  // ======= API pública (compat sincrónica + métodos de refresh) =======
+  // ======= Acciones de bots (RPC opcionales, no fallan si no existen) =======
+  async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    try {
+      const { data, error } = await supabase.rpc('rent_trading_bot', {
+        p_user_id: user.id,
+        p_bot_id: botId,
+        p_bot_name: botName,
+        p_strategy: strategy,
+        p_amount_usd: Number(amountUsd),
+      });
+      if (error) {
+        console.warn('[activateBot] RPC error:', error?.message || error);
+        return { ok: false, code: 'RPC_ERROR', error };
+      }
+      await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      return data ?? { ok: true };
+    } catch (e) {
+      console.warn('[activateBot] RPC not available:', e?.message || e);
+      return { ok: false, code: 'RPC_NOT_FOUND' };
+    }
+  }
+
+  async function pauseBot(activationId) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    try {
+      const { data, error } = await supabase.rpc('pause_trading_bot', {
+        p_activation_id: activationId,
+        p_user_id: user.id,
+      });
+      if (error) {
+        console.warn('[pauseBot] RPC error:', error?.message || error);
+        return { ok: false, code: 'RPC_ERROR', error };
+      }
+      await refreshBotActivations();
+      return data ?? { ok: true };
+    } catch (e) {
+      console.warn('[pauseBot] RPC not available:', e?.message || e);
+      return { ok: false, code: 'RPC_NOT_FOUND' };
+    }
+  }
+
+  async function resumeBot(activationId) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    try {
+      const { data, error } = await supabase.rpc('resume_trading_bot', {
+        p_activation_id: activationId,
+        p_user_id: user.id,
+      });
+      if (error) {
+        console.warn('[resumeBot] RPC error:', error?.message || error);
+        return { ok: false, code: 'RPC_ERROR', error };
+      }
+      await refreshBotActivations();
+      return data ?? { ok: true };
+    } catch (e) {
+      console.warn('[resumeBot] RPC not available:', e?.message || e);
+      return { ok: false, code: 'RPC_NOT_FOUND' };
+    }
+  }
+
+  async function cancelBot(activationId) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    try {
+      const { data, error } = await supabase.rpc('cancel_trading_bot', {
+        p_activation_id: activationId,
+        p_user_id: user.id,
+      });
+      if (error) {
+        console.warn('[cancelBot] RPC error:', error?.message || error);
+        return { ok: false, code: 'RPC_ERROR', error };
+      }
+      await refreshBotActivations();
+      return data ?? { ok: true };
+    } catch (e) {
+      console.warn('[cancelBot] RPC not available:', e?.message || e);
+      return { ok: false, code: 'RPC_NOT_FOUND' };
+    }
+  }
+
+  async function creditBotProfit(activationId, amountUsd, note = null) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    try {
+      const { data, error } = await supabase.rpc('credit_bot_profit', {
+        p_activation_id: activationId,
+        p_user_id: user.id,
+        p_amount_usd: Number(amountUsd),
+        p_note: note,
+      });
+      if (error) {
+        console.warn('[creditBotProfit] RPC error:', error?.message || error);
+        return { ok: false, code: 'RPC_ERROR', error };
+      }
+      await refreshTransactions();
+      return data ?? { ok: true };
+    } catch (e) {
+      console.warn('[creditBotProfit] RPC not available:', e?.message || e);
+      return { ok: false, code: 'RPC_NOT_FOUND' };
+    }
+  }
+
+  // ======= API pública =======
   const value = useMemo(
     () => ({
       // datos listos para usar sin await
@@ -448,7 +529,7 @@ export function DataProvider({ children }) {
       referrals,
       botActivations,
 
-      // getters compatibles con tu UI actual (sincrónicos)
+      // getters sincrónicos (compat UI)
       getInvestments: () => investments,
       getTransactions: () => transactions,
       getReferrals: () => referrals,
@@ -460,7 +541,7 @@ export function DataProvider({ children }) {
       addInvestment,
       addTransaction,
 
-      // BOTS
+      // Bots
       refreshBotActivations,
       activateBot,
       pauseBot,
@@ -469,7 +550,8 @@ export function DataProvider({ children }) {
       creditBotProfit,
 
       // otros datos de UI
-      cryptoPrices,
+      cryptoPrices,          // { BTC: {price, change, history[]}, ... }
+      assetToSymbol: ASSET_TO_SYMBOL, // por si la UI necesita el par exacto
       investmentPlans,
     }),
     [
@@ -482,37 +564,33 @@ export function DataProvider({ children }) {
     ]
   );
 
-  return (
-    <DataContext.Provider value={value}>{children}</DataContext.Provider>
-  );
+  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
 
 // Hook con fallback seguro
 export function useData() {
   const ctx = useContext(DataContext);
-  if (!ctx) {
-    return {
-      investments: [],
-      transactions: [],
-      referrals: [],
-      botActivations: [],
-      getInvestments: () => [],
-      getTransactions: () => [],
-      getReferrals: () => [],
-      refreshInvestments: async () => {},
-      refreshTransactions: async () => {},
-      refreshReferrals: async () => {},
-      addInvestment: async () => null,
-      addTransaction: async () => null,
-      refreshBotActivations: async () => {},
-      activateBot: async () => ({ ok: false }),
-      pauseBot: async () => ({ ok: false }),
-      resumeBot: async () => ({ ok: false }),
-      cancelBot: async () => ({ ok: false }),
-      creditBotProfit: async () => ({ ok: false }),
-      cryptoPrices: {},
-      investmentPlans: [],
-    };
-  }
-  return ctx;
+  return ctx || {
+    investments: [],
+    transactions: [],
+    referrals: [],
+    botActivations: [],
+    getInvestments: () => [],
+    getTransactions: () => [],
+    getReferrals: () => [],
+    refreshInvestments: async () => {},
+    refreshTransactions: async () => {},
+    refreshReferrals: async () => {},
+    addInvestment: async () => null,
+    addTransaction: async () => null,
+    refreshBotActivations: async () => {},
+    activateBot: async () => ({ ok: false }),
+    pauseBot: async () => ({ ok: false }),
+    resumeBot: async () => ({ ok: false }),
+    cancelBot: async () => ({ ok: false }),
+    creditBotProfit: async () => ({ ok: false }),
+    cryptoPrices: {},
+    assetToSymbol: ASSET_TO_SYMBOL,
+    investmentPlans: [],
+  };
 }
