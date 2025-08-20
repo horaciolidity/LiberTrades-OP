@@ -1,3 +1,4 @@
+// src/components/trading/TradingPanel.jsx
 import React, { useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -13,50 +14,79 @@ const fmt = (n, dec = 2) => {
 };
 
 export default function TradingPanel({
-  // API mínima que sí viene del TradingSimulator actualizado
   selectedPair,
   setSelectedPair,
-  onTrade,                 // (tradeData) => void  (abre trade en demo o real según modo)
-  mode = 'demo',
-  balance = 0,
-  cryptoPrices = {},
-
-  // opcional (solo se muestra si está y modo demo)
-  resetBalance,
+  onTrade,                 // (tradeData) => Promise<void>
+  mode = 'demo',           // 'demo' | 'real'
+  balance = 0,             // USDC
+  cryptoPrices = {},       // opcional: si no llega, usa DataContext
+  resetBalance,            // opcional (solo demo)
 }) {
-  const { pairOptions: pairsFromCtx = [] } = useData();
+  const {
+    pairOptions: pairsFromCtx = [],
+    cryptoPrices: pricesFromCtx = {},
+  } = useData();
 
-  // estado local (ya no dependemos de props antiguas)
+  // fallback a precios del contexto si no vienen por props
+  const prices = useMemo(() => {
+    const hasProp = cryptoPrices && Object.keys(cryptoPrices).length > 0;
+    return hasProp ? cryptoPrices : (pricesFromCtx || {});
+  }, [cryptoPrices, pricesFromCtx]);
+
+  // base de pares con fallback, evitando undefined
+  const basePairs = pairsFromCtx.length
+    ? pairsFromCtx
+    : ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT'];
+
+  // lista de pares única, sin falsy
+  const allPairs = useMemo(() => {
+    const arr = [...(selectedPair ? [selectedPair] : []), ...basePairs];
+    return Array.from(new Set(arr.filter(Boolean)));
+  }, [basePairs, selectedPair]);
+
+  // par efectivo para no quedar sin valor
+  const effectivePair = selectedPair ?? allPairs[0] ?? 'BTC/USDT';
+
+  // estado local
   const [tradeAmount, setTradeAmount] = useState('100');
   const [tradeType, setTradeType] = useState('buy');
   const [tradeDuration, setTradeDuration] = useState(60); // seg
   const [isTrading, setIsTrading] = useState(false);
 
-  // lista de pares dinámica con fallback
-  const allPairs = useMemo(() => {
-    const base = pairsFromCtx.length ? pairsFromCtx : ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT'];
-    // asegura que el par seleccionado actual esté siempre
-    return Array.from(new Set([selectedPair, ...base]));
-  }, [pairsFromCtx, selectedPair]);
-
-  const currentCrypto = useMemo(() => (selectedPair || 'BTC/USDT').split('/')[0], [selectedPair]);
-  const currentPriceData = cryptoPrices[currentCrypto];
+  // precio actual
+  const currentCrypto = useMemo(() => (effectivePair || 'BTC/USDT').split('/')[0], [effectivePair]);
+  const currentPriceData = prices?.[currentCrypto];
   const currentPrice = Number(currentPriceData?.price ?? 0);
 
-  const canTrade = Number(tradeAmount) > 0 && currentPrice > 0 && !isTrading;
+  const amountNum = Number(tradeAmount);
+  const hasPrice = currentPrice > 0 && Number.isFinite(currentPrice);
+  const enoughBalance = mode === 'real' ? amountNum > 0 && amountNum <= Number(balance || 0) : amountNum > 0;
+
+  const canTrade = hasPrice && enoughBalance && !isTrading;
 
   const execute = async (side) => {
     setTradeType(side);
     if (!canTrade) return;
+
+    if (!onTrade) {
+      console.warn('[TradingPanel] onTrade handler is missing');
+      return;
+    }
+
     setIsTrading(true);
     try {
-      await onTrade?.({
-        pair: selectedPair,
-        type: side,                      // 'buy' | 'sell'
-        amount: Number(tradeAmount),     // USD notional
-        price: currentPrice,             // precio spot actual (si el caller lo usa)
-        duration: tradeDuration,         // seg (demo)
-      });
+      const payload = {
+        pair: effectivePair,
+        type: side,                 // 'buy' | 'sell'
+        amount: amountNum,          // USD notional
+        price: currentPrice,        // precio spot actual
+        duration: tradeDuration,    // (demo)
+        ts: Date.now(),             // útil para trazas
+      };
+      console.log('[onTrade payload]', payload, { priceLive: prices?.[currentCrypto] });
+      await onTrade(payload);
+    } catch (err) {
+      console.error('Error ejecutando trade:', err);
     } finally {
       setIsTrading(false);
     }
@@ -70,7 +100,7 @@ export default function TradingPanel({
           Panel de Trading
         </CardTitle>
         <CardDescription className="text-slate-300">
-          {mode === 'demo' ? 'Ejecuta trades virtuales' : 'Órdenes en saldo real'}
+          {mode === 'demo' ? 'Ejecuta trades virtuales' : 'Órdenes con saldo real'}
         </CardDescription>
       </CardHeader>
 
@@ -78,9 +108,12 @@ export default function TradingPanel({
         {/* Par */}
         <div className="space-y-2">
           <Label className="text-white">Par de Trading</Label>
-          <Select value={selectedPair} onValueChange={setSelectedPair}>
+          <Select
+            value={effectivePair}
+            onValueChange={(val) => setSelectedPair?.(val)}
+          >
             <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
-              <SelectValue />
+              <SelectValue placeholder="Selecciona un par" />
             </SelectTrigger>
             <SelectContent className="bg-slate-800 border-slate-600">
               {allPairs.map((p) => (
@@ -100,7 +133,7 @@ export default function TradingPanel({
             onChange={(e) => setTradeAmount(e.target.value)}
             placeholder="Ingresa el monto"
             className="bg-slate-800 border-slate-600 text-white"
-            min="0"
+            min="0.01"
             step="0.01"
           />
           <div className="flex gap-2">
@@ -110,7 +143,12 @@ export default function TradingPanel({
               </Button>
             ))}
           </div>
-          <p className="text-xs text-slate-400">Saldo {mode === 'demo' ? 'virtual' : 'real'}: ${fmt(balance)}</p>
+          <p className="text-xs text-slate-400">
+            Saldo {mode === 'demo' ? 'virtual' : 'real'}: ${fmt(balance)}
+          </p>
+          {mode === 'real' && amountNum > Number(balance || 0) && (
+            <p className="text-xs text-red-400">Saldo insuficiente para este monto.</p>
+          )}
         </div>
 
         {/* Duración (demo) */}
@@ -128,7 +166,7 @@ export default function TradingPanel({
           </Select>
           {mode !== 'demo' && (
             <p className="text-xs text-slate-500 flex items-center gap-1">
-              <Clock className="h-3 w-3" /> En modo real esta duración sólo aplica al simulador; tus órdenes reales se cierran cuando decidas.
+              <Clock className="h-3 w-3" /> La duración es sólo para el simulador; en real cerrás manualmente.
             </p>
           )}
         </div>
@@ -178,7 +216,7 @@ export default function TradingPanel({
           </Button>
         </div>
 
-        {/* Reset demo (sólo visible si nos pasas el callback y estás en demo) */}
+        {/* Reset demo */}
         {mode === 'demo' && typeof resetBalance === 'function' && (
           <Button
             onClick={resetBalance}
