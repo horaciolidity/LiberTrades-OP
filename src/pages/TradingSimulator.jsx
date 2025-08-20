@@ -43,7 +43,7 @@ export default function TradingSimulator() {
   const { user } = useAuth();
   const { playSound } = useSound();
   const { cryptoPrices: marketPrices = {} } = useData(); // feed real + reglas
-  const tradingLogic = useTradingLogic(); // solo gobierna DEMO
+  const tradingLogic = useTradingLogic(); // sólo DEMO
 
   const [mode, setMode] = useState('demo'); // 'demo' | 'real'
 
@@ -245,11 +245,8 @@ export default function TradingSimulator() {
   }, [realTrades, marketPrices, selectedPair]);
 
   // =================== Trading actions ===================
+  // Abre trade (real)
   const handleTrade = async (tradeData) => {
-    if (mode === 'demo') {
-      tradingLogic.openTrade(tradeData); // DEMO: no tocar saldo real
-      return;
-    }
     if (!user?.id) return;
 
     const payload = {
@@ -261,6 +258,8 @@ export default function TradingSimulator() {
       status: 'open',
       timestamp: Date.now(), // BIGINT ms
     };
+
+    console.log('[onTrade payload]', payload, { priceLive: marketPrices });
 
     const { error: tErr } = await supabase.from('trades').insert(payload);
     if (tErr) {
@@ -345,23 +344,26 @@ export default function TradingSimulator() {
     fetchRealData();
   };
 
-  // Bridge único para el Panel (demo/real)
-  const executeTradeFromPanel = () => {
-    const base = (selectedPair || DEFAULT_PAIR).split('/')[0];
-    const px = Number(marketPrices?.[base]?.price || 0);
-    const amt = Number(tradingLogic.tradeAmount || 0);
-    if (!amt || !px) return;
-
+  // Bridge único para el Panel (demo/real) → RESPETA la API del TradingPanel (onTrade(payload))
+  const onTradeFromPanel = async (payload) => {
     if (mode === 'demo') {
-      tradingLogic.executeTrade();
-    } else {
-      handleTrade({
-        pair: selectedPair,
-        type: tradingLogic.tradeType, // 'buy' | 'sell'
-        amount: amt,
-        price: px,
+      // El panel ya manda { pair, type, amount, price, duration }
+      tradingLogic.openTrade({
+        pair: payload.pair,
+        type: payload.type,
+        amount: Number(payload.amount),
+        priceAtExecution: Number(payload.price),
+        duration: payload.duration,
       });
+      return;
     }
+    // REAL
+    await handleTrade({
+      pair: payload.pair,
+      type: payload.type,
+      amount: Number(payload.amount),
+      price: Number(payload.price),
+    });
   };
 
   // =================== Stats (con unrealized) ===================
@@ -438,6 +440,7 @@ export default function TradingSimulator() {
           totalTradesCount={stats.totalTradesCount}
         />
 
+        {/* GRID principal: Chart (izq) + Panel (der) */}
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
           <div className="xl:col-span-9">
             <TradingChart
@@ -447,75 +450,66 @@ export default function TradingSimulator() {
             />
           </div>
 
+          {/* Panel de Trading en la columna derecha (donde estaba el chat) */}
           <div className="xl:col-span-3">
-            <Card className="crypto-card h-full flex flex-col">
-              <CardHeader>
-                <CardTitle className="text-white flex items-center text-lg">
-                  <MessageSquare className="h-5 w-5 mr-2 text-blue-400" />
-                  Chat de Traders
-                </CardTitle>
-              </CardHeader>
-
-              <CardContent className="flex-grow overflow-y-auto space-y-3 h-[350px]">
-                {chatMessages.map((msg) => (
-                  <motion.div
-                    key={msg.id}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <div className="flex items-center text-xs space-x-1 text-slate-400 mb-1">
-                      <span className="text-purple-300 font-semibold">{msg.user}</span>
-                      <span>{countryFlags[msg.country] || countryFlags.default}</span>
-                      <span>{userLevels[msg.level] || userLevels.beginner}</span>
-                      <span className="text-slate-500">{msg.time}</span>
-                    </div>
-                    <p className="text-sm text-slate-200 bg-slate-700 px-3 py-1.5 rounded-md">
-                      {msg.text}
-                    </p>
-                  </motion.div>
-                ))}
-                <div ref={chatEndRef} />
-              </CardContent>
-
-              <CardContent className="pt-2 pb-4">
-                <div className="flex space-x-2">
-                  <Input
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                    placeholder="Mensaje..."
-                    className="bg-slate-800 text-white border-slate-600"
-                  />
-                  <Button onClick={handleSendMessage} size="icon" className="bg-blue-500 hover:bg-blue-600">
-                    <Send className="h-4 w-4" />
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+            <TradingPanel
+              selectedPair={selectedPair}
+              setSelectedPair={tradingLogic.setSelectedPair}
+              onTrade={onTradeFromPanel}                 // << clave
+              mode={mode}
+              balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
+              cryptoPrices={marketPrices}
+              resetBalance={mode === 'demo' ? tradingLogic.resetBalance : undefined}
+            />
           </div>
         </div>
 
-        {/* Panel: pasar todas las props controladas para que el input funcione */}
-        <TradingPanel
-          selectedPair={selectedPair}
-          setSelectedPair={tradingLogic.setSelectedPair}
-          tradeAmount={tradingLogic.tradeAmount}
-          setTradeAmount={tradingLogic.setTradeAmount}
-          tradeType={tradingLogic.tradeType}
-          setTradeType={tradingLogic.setTradeType}
-          tradeDuration={tradingLogic.tradeDuration}
-          setTradeDuration={tradingLogic.setTradeDuration}
-          isTrading={tradingLogic.isTrading}
-          executeTrade={executeTradeFromPanel}   // puente demo/real
-          resetBalance={tradingLogic.resetBalance}
-          cryptoPrices={marketPrices}
-        />
+        {/* Chat abajo (donde antes estaba el panel) */}
+        <Card className="crypto-card">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center text-lg">
+              <MessageSquare className="h-5 w-5 mr-2 text-blue-400" />
+              Chat de Traders
+            </CardTitle>
+          </CardHeader>
+
+          <CardContent className="space-y-3 max-h-[380px] overflow-y-auto">
+            {chatMessages.map((msg) => (
+              <motion.div
+                key={msg.id}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <div className="flex items-center text-xs space-x-1 text-slate-400 mb-1">
+                  <span className="text-purple-300 font-semibold">{msg.user}</span>
+                  <span>{countryFlags[msg.country] || countryFlags.default}</span>
+                  <span>{userLevels[msg.level] || userLevels.beginner}</span>
+                  <span className="text-slate-500">{msg.time}</span>
+                </div>
+                <p className="text-sm text-slate-200 bg-slate-700 px-3 py-1.5 rounded-md">
+                  {msg.text}
+                </p>
+              </motion.div>
+            ))}
+            <div ref={chatEndRef} />
+            <div className="flex space-x-2 pt-2">
+              <Input
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                placeholder="Mensaje..."
+                className="bg-slate-800 text-white border-slate-600"
+              />
+              <Button onClick={handleSendMessage} size="icon" className="bg-blue-500 hover:bg-blue-600">
+                <Send className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         <TradesHistory
-          trades={mode === 'demo'
-            ? demoTradesWithLive
-            : realTradesWithLive}
+          trades={mode === 'demo' ? demoTradesWithLive : realTradesWithLive}
           cryptoPrices={marketPrices}
           closeTrade={handleCloseTrade} // acepta (id, manual?)
         />
