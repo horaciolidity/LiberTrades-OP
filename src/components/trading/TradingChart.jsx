@@ -1,5 +1,5 @@
 // src/components/trading/TradingChart.jsx
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import { createChart, ColorType } from 'lightweight-charts';
 import {
   Card,
@@ -12,12 +12,53 @@ import { TrendingUp } from 'lucide-react';
 
 const LAST_N_BARS = 120; // zoom cercano (últimos N ticks)
 const n = (x, fallback = 0) => (Number.isFinite(Number(x)) ? Number(x) : fallback);
+const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
 
-const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) => {
+// normaliza epoch a segundos (admite ms, s y ISO)
+const toEpochSec = (t) => {
+  if (!t) return undefined;
+  if (typeof t === 'string') {
+    const ms = Date.parse(t);
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
+  }
+  const num = Number(t);
+  if (!Number.isFinite(num)) return undefined;
+  if (num > 1e12) return Math.floor(num / 1000); // ms grandes
+  if (num > 1e9) return Math.floor(num);         // segundos
+  return Math.floor(num / 1000);                 // ms chicos
+};
+
+const TradingChart = ({
+  priceHistory = [],
+  selectedPair,
+  cryptoPrices = {},
+  openTrades = [],       // [{id, pair, type, amount, price|priceAtExecution, timestamp, stopLoss/stoploss?, takeProfit/takeprofit?}]
+  showGuides = true,
+}) => {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const lastBarTimeRef = useRef(undefined); // epoch seconds del último bar pintado
+
+  // refs para overlays
+  const entryLinesRef = useRef({}); // { tradeId: {entry, sl?, tp?} }
+
+  const pair = typeof selectedPair === 'string' && selectedPair ? selectedPair : 'BTC/USDT';
+  const base = (pair.split?.('/')?.[0] || 'BTC').toUpperCase();
+  const info = cryptoPrices?.[base] || {};
+  const livePrice = n(info.price, 0);
+  const priceStr = Number.isFinite(Number(info.price)) ? Number(info.price).toFixed(2) : '--';
+  const chg = Number(info.change);
+  const chgStr = Number.isFinite(chg) ? chg.toFixed(2) : '--';
+  const chgPos = Number.isFinite(chg) ? chg >= 0 : true;
+
+  const openForPair = useMemo(
+    () =>
+      (Array.isArray(openTrades) ? openTrades : [])
+        .filter((t) => String(t?.pair || '').toUpperCase() === pair.toUpperCase())
+        .filter((t) => (String(t?.status || 'open').toLowerCase() === 'open')),
+    [openTrades, pair]
+  );
 
   // Crear / destruir el chart
   useEffect(() => {
@@ -69,6 +110,16 @@ const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) =>
 
     return () => {
       try { ro.disconnect(); } catch {}
+      // limpiar price lines
+      try {
+        const map = entryLinesRef.current || {};
+        Object.values(map).forEach((obj) => {
+          obj?.entry && series.removePriceLine(obj.entry);
+          obj?.sl && series.removePriceLine(obj.sl);
+          obj?.tp && series.removePriceLine(obj.tp);
+        });
+        entryLinesRef.current = {};
+      } catch {}
       try { chart.remove(); } catch {}
       chartRef.current = null;
       seriesRef.current = null;
@@ -82,7 +133,6 @@ const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) =>
     const chart = chartRef.current;
     if (!series || !chart) return;
 
-    // Normaliza, filtra NaN/0 y ordena por tiempo
     const hist = Array.isArray(priceHistory) ? priceHistory : [];
     const sorted = hist
       .filter((p) => n(p.time) > 0 && n(p.value) > 0)
@@ -112,7 +162,6 @@ const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) =>
 
       if (seedCandles.length) {
         lastBarTimeRef.current = seedCandles[seedCandles.length - 1].time;
-        // Zoom cercano si hay más de una vela
         if (seedCandles.length > 1) {
           const first = seedCandles[Math.max(0, seedCandles.length - LAST_N_BARS)].time;
           const last = seedCandles[seedCandles.length - 1].time;
@@ -124,6 +173,7 @@ const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) =>
 
     // Actualización incremental
     const lastPoint = sorted[sorted.length - 1];
+    thePrevPoint = sorted[sorted.length - 2] || lastPoint;
     const prevPoint = sorted[sorted.length - 2] || lastPoint;
     const lastSec = Math.floor(n(lastPoint.time) / 1000);
 
@@ -136,28 +186,134 @@ const TradingChart = ({ priceHistory = [], selectedPair, cryptoPrices = {} }) =>
     };
 
     if (lastSec > lastBarTimeRef.current) {
-      // Nueva vela
       series.update(candle);
       lastBarTimeRef.current = lastSec;
 
-      // Mantener el foco en los últimos N
       const to = lastSec;
-      const from = to - LAST_N_BARS * 2; // ventana razonable
+      const from = to - LAST_N_BARS * 2;
       chart.timeScale().setVisibleRange({ from, to });
     } else if (lastSec === lastBarTimeRef.current) {
-      // Mismo segundo: refresca la vela actual
       series.update(candle);
     }
   }, [priceHistory]);
 
-  // Cabecera
-  const pair = typeof selectedPair === 'string' && selectedPair ? selectedPair : 'BTC/USDT';
-  const base = (pair.split?.('/')?.[0] || 'BTC').toUpperCase();
-  const info = cryptoPrices?.[base] || {};
-  const priceStr = Number.isFinite(Number(info.price)) ? Number(info.price).toFixed(2) : '--';
-  const chg = Number(info.change);
-  const chgStr = Number.isFinite(chg) ? chg.toFixed(2) : '--';
-  const chgPos = Number.isFinite(chg) ? chg >= 0 : true;
+  // ====== Overlays: price lines por operación abierta ======
+  useEffect(() => {
+    if (!showGuides) return;
+    const series = seriesRef.current;
+    if (!series) return;
+
+    // Limpia anteriores
+    const prev = entryLinesRef.current || {};
+    Object.values(prev).forEach((obj) => {
+      try { obj?.entry && series.removePriceLine(obj.entry); } catch {}
+      try { obj?.sl && series.removePriceLine(obj.sl); } catch {}
+      try { obj?.tp && series.removePriceLine(obj.tp); } catch {}
+    });
+    entryLinesRef.current = {};
+
+    // Crea nuevas para las operaciones del par
+    openForPair.forEach((t) => {
+      const id = String(t.id ?? `${t.pair}:${t.timestamp ?? Math.random()}`);
+      const side = String(t.type || '').toLowerCase(); // buy | sell
+      const entry = n(t.price ?? t.priceAtExecution, NaN);
+      if (!Number.isFinite(entry)) return;
+
+      const color = side === 'sell' ? '#ef4444' : '#22c55e';
+      const obj = {};
+
+      obj.entry = series.createPriceLine({
+        price: entry,
+        color,
+        lineWidth: 2,
+        lineStyle: 0, // Solid
+        axisLabelVisible: true,
+        title: `${side === 'sell' ? 'SELL' : 'BUY'} @ ${fmt(entry)}`,
+      });
+
+      // stop / take (admite camel y snake)
+      const sl = n(t.stopLoss ?? t.stoploss, NaN);
+      if (Number.isFinite(sl)) {
+        obj.sl = series.createPriceLine({
+          price: sl,
+          color: '#ef4444',
+          lineWidth: 1,
+          lineStyle: 2, // Dashed
+          axisLabelVisible: true,
+          title: `SL ${fmt(sl)}`,
+        });
+      }
+      const tp = n(t.takeProfit ?? t.takeprofit, NaN);
+      if (Number.isFinite(tp)) {
+        obj.tp = series.createPriceLine({
+          price: tp,
+          color: '#22c55e',
+          lineWidth: 1,
+          lineStyle: 2, // Dashed
+          axisLabelVisible: true,
+          title: `TP ${fmt(tp)}`,
+        });
+      }
+
+      entryLinesRef.current[id] = obj;
+    });
+  }, [openForPair, showGuides]);
+
+  // Actualiza el título de las líneas con PnL vivo
+  useEffect(() => {
+    if (!showGuides) return;
+    const series = seriesRef.current;
+    if (!series) return;
+    if (!Number.isFinite(livePrice)) return;
+
+    const map = entryLinesRef.current || {};
+    openForPair.forEach((t) => {
+      const id = String(t.id ?? `${t.pair}:${t.timestamp ?? ''}`);
+      const obj = map[id];
+      if (!obj?.entry) return;
+
+      const side = String(t.type || '').toLowerCase();
+      const entry = n(t.price ?? t.priceAtExecution, NaN);
+      const amt = n(t.amount, NaN);
+      if (!Number.isFinite(entry) || !Number.isFinite(amt)) return;
+
+      const qty = amt / entry;
+      const upnl = side === 'sell' ? (entry - livePrice) * qty : (livePrice - entry) * qty;
+      const upnlPct = (upnl / Math.max(1e-9, amt)) * 100;
+
+      try {
+        obj.entry.applyOptions({
+          title: `${side === 'sell' ? 'SELL' : 'BUY'} @ ${fmt(entry)}  |  PnL ${upnl >= 0 ? '+' : ''}${fmt(upnl)} (${upnlPct >= 0 ? '+' : ''}${fmt(upnlPct)}%)`,
+        });
+      } catch {}
+    });
+  }, [livePrice, openForPair, showGuides]);
+
+  // Marcadores de entrada en la serie
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+
+    const markers = openForPair
+      .map((t) => {
+        const sec = toEpochSec(t.timestamp);
+        const price = n(t.price ?? t.priceAtExecution, NaN);
+        if (!sec || !Number.isFinite(price)) return null;
+
+        const side = String(t.type || '').toLowerCase();
+        const isBuy = side !== 'sell';
+        return {
+          time: sec,
+          position: isBuy ? 'belowBar' : 'aboveBar',
+          color: isBuy ? '#22c55e' : '#ef4444',
+          shape: isBuy ? 'arrowUp' : 'arrowDown',
+          text: `${isBuy ? 'BUY' : 'SELL'} ${fmt(price)}`,
+        };
+      })
+      .filter(Boolean);
+
+    try { series.setMarkers(markers); } catch {}
+  }, [openForPair]);
 
   return (
     <Card className="crypto-card h-full flex flex-col">

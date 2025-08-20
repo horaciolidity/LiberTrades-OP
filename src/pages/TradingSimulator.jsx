@@ -249,6 +249,12 @@ export default function TradingSimulator() {
   const handleTrade = async (tradeData) => {
     if (!user?.id) return;
 
+    // Validación simple de saldo en modo real
+    if (mode === 'real' && Number(tradeData.amount) > Number(realBalance)) {
+      console.warn('[trade insert] monto supera el saldo disponible');
+      return;
+    }
+
     const payload = {
       user_id: user.id,
       pair: tradeData.pair,
@@ -306,8 +312,10 @@ export default function TradingSimulator() {
       return;
     }
 
-    // Calcular profit al cierre con precio de mercado actual
-    const { upnl } = computeLivePnL(tr);
+    // Precio live al momento del cierre y cálculo del profit
+    const base = parseBaseFromPair(tr.pair);
+    const liveClose = Number(marketPrices?.[base]?.price ?? tr.price ?? 0);
+    const { upnl } = computeLivePnL({ ...tr, priceAtExecution: tr.price });
     const realized = Number(upnl || 0);
 
     const { error: uErr } = await supabase
@@ -315,6 +323,7 @@ export default function TradingSimulator() {
       .update({
         status: 'closed',
         profit: realized,
+        closeprice: liveClose,   // << guardamos precio de cierre
         // DB: closeat es BIGINT ⇒ enviar ms
         closeat: Date.now(),
       })
@@ -413,6 +422,12 @@ export default function TradingSimulator() {
     return safe(src).slice(-240);
   }, [marketPrices, baseForChart, tradingLogic.priceHistory]);
 
+  // Operaciones abiertas para overlays del gráfico
+  const openTradesForChart = useMemo(() => {
+    const list = mode === 'demo' ? demoTradesWithLive : realTradesWithLive;
+    return safe(list).filter(t => String(t.status || '').toLowerCase() === 'open');
+  }, [mode, demoTradesWithLive, realTradesWithLive]);
+
   // =================== Render ===================
   return (
     <>
@@ -449,6 +464,8 @@ export default function TradingSimulator() {
               priceHistory={chartHistory}
               selectedPair={selectedPair}
               cryptoPrices={marketPrices}
+              openTrades={openTradesForChart}   // 👈 líneas guía + marcadores
+              showGuides
             />
           </div>
 
@@ -475,7 +492,7 @@ export default function TradingSimulator() {
             </CardTitle>
           </CardHeader>
 
-        <CardContent className="space-y-3 max-h-[380px] overflow-y-auto">
+          <CardContent className="space-y-3 max-h-[380px] overflow-y-auto">
             {chatMessages.map((msg) => (
               <motion.div
                 key={msg.id}

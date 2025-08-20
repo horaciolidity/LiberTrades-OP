@@ -29,6 +29,36 @@ const DEFAULT_BINANCE_MAP = {
 const HISTORY_MAX = 600;     // puntos guardados por símbolo (~10 min a 1s)
 const TICK_MS = 1200;        // ~1.2s para fluidez visual
 
+// ---------- Perfiles de dificultad (solo simulated/manual) ----------
+/**
+ * Los perfiles multiplican la volatilidad base (volatility_bps),
+ * aplican leve "mean reversion" (tender hacia un ancla) y
+ * en "nervous" agregan micro-jumps esporádicos.
+ */
+const DIFFICULTY_PROFILES = {
+  easy: {
+    volMult: 0.45,      // ±0.45x de la volatilidad declarada
+    meanRevK: 0.18,     // atracción al ancla
+    jumpProb: 0.001,    // casi nunca
+    jumpBps: 25,        // salto pequeño
+  },
+  intermediate: {
+    volMult: 1.0,       // lo que diga volatility_bps
+    meanRevK: 0.06,
+    jumpProb: 0.003,
+    jumpBps: 80,
+  },
+  nervous: {
+    volMult: 2.2,       // muy volátil
+    meanRevK: -0.04,    // anti-mean-reversion (choppy)
+    jumpProb: 0.012,    // más frecuente
+    jumpBps: 200,       // saltos notorios
+  },
+};
+const getProfile = (difficulty) =>
+  DIFFICULTY_PROFILES[String(difficulty || 'intermediate').toLowerCase()] ||
+  DIFFICULTY_PROFILES.intermediate;
+
 // ---------- Reglas por hora UTC ----------
 const inWindowUTC = (hour, start, end) => {
   // Ventana [start, end) con cruce de medianoche soportado
@@ -78,7 +108,8 @@ export function DataProvider({ children }) {
    * - base_price (NUMERIC)    // si manual/simulated
    * - decimals (INT)          // presentación
    * - quote (TEXT)            // 'USDT' | 'USDC' (visual)
-   * - volatility_bps (INT)    // solo simulated: magnitud de variación por tick
+   * - volatility_bps (INT)    // simulated/manual: magnitud de variación por tick
+   * - difficulty (TEXT)       // 'easy' | 'intermediate' | 'nervous'  (solo admin)
    */
   const [instruments, setInstruments] = useState([]);
 
@@ -161,7 +192,7 @@ export function DataProvider({ children }) {
     return map; // { BTC:'BTCUSDT', MIKO:'MIKOUSDT', ...}
   }, [instruments]);
 
-  // ---------- Inicializa REST/WS para live + simuladores para simulated ----------
+  // ---------- Inicializa REST/WS para live + simuladores para simulated/manual ----------
   useEffect(() => {
     let alive = true;
 
@@ -248,21 +279,25 @@ export function DataProvider({ children }) {
         };
       }
 
-      // Simuladores
-      const sims = instruments.filter(
-        (i) => (i.enabled ?? true) && String(i.source || '').toLowerCase() === 'simulated'
+      // -------- Simuladores para SIMULATED y MANUAL (animación) --------
+      const simLike = instruments.filter(
+        (i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase())
       );
 
-      sims.forEach((i) => {
+      simLike.forEach((i) => {
         const sym = i.symbol;
-        const volBps = Number(i.volatility_bps ?? 50); // 50 bps ≈ ±0.5% por tick
+        const profile = getProfile(i.difficulty);
+        const volBps = Math.max(1, Number(i.volatility_bps ?? 50)) * profile.volMult; // bps efectivos
         const decimals = Number(i.decimals ?? 2);
         const base0 = Number(i.base_price ?? 1);
 
-        // seed si hacía falta
+        // ancla para mean reversion: base declarado o media móvil
+        let anchor = base0;
+
+        // seed si hacía falta (⚠️ sin 'change' para que el % se calcule con history)
         setRealQuotes((prev) => {
           if (prev[sym]?.price) return prev;
-          return { ...prev, [sym]: { price: base0, change: 0 } };
+          return { ...prev, [sym]: { price: base0 } };
         });
         setPriceHistories((prev) => {
           if (prev[sym]?.length) return prev;
@@ -271,12 +306,30 @@ export function DataProvider({ children }) {
 
         const iv = setInterval(() => {
           setRealQuotes((prev) => {
-            const p = Number(prev[sym]?.price ?? base0);
-            const r = (Math.random() - 0.5) * 2;     // [-1..1]
-            const pct = (volBps / 10000) * r;        // bps -> proporción
-            let next = p * (1 + pct);
+            const last = Number(prev[sym]?.price ?? base0);
+
+            // ruido "casi normal" (suma de 3 uniformes)
+            const u = (Math.random() - 0.5) + (Math.random() - 0.5) + (Math.random() - 0.5); // ≈ N(0, ~0.43)
+            const pctRW = (volBps / 10000) * u; // bps -> proporción
+
+            // mean reversion hacia el ancla
+            const mr = profile.meanRevK * ((anchor - last) / Math.max(1e-9, anchor));
+
+            // jumps esporádicos (modo nervous)
+            let jump = 0;
+            if (Math.random() < profile.jumpProb) {
+              const dir = Math.random() < 0.5 ? -1 : 1;
+              jump = dir * (profile.jumpBps / 10000);
+            }
+
+            let next = last * (1 + pctRW + mr + jump);
             next = Number(next.toFixed(Number.isFinite(decimals) ? decimals : 2));
-            return { ...prev, [sym]: { price: next, change: 0 } };
+
+            // actualizar ancla suavemente (EMA)
+            anchor = 0.995 * anchor + 0.005 * next;
+
+            // ⚠️ no seteamos 'change' aquí
+            return { ...prev, [sym]: { ...(prev[sym] || {}), price: next } };
           });
         }, Math.max(800, TICK_MS)); // ligeramente rápido para naturalidad
         simIntervalsRef.current[sym] = iv;
@@ -313,10 +366,10 @@ export function DataProvider({ children }) {
         const decimals = Number(inst?.decimals ?? 2);
 
         // base:
-        // manual -> base_price
+        // manual -> price animado (arriba) o base_price si no hay
         // simulated/binance -> realQuotes
         let base = 0;
-        if (src === 'manual') base = Number(inst?.base_price ?? 0);
+        if (src === 'manual') base = Number(realQuotes?.[sym]?.price ?? inst?.base_price ?? 0);
         else {
           base = Number(realQuotes?.[sym]?.price ?? 0);
           if (!base && inst) base = Number(inst.base_price ?? 0);
@@ -330,9 +383,11 @@ export function DataProvider({ children }) {
         // normaliza
         finalPrice = Number(finalPrice.toFixed(Number.isFinite(decimals) ? decimals : 2));
 
-        // change %
+        // change %:
+        // - binance: usar lo que da el feed
+        // - simulated/manual: calcular con history
         let changePct = 0;
-        if (realQuotes?.[sym]?.change != null) {
+        if (src === 'binance' && realQuotes?.[sym]?.change != null) {
           changePct = Number(realQuotes[sym].change || 0);
         } else {
           const h = ensureArray(nextHist[sym]);
@@ -358,7 +413,7 @@ export function DataProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instruments, marketRules, realQuotes]);
 
-  // ---------- Planes (estáticos) ----------
+  // ---------- Planes (státicos) ----------
   const investmentPlans = useMemo(
     () => [
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
