@@ -782,7 +782,7 @@ export default function AdminDashboard() {
                 <tr className="border-b border-slate-700 text-slate-300">
                   <th className="text-left py-2">Usuario</th>
                   <th className="text-left py-2">Email</th>
-                  <th className="text-left py-2">Rol</hth>
+                  <th className="text-left py-2">Rol</th>
                   <th className="text-right py-2">Saldo</th>
                   <th className="text-right py-2">Ajustar</th>
                 </tr>
