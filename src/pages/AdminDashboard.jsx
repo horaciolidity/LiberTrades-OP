@@ -22,23 +22,17 @@ import {
   Plus,
   CalendarClock,
   Percent,
-  ArrowUpRight,
-  ArrowDownRight
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from 'recharts';
 
 const TX_TABLE = 'wallet_transactions';
-
-const fmt = (n, dec = 2) => {
-  const num = Number(n);
-  return Number.isFinite(num) ? num.toFixed(dec) : (0).toFixed(dec);
-};
+const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toFixed(dec) : (0).toFixed(dec));
 
 export default function AdminDashboard() {
   const { user: authUser, refreshBalances } = useAuth();
   const [loading, setLoading] = useState(true);
 
-  // -------- data existentes --------
+  // -------- usuarios / tx --------
   const [users, setUsers] = useState([]);
   const [pendingDeposits, setPendingDeposits] = useState([]);
   const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
@@ -52,36 +46,56 @@ export default function AdminDashboard() {
     activeUsers30d: 0,
   });
 
-  // -------- NUEVO: Mercado (instrumentos + reglas) --------
-  const [instruments, setInstruments] = useState([]); // {id, symbol, name, source, base_price, decimals, volatility, enabled}
+  // -------- mercado --------
+  const [instruments, setInstruments] = useState([]);
   const [selectedSymbol, setSelectedSymbol] = useState('');
-  const [rules, setRules] = useState([]); // reglas del símbolo seleccionado
+  const [rules, setRules] = useState([]);
 
-  // formularios
+  // forms (alineado al nuevo esquema)
   const [instForm, setInstForm] = useState({
     symbol: '',
     name: '',
-    source: 'real', // real | manual
-    base_price: '',
+    source: 'binance',               // binance | simulated | manual
+    binance_symbol: '',              // si source=binance
+    quote: 'USDT',
+    base_price: '',                  // si manual/simulated
     decimals: 2,
-    volatility: 0.02,
+    volatility_bps: 50,              // simulated
+    difficulty: 'intermediate',      // easy | intermediate | nervous
     enabled: true,
   });
 
   const [ruleForm, setRuleForm] = useState({
     start_hour: 9,
     end_hour: 12,
-    type: 'percent', // percent | absolute
-    value: 5, // positivo o negativo
+    type: 'percent', // 'percent' | 'abs'
+    value: 5,
     label: 'Sube en la mañana',
     active: true,
   });
 
-  // ------- fetchers existentes -------
+  // ---------- helpers ----------
+  const buildUserMap = async (userIds) => {
+    const ids = Array.from(new Set(userIds)).filter(Boolean);
+    if (ids.length === 0) return {};
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, email, username')
+      .in('id', ids);
+    if (error) return {};
+    const map = {};
+    (data || []).forEach((p) => {
+      map[p.id] = { email: p.email || '', username: p.username || '' };
+    });
+    return map;
+  };
+
+  // ---------- fetchers ----------
   const fetchUsers = async () => {
+    // ahora sí trae email
     const { data: profs, error: pErr } = await supabase
       .from('profiles')
-      .select('id, username, role, created_at')
+      .select('id, email, username, role, created_at')
       .order('created_at', { ascending: false });
     if (pErr) throw pErr;
 
@@ -90,10 +104,9 @@ export default function AdminDashboard() {
       .select('user_id, usdc, demo_balance');
     if (bErr) throw bErr;
 
-    const balMap = Object.fromEntries((bals || []).map(b => [b.user_id, b]));
-    const merged = (profs || []).map(p => ({
+    const balMap = Object.fromEntries((bals || []).map((b) => [b.user_id, b]));
+    const merged = (profs || []).map((p) => ({
       ...p,
-      email: '',
       balance: Number(balMap[p.id]?.usdc ?? 0),
       demo_balance: Number(balMap[p.id]?.demo_balance ?? 0),
     }));
@@ -117,8 +130,20 @@ export default function AdminDashboard() {
       .order('created_at', { ascending: true });
     if (wErr) throw wErr;
 
-    setPendingDeposits(dep || []);
-    setPendingWithdrawals(wit || []);
+    // enriquecer con email/username
+    const ids = [...(dep || []).map((t) => t.user_id), ...(wit || []).map((t) => t.user_id)];
+    const userMap = await buildUserMap(ids);
+
+    setPendingDeposits((dep || []).map((t) => ({
+      ...t,
+      user_email: userMap[t.user_id]?.email || '',
+      user_name: userMap[t.user_id]?.username || '',
+    })));
+    setPendingWithdrawals((wit || []).map((t) => ({
+      ...t,
+      user_email: userMap[t.user_id]?.email || '',
+      user_name: userMap[t.user_id]?.username || '',
+    })));
   };
 
   const fetchMetrics = async (usersList, depList, witList) => {
@@ -130,9 +155,9 @@ export default function AdminDashboard() {
       .eq('status', 'completed');
     if (error) throw error;
 
-    const volume30d = (tx30 || []).reduce((sum, t) => sum + Number(t.amount || 0), 0);
-    const activeUserIds = new Set((tx30 || []).map(t => t.user_id));
-    const activeUsers30d = usersList.filter(u => activeUserIds.has(u.id)).length;
+    const volume30d = (tx30 || []).reduce((s, t) => s + Number(t.amount || 0), 0);
+    const activeUserIds = new Set((tx30 || []).map((t) => t.user_id));
+    const activeUsers30d = usersList.filter((u) => activeUserIds.has(u.id)).length;
 
     setMetrics({
       totalUsers: usersList.length,
@@ -141,6 +166,27 @@ export default function AdminDashboard() {
       volume30d,
       activeUsers30d,
     });
+  };
+
+  const fetchInstruments = async () => {
+    const { data, error } = await supabase
+      .from('market_instruments')
+      .select('*')
+      .order('symbol', { ascending: true });
+    if (error) throw error;
+    setInstruments(data || []);
+    if (!selectedSymbol && (data || []).length) setSelectedSymbol(data[0].symbol);
+  };
+
+  const fetchRulesForSymbol = async (symbol) => {
+    if (!symbol) return setRules([]);
+    const { data, error } = await supabase
+      .from('market_rules')
+      .select('*')
+      .eq('symbol', symbol)
+      .order('start_hour', { ascending: true });
+    if (error) throw error;
+    setRules(data || []);
   };
 
   const reloadAll = async () => {
@@ -156,55 +202,39 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => { reloadAll(); }, []);
-  useEffect(() => {
-    fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {});
-  }, [users, pendingDeposits, pendingWithdrawals]);
-
-  // ------- NUEVO: instrumentos + reglas -------
-  const fetchInstruments = async () => {
-    const { data, error } = await supabase
-      .from('market_instruments')
-      .select('*')
-      .order('symbol', { ascending: true });
-    if (error) throw error;
-    setInstruments(data || []);
-    if (!selectedSymbol && (data || []).length) {
-      setSelectedSymbol(data[0].symbol);
-    }
-  };
-
-  const fetchRulesForSymbol = async (symbol) => {
-    if (!symbol) { setRules([]); return; }
-    const { data, error } = await supabase
-      .from('market_rules')
-      .select('*')
-      .eq('symbol', symbol)
-      .order('start_hour', { ascending: true });
-    if (error) throw error;
-    setRules(data || []);
-  };
-
+  useEffect(() => { fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {}); }, [users, pendingDeposits, pendingWithdrawals]);
   useEffect(() => { fetchRulesForSymbol(selectedSymbol).catch(() => {}); }, [selectedSymbol]);
 
+  // ---------- CRUD instrumentos ----------
   const addInstrument = async () => {
     try {
       const payload = {
         symbol: instForm.symbol.trim().toUpperCase(),
         name: instForm.name.trim(),
-        source: instForm.source,
-        base_price: Number(instForm.base_price || 0),
+        source: instForm.source,                    // 'binance' | 'simulated' | 'manual'
+        binance_symbol: instForm.binance_symbol.trim().toUpperCase() || null,
+        quote: instForm.quote || 'USDT',
+        base_price: Number(instForm.base_price || 0) || null,
         decimals: Number(instForm.decimals || 2),
-        volatility: Number(instForm.volatility || 0),
+        volatility_bps: Number(instForm.volatility_bps || 50),
+        difficulty: instForm.difficulty,
         enabled: !!instForm.enabled,
       };
       if (!payload.symbol || !payload.name) {
         toast({ title: 'Faltan datos', description: 'Símbolo y nombre son obligatorios.', variant: 'destructive' });
         return;
       }
+      if (payload.source === 'binance' && !payload.binance_symbol) {
+        toast({ title: 'Falta par de Binance', description: 'Ej: BTCUSDT', variant: 'destructive' });
+        return;
+      }
       const { error } = await supabase.from('market_instruments').insert(payload);
       if (error) throw error;
       toast({ title: 'Cripto agregada', description: `${payload.symbol} creada.` });
-      setInstForm({ symbol: '', name: '', source: 'real', base_price: '', decimals: 2, volatility: 0.02, enabled: true });
+      setInstForm({
+        symbol: '', name: '', source: 'binance', binance_symbol: '', quote: 'USDT',
+        base_price: '', decimals: 2, volatility_bps: 50, difficulty: 'intermediate', enabled: true,
+      });
       await fetchInstruments();
       setSelectedSymbol(payload.symbol);
     } catch (e) {
@@ -214,10 +244,7 @@ export default function AdminDashboard() {
 
   const updateInstrument = async (symbol, patch) => {
     try {
-      const { error } = await supabase
-        .from('market_instruments')
-        .update(patch)
-        .eq('symbol', symbol);
+      const { error } = await supabase.from('market_instruments').update(patch).eq('symbol', symbol);
       if (error) throw error;
       toast({ title: 'Cripto actualizada', description: symbol });
       await fetchInstruments();
@@ -228,18 +255,18 @@ export default function AdminDashboard() {
 
   const removeInstrument = async (symbol) => {
     try {
-      await supabase.from('market_rules').delete().eq('symbol', symbol); // limpiar reglas
+      await supabase.from('market_rules').delete().eq('symbol', symbol);
       const { error } = await supabase.from('market_instruments').delete().eq('symbol', symbol);
       if (error) throw error;
       toast({ title: 'Cripto eliminada', description: symbol });
       await fetchInstruments();
-      setSelectedSymbol(prev => (prev === symbol ? '' : prev));
-      setRules([]);
+      if (selectedSymbol === symbol) { setSelectedSymbol(''); setRules([]); }
     } catch (e) {
       toast({ title: 'No se pudo eliminar', description: e.message, variant: 'destructive' });
     }
   };
 
+  // ---------- CRUD reglas ----------
   const addRule = async () => {
     try {
       if (!selectedSymbol) {
@@ -250,13 +277,13 @@ export default function AdminDashboard() {
         symbol: selectedSymbol,
         start_hour: Number(ruleForm.start_hour),
         end_hour: Number(ruleForm.end_hour),
-        type: ruleForm.type, // percent | absolute
-        value: Number(ruleForm.value || 0), // puede ser negativo
+        type: ruleForm.type, // 'percent' | 'abs'
+        value: Number(ruleForm.value || 0),
         label: ruleForm.label?.trim() || null,
         active: !!ruleForm.active,
       };
-      if (payload.end_hour === payload.start_hour) {
-        toast({ title: 'Rango inválido', description: 'start_hour y end_hour no pueden ser iguales.', variant: 'destructive' });
+      if (!Number.isFinite(payload.start_hour) || !Number.isFinite(payload.end_hour)) {
+        toast({ title: 'Horas inválidas', description: '0..23', variant: 'destructive' });
         return;
       }
       const { error } = await supabase.from('market_rules').insert(payload);
@@ -290,33 +317,7 @@ export default function AdminDashboard() {
     }
   };
 
-  // ------- Preview 24h del precio (aplicando reglas) -------
-  const selectedInst = instruments.find(i => i.symbol === selectedSymbol);
-  const previewData = useMemo(() => {
-    if (!selectedInst) return [];
-    const base = Number(selectedInst.base_price || 0);
-    const dec = Number(selectedInst.decimals || 2);
-    const list = [];
-    for (let h = 0; h < 24; h++) {
-      let price = base;
-      // aplicar reglas activas que incluyan la hora h
-      const hits = rules.filter(r => r.active && (
-        (r.start_hour < r.end_hour && h >= r.start_hour && h < r.end_hour) ||
-        (r.start_hour > r.end_hour && (h >= r.start_hour || h < r.end_hour)) // rango que cruza medianoche
-      ));
-      hits.forEach(r => {
-        if (r.type === 'percent') {
-          price = price * (1 + Number(r.value || 0) / 100);
-        } else {
-          price = price + Number(r.value || 0);
-        }
-      });
-      list.push({ hour: `${h.toString().padStart(2, '0')}:00`, price: Number(price.toFixed(dec)) });
-    }
-    return list;
-  }, [rules, selectedInst]);
-
-  // ------- acciones admin existentes -------
+  // ---------- métricas ----------
   const maybeRefreshSelf = async (affectedUserId) => {
     if (authUser?.id && authUser.id === affectedUserId && typeof refreshBalances === 'function') {
       await refreshBalances();
@@ -326,22 +327,15 @@ export default function AdminDashboard() {
   const adjustBalance = async (userId, deltaStr) => {
     const delta = Number(deltaStr);
     if (!deltaStr || !Number.isFinite(delta)) {
-      toast({ title: 'Monto inválido', description: 'Ingresa un número (ej: +100 o -50).', variant: 'destructive' });
+      toast({ title: 'Monto inválido', description: 'Ingresa +100 o -50', variant: 'destructive' });
       return;
     }
     try {
-      const { data: row, error: gErr } = await supabase
-        .from('balances')
-        .select('usdc')
-        .eq('user_id', userId)
-        .single();
+      const { data: row, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', userId).single();
       if (gErr) throw gErr;
-
       const newUsdc = Number(row?.usdc || 0) + delta;
-      const { error: uErr } = await supabase
-        .from('balances')
-        .update({ usdc: newUsdc })
-        .eq('user_id', userId);
+
+      const { error: uErr } = await supabase.from('balances').update({ usdc: newUsdc }).eq('user_id', userId);
       if (uErr) throw uErr;
 
       await supabase.from(TX_TABLE).insert({
@@ -352,10 +346,9 @@ export default function AdminDashboard() {
       });
 
       toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(newUsdc)}` });
-
       await maybeRefreshSelf(userId);
       await reloadAll();
-      setAdjustValues(v => ({ ...v, [userId]: '' }));
+      setAdjustValues((v) => ({ ...v, [userId]: '' }));
     } catch (e) {
       console.error(e);
       toast({ title: 'Error ajustando balance', description: e.message, variant: 'destructive' });
@@ -364,28 +357,17 @@ export default function AdminDashboard() {
 
   const approveDeposit = async (tx) => {
     try {
-      const { data: balRow, error: gErr } = await supabase
-        .from('balances')
-        .select('usdc')
-        .eq('user_id', tx.user_id)
-        .single();
+      const { data: balRow, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', tx.user_id).single();
       if (gErr) throw gErr;
-
       const newUsdc = Number(balRow?.usdc || 0) + Number(tx.amount || 0);
-      const { error: bErr } = await supabase
-        .from('balances')
-        .update({ usdc: newUsdc })
-        .eq('user_id', tx.user_id);
+
+      const { error: bErr } = await supabase.from('balances').update({ usdc: newUsdc }).eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
-      const { error: tErr } = await supabase
-        .from(TX_TABLE)
-        .update({ status: 'completed' })
-        .eq('id', tx.id);
+      const { error: tErr } = await supabase.from(TX_TABLE).update({ status: 'completed' }).eq('id', tx.id);
       if (tErr) throw tErr;
 
       toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
-
       await maybeRefreshSelf(tx.user_id);
       await reloadAll();
     } catch (e) {
@@ -396,34 +378,21 @@ export default function AdminDashboard() {
 
   const approveWithdrawal = async (tx) => {
     try {
-      const { data: balRow, error: gErr } = await supabase
-        .from('balances')
-        .select('usdc')
-        .eq('user_id', tx.user_id)
-        .single();
+      const { data: balRow, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', tx.user_id).single();
       if (gErr) throw gErr;
-
       const current = Number(balRow?.usdc || 0);
       const amt = Number(tx.amount || 0);
       if (current < amt) {
         toast({ title: 'Saldo insuficiente', description: 'No alcanza para aprobar', variant: 'destructive' });
         return;
       }
-
-      const { error: bErr } = await supabase
-        .from('balances')
-        .update({ usdc: current - amt })
-        .eq('user_id', tx.user_id);
+      const { error: bErr } = await supabase.from('balances').update({ usdc: current - amt }).eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
-      const { error: tErr } = await supabase
-        .from(TX_TABLE)
-        .update({ status: 'completed' })
-        .eq('id', tx.id);
+      const { error: tErr } = await supabase.from(TX_TABLE).update({ status: 'completed' }).eq('id', tx.id);
       if (tErr) throw tErr;
 
       toast({ title: 'Retiro aprobado', description: `Debitado $${fmt(tx.amount)}` });
-
       await maybeRefreshSelf(tx.user_id);
       await reloadAll();
     } catch (e) {
@@ -434,10 +403,7 @@ export default function AdminDashboard() {
 
   const rejectTx = async (tx) => {
     try {
-      const { error } = await supabase
-        .from(TX_TABLE)
-        .update({ status: 'rejected' })
-        .eq('id', tx.id);
+      const { error } = await supabase.from(TX_TABLE).update({ status: 'rejected' }).eq('id', tx.id);
       if (error) throw error;
       toast({ title: 'Solicitud rechazada' });
       await reloadAll();
@@ -447,21 +413,43 @@ export default function AdminDashboard() {
     }
   };
 
-  // ------- filtros usuarios -------
+  // ---------- filtros ----------
   const filteredUsers = useMemo(() => {
     if (!search) return users;
     const q = search.toLowerCase();
     return users.filter(
-      u =>
+      (u) =>
         (u.email || '').toLowerCase().includes(q) ||
         (u.username || '').toLowerCase().includes(q) ||
         (u.id || '').toLowerCase().includes(q)
     );
   }, [users, search]);
 
-  // ============================================
-  // RENDER
-  // ============================================
+  // ---------- preview 24h ----------
+  const selectedInst = instruments.find((i) => i.symbol === selectedSymbol);
+  const previewData = useMemo(() => {
+    if (!selectedInst) return [];
+    const base = Number(selectedInst.base_price || 0);
+    const dec = Number(selectedInst.decimals || 2);
+    const list = [];
+    for (let h = 0; h < 24; h++) {
+      let price = base || 0;
+      const hits = rules.filter(
+        (r) =>
+          r.active &&
+          ((r.start_hour < r.end_hour && h >= r.start_hour && h < r.end_hour) ||
+            (r.start_hour > r.end_hour && (h >= r.start_hour || h < r.end_hour)))
+      );
+      hits.forEach((r) => {
+        if (r.type === 'percent') price *= 1 + Number(r.value || 0) / 100;
+        else price += Number(r.value || 0); // 'abs'
+      });
+      list.push({ hour: `${String(h).padStart(2, '0')}:00`, price: Number(price.toFixed(dec)) });
+    }
+    return list;
+  }, [rules, selectedInst]);
+
+  // ---------- render ----------
   return (
     <div className="space-y-8">
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
@@ -469,7 +457,7 @@ export default function AdminDashboard() {
           <RefreshCw className="h-8 w-8 mr-3 text-cyan-400" />
           Panel de Administración
         </h1>
-        <p className="text-slate-300">Métricas, usuarios, depósitos/retiros y mercado (trade).</p>
+        <p className="text-slate-300">Métricas, usuarios, depósitos/retiros y mercado.</p>
       </motion.div>
 
       {/* Métricas */}
@@ -498,7 +486,7 @@ export default function AdminDashboard() {
         })}
       </div>
 
-      {/* NUEVO: Mercado (Trade) */}
+      {/* Mercado */}
       <Card className="crypto-card">
         <CardHeader>
           <CardTitle className="text-white flex items-center">
@@ -506,13 +494,12 @@ export default function AdminDashboard() {
             Mercado (Trade): Criptomonedas y Reglas
           </CardTitle>
           <CardDescription className="text-slate-300">
-            Agrega/edita monedas, programa horarios para subir o bajar el precio y visualiza un preview.
+            Administra monedas (fuente real/simulada/manual) y reglas horarias (UTC).
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Gestión de instrumentos */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Lista de instrumentos */}
+            {/* Lista instrumentos */}
             <div className="lg:col-span-2">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-white font-semibold">Criptomonedas</h3>
@@ -522,8 +509,10 @@ export default function AdminDashboard() {
                       <SelectValue placeholder="Seleccionar símbolo" />
                     </SelectTrigger>
                     <SelectContent className="bg-slate-800 text-white border-slate-700">
-                      {instruments.map(i => (
-                        <SelectItem key={i.symbol} value={i.symbol}>{i.symbol}</SelectItem>
+                      {instruments.map((i) => (
+                        <SelectItem key={i.symbol} value={i.symbol}>
+                          {i.symbol}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -541,22 +530,30 @@ export default function AdminDashboard() {
                     <tr className="border-b border-slate-700 text-slate-300">
                       <th className="text-left py-2">Símbolo</th>
                       <th className="text-left py-2">Nombre</th>
-                      <th className="text-right py-2">Base</th>
                       <th className="text-left py-2">Fuente</th>
+                      <th className="text-left py-2">Par Binance</th>
+                      <th className="text-left py-2">Quote</th>
+                      <th className="text-right py-2">Base</th>
                       <th className="text-right py-2">Dec</th>
-                      <th className="text-right py-2">Vol</th>
+                      <th className="text-right py-2">Vol (bps)</th>
+                      <th className="text-left py-2">Dif.</th>
                       <th className="text-center py-2">Activo</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {instruments.map(i => (
+                    {instruments.map((i) => (
                       <tr key={i.symbol} className="border-b border-slate-800/60">
                         <td className="py-2 text-white">{i.symbol}</td>
                         <td className="py-2 text-slate-300">{i.name}</td>
-                        <td className="py-2 text-right text-slate-200">${fmt(i.base_price, i.decimals)}</td>
                         <td className="py-2 text-slate-300">{i.source}</td>
+                        <td className="py-2 text-slate-300">{i.binance_symbol || '—'}</td>
+                        <td className="py-2 text-slate-300">{i.quote || 'USDT'}</td>
+                        <td className="py-2 text-right text-slate-200">
+                          {i.base_price ? `$${fmt(i.base_price, i.decimals)}` : '—'}
+                        </td>
                         <td className="py-2 text-right text-slate-300">{i.decimals}</td>
-                        <td className="py-2 text-right text-slate-300">{fmt(i.volatility, 4)}</td>
+                        <td className="py-2 text-right text-slate-300">{i.volatility_bps ?? '—'}</td>
+                        <td className="py-2 text-slate-300">{i.difficulty || '—'}</td>
                         <td className="py-2 text-center">
                           <Button
                             size="sm"
@@ -569,49 +566,82 @@ export default function AdminDashboard() {
                       </tr>
                     ))}
                     {instruments.length === 0 && (
-                      <tr><td colSpan="7" className="py-6 text-center text-slate-400">Sin criptomonedas.</td></tr>
+                      <tr>
+                        <td colSpan="10" className="py-6 text-center text-slate-400">
+                          Sin criptomonedas.
+                        </td>
+                      </tr>
                     )}
                   </tbody>
                 </table>
               </div>
             </div>
 
-            {/* Alta / edición simple */}
+            {/* Alta instrumento */}
             <div>
               <h3 className="text-white font-semibold mb-2">Agregar cripto</h3>
               <div className="space-y-3">
-                <Input placeholder="Símbolo (p.ej. BTC)" className="bg-slate-800 border-slate-600 text-white"
-                  value={instForm.symbol} onChange={(e) => setInstForm(v => ({ ...v, symbol: e.target.value }))} />
+                <Input placeholder="Símbolo (BTC)" className="bg-slate-800 border-slate-600 text-white"
+                  value={instForm.symbol} onChange={(e) => setInstForm((v) => ({ ...v, symbol: e.target.value }))} />
                 <Input placeholder="Nombre (Bitcoin)" className="bg-slate-800 border-slate-600 text-white"
-                  value={instForm.name} onChange={(e) => setInstForm(v => ({ ...v, name: e.target.value }))} />
+                  value={instForm.name} onChange={(e) => setInstForm((v) => ({ ...v, name: e.target.value }))} />
+
+                <Select value={instForm.source} onValueChange={(val) => setInstForm((v) => ({ ...v, source: val }))}>
+                  <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                    <SelectValue placeholder="Fuente" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 text-white border-slate-700">
+                    <SelectItem value="binance">Binance (live)</SelectItem>
+                    <SelectItem value="simulated">Simulada</SelectItem>
+                    <SelectItem value="manual">Manual</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                {instForm.source === 'binance' && (
+                  <Input placeholder="Par Binance (BTCUSDT)" className="bg-slate-800 border-slate-600 text-white"
+                    value={instForm.binance_symbol}
+                    onChange={(e) => setInstForm((v) => ({ ...v, binance_symbol: e.target.value }))} />
+                )}
+
                 <div className="grid grid-cols-2 gap-2">
-                  <Select value={instForm.source} onValueChange={(val) => setInstForm(v => ({ ...v, source: val }))}>
-                    <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
-                      <SelectValue placeholder="Fuente" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-slate-800 text-white border-slate-700">
-                      <SelectItem value="real">Real</SelectItem>
-                      <SelectItem value="manual">Manual</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Input placeholder="Base price (USD)" type="number" className="bg-slate-800 border-slate-600 text-white"
-                    value={instForm.base_price} onChange={(e) => setInstForm(v => ({ ...v, base_price: e.target.value }))} />
-                </div>
-                <div className="grid grid-cols-3 gap-2">
+                  <Input placeholder="Quote (USDT/USDC)" className="bg-slate-800 border-slate-600 text-white"
+                    value={instForm.quote} onChange={(e) => setInstForm((v) => ({ ...v, quote: e.target.value }))} />
                   <Input placeholder="Decimales" type="number" className="bg-slate-800 border-slate-600 text-white"
-                    value={instForm.decimals} onChange={(e) => setInstForm(v => ({ ...v, decimals: e.target.value }))} />
-                  <Input placeholder="Volatilidad" type="number" className="bg-slate-800 border-slate-600 text-white"
-                    value={instForm.volatility} onChange={(e) => setInstForm(v => ({ ...v, volatility: e.target.value }))} />
-                  <Select value={instForm.enabled ? 'true' : 'false'} onValueChange={(val) => setInstForm(v => ({ ...v, enabled: val === 'true' }))}>
-                    <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
-                      <SelectValue placeholder="Activo" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-slate-800 text-white border-slate-700">
-                      <SelectItem value="true">Activo</SelectItem>
-                      <SelectItem value="false">Inactivo</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    value={instForm.decimals} onChange={(e) => setInstForm((v) => ({ ...v, decimals: e.target.value }))} />
                 </div>
+
+                {instForm.source !== 'binance' && (
+                  <>
+                    <Input placeholder="Base price (USD)" type="number" className="bg-slate-800 border-slate-600 text-white"
+                      value={instForm.base_price} onChange={(e) => setInstForm((v) => ({ ...v, base_price: e.target.value }))} />
+                    <div className="grid grid-cols-2 gap-2">
+                      <Input placeholder="Volatilidad (bps)" type="number" className="bg-slate-800 border-slate-600 text-white"
+                        value={instForm.volatility_bps}
+                        onChange={(e) => setInstForm((v) => ({ ...v, volatility_bps: e.target.value }))} />
+                      <Select value={instForm.difficulty} onValueChange={(val) => setInstForm((v) => ({ ...v, difficulty: val }))}>
+                        <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                          <SelectValue placeholder="Dificultad" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-slate-800 text-white border-slate-700">
+                          <SelectItem value="easy">Easy</SelectItem>
+                          <SelectItem value="intermediate">Intermediate</SelectItem>
+                          <SelectItem value="nervous">Nervous</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </>
+                )}
+
+                <Select value={instForm.enabled ? 'true' : 'false'} onValueChange={(val) => setInstForm((v) => ({ ...v, enabled: val === 'true' }))}>
+                  <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                    <SelectValue placeholder="Activo" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 text-white border-slate-700">
+                    <SelectItem value="true">Activo</SelectItem>
+                    <SelectItem value="false">Inactivo</SelectItem>
+                  </SelectContent>
+                </Select>
+
                 <Button className="w-full bg-gradient-to-r from-green-500 to-blue-500" onClick={addInstrument}>
                   <Plus className="h-4 w-4 mr-2" /> Agregar
                 </Button>
@@ -619,41 +649,42 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          {/* Reglas por horario */}
+          {/* Reglas */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Form regla */}
             <div>
               <h3 className="text-white font-semibold mb-2">Nueva regla para {selectedSymbol || '—'}</h3>
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2">
                     <CalendarClock className="h-4 w-4 text-slate-400" />
-                    <Input type="number" min={0} max={23} placeholder="Start (0-23)" className="bg-slate-800 border-slate-600 text-white"
+                    <Input type="number" min={0} max={23} placeholder="Start (0-23)"
+                      className="bg-slate-800 border-slate-600 text-white"
                       value={ruleForm.start_hour}
-                      onChange={(e) => setRuleForm(v => ({ ...v, start_hour: e.target.value }))} />
+                      onChange={(e) => setRuleForm((v) => ({ ...v, start_hour: e.target.value }))} />
                   </div>
-                  <Input type="number" min={0} max={23} placeholder="End (0-23)" className="bg-slate-800 border-slate-600 text-white"
+                  <Input type="number" min={0} max={23} placeholder="End (0-23)"
+                    className="bg-slate-800 border-slate-600 text-white"
                     value={ruleForm.end_hour}
-                    onChange={(e) => setRuleForm(v => ({ ...v, end_hour: e.target.value }))} />
+                    onChange={(e) => setRuleForm((v) => ({ ...v, end_hour: e.target.value }))} />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <Select value={ruleForm.type} onValueChange={(val) => setRuleForm(v => ({ ...v, type: val }))}>
+                  <Select value={ruleForm.type} onValueChange={(val) => setRuleForm((v) => ({ ...v, type: val }))}>
                     <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
                       <SelectValue placeholder="Tipo efecto" />
                     </SelectTrigger>
                     <SelectContent className="bg-slate-800 text-white border-slate-700">
                       <SelectItem value="percent">Porcentaje</SelectItem>
-                      <SelectItem value="absolute">Absoluto</SelectItem>
+                      <SelectItem value="abs">Absoluto</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Input type="number" placeholder={ruleForm.type === 'percent' ? '% (p.ej. -3, 5)' : 'Δ precio (p.ej. -100, 200)'}
+                  <Input type="number" placeholder={ruleForm.type === 'percent' ? '% (ej: -3, 5)' : 'Δ precio (ej: -100, 200)'}
                     className="bg-slate-800 border-slate-600 text-white"
                     value={ruleForm.value}
-                    onChange={(e) => setRuleForm(v => ({ ...v, value: e.target.value }))} />
+                    onChange={(e) => setRuleForm((v) => ({ ...v, value: e.target.value }))} />
                 </div>
                 <Input placeholder="Etiqueta (opcional)" className="bg-slate-800 border-slate-600 text-white"
-                  value={ruleForm.label} onChange={(e) => setRuleForm(v => ({ ...v, label: e.target.value }))} />
-                <Select value={ruleForm.active ? 'true' : 'false'} onValueChange={(val) => setRuleForm(v => ({ ...v, active: val === 'true' }))}>
+                  value={ruleForm.label} onChange={(e) => setRuleForm((v) => ({ ...v, label: e.target.value }))} />
+                <Select value={ruleForm.active ? 'true' : 'false'} onValueChange={(val) => setRuleForm((v) => ({ ...v, active: val === 'true' }))}>
                   <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
                     <SelectValue placeholder="Activa" />
                   </SelectTrigger>
@@ -666,7 +697,7 @@ export default function AdminDashboard() {
                   <Plus className="h-4 w-4 mr-2" /> Agregar regla
                 </Button>
                 <p className="text-[11px] text-slate-400">
-                  Las reglas se aplican <b>diariamente</b> dentro del rango horario indicado (UTC). Si varias reglas coinciden, sus efectos se acumulan.
+                  Las reglas se aplican <b>diariamente</b> en el rango horario (UTC). Si coinciden varias, se acumulan.
                 </p>
               </div>
             </div>
@@ -675,7 +706,7 @@ export default function AdminDashboard() {
             <div className="lg:col-span-1">
               <h3 className="text-white font-semibold mb-2">Reglas de {selectedSymbol || '—'}</h3>
               <div className="space-y-3">
-                {rules.map(r => (
+                {rules.map((r) => (
                   <div key={r.id} className="p-3 bg-slate-800/50 rounded border border-slate-700/50">
                     <div className="flex items-center justify-between">
                       <div>
@@ -683,7 +714,7 @@ export default function AdminDashboard() {
                           {r.label || (r.type === 'percent' ? `${r.value}%` : `${r.value >= 0 ? '+' : ''}${r.value}`)}
                         </p>
                         <p className="text-slate-400 text-xs">
-                          {r.start_hour}:00 → {r.end_hour}:00 · {r.type === 'percent' ? <><Percent className="inline h-3 w-3" /> %</> : 'Abs'} · {r.active ? 'Activa' : 'Inactiva'}
+                          {r.start_hour}:00 → {r.end_hour}:00 · {r.type === 'percent' ? (<><Percent className="inline h-3 w-3" /> %</>) : 'Abs'} · {r.active ? 'Activa' : 'Inactiva'}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
@@ -711,16 +742,13 @@ export default function AdminDashboard() {
                       <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                       <XAxis dataKey="hour" stroke="#94a3b8" fontSize={12} />
                       <YAxis stroke="#94a3b8" fontSize={12} />
-                      <Tooltip
-                        contentStyle={{ backgroundColor: 'rgba(30, 41, 59, 0.95)', border: 'none', borderRadius: 8 }}
-                        labelStyle={{ color: '#cbd5e1' }}
-                      />
+                      <Tooltip contentStyle={{ backgroundColor: 'rgba(30, 41, 59, 0.95)', border: 'none', borderRadius: 8 }} labelStyle={{ color: '#cbd5e1' }} />
                       <Legend />
                       <Line type="monotone" dataKey="price" stroke="#22c55e" dot={false} />
                     </LineChart>
                   </ResponsiveContainer>
                   <div className="mt-2 text-xs text-slate-400">
-                    Base: <span className="text-slate-200">${fmt(selectedInst.base_price, selectedInst.decimals)}</span> ·
+                    Base: <span className="text-slate-200">{selectedInst.base_price ? `$${fmt(selectedInst.base_price, selectedInst.decimals)}` : '—'}</span> ·
                     Fuente: <span className="text-slate-200">{selectedInst.source}</span>
                   </div>
                 </div>
@@ -742,7 +770,7 @@ export default function AdminDashboard() {
           <div className="flex items-center gap-2">
             <Search className="h-4 w-4 text-slate-400" />
             <Input
-              placeholder="Buscar por usuario o id…"
+              placeholder="Buscar por email, usuario o id…"
               className="bg-slate-800 border-slate-600 text-white"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -754,13 +782,13 @@ export default function AdminDashboard() {
                 <tr className="border-b border-slate-700 text-slate-300">
                   <th className="text-left py-2">Usuario</th>
                   <th className="text-left py-2">Email</th>
-                  <th className="text-left py-2">Rol</th>
+                  <th className="text-left py-2">Rol</hth>
                   <th className="text-right py-2">Saldo</th>
                   <th className="text-right py-2">Ajustar</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredUsers.map(u => (
+                {filteredUsers.map((u) => (
                   <tr key={u.id} className="border-b border-slate-800/60">
                     <td className="py-2 text-white">{u.username || '—'}</td>
                     <td className="py-2 text-slate-300">{u.email || '—'}</td>
@@ -775,14 +803,10 @@ export default function AdminDashboard() {
                         <Input
                           placeholder="+100 o -50"
                           value={adjustValues[u.id] ?? ''}
-                          onChange={(e) => setAdjustValues(v => ({ ...v, [u.id]: e.target.value }))}
+                          onChange={(e) => setAdjustValues((v) => ({ ...v, [u.id]: e.target.value }))}
                           className="w-28 bg-slate-800 border-slate-600 text-white"
                         />
-                        <Button
-                          size="sm"
-                          onClick={() => adjustBalance(u.id, adjustValues[u.id])}
-                          className="bg-gradient-to-r from-green-500 to-teal-500 hover:opacity-90"
-                        >
+                        <Button size="sm" onClick={() => adjustBalance(u.id, adjustValues[u.id])} className="bg-gradient-to-r from-green-500 to-teal-500 hover:opacity-90">
                           Aplicar
                         </Button>
                       </div>
@@ -806,10 +830,12 @@ export default function AdminDashboard() {
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {pendingDeposits.map(tx => (
+            {pendingDeposits.map((tx) => (
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
-                  <p className="text-white font-medium">Usuario: {tx.user_id}</p>
+                  <p className="text-white font-medium">
+                    Usuario: {tx.user_name || '—'} {tx.user_email ? `(${tx.user_email})` : ''} · <span className="text-slate-500">{tx.user_id}</span>
+                  </p>
                   <p className="text-slate-400">Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span></p>
                 </div>
                 <div className="flex gap-2">
@@ -835,10 +861,12 @@ export default function AdminDashboard() {
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {pendingWithdrawals.map(tx => (
+            {pendingWithdrawals.map((tx) => (
               <div key={tx.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded">
                 <div className="text-sm">
-                  <p className="text-white font-medium">Usuario: {tx.user_id}</p>
+                  <p className="text-white font-medium">
+                    Usuario: {tx.user_name || '—'} {tx.user_email ? `(${tx.user_email})` : ''} · <span className="text-slate-500">{tx.user_id}</span>
+                  </p>
                   <p className="text-slate-400">Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span></p>
                 </div>
                 <div className="flex gap-2">
