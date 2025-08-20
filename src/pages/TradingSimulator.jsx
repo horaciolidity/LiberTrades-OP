@@ -256,7 +256,8 @@ export default function TradingSimulator() {
       amount: Number(tradeData.amount),
       price: Number(tradeData.price),
       status: 'open',
-      timestamp: Date.now(), // BIGINT ms
+      // DB: timestamp es timestamptz ⇒ enviar ISO
+      timestamp: new Date().toISOString(),
     };
 
     console.log('[onTrade payload]', payload, { priceLive: marketPrices });
@@ -314,7 +315,8 @@ export default function TradingSimulator() {
       .update({
         status: 'closed',
         profit: realized,
-        closeat: Date.now(), // BIGINT ms
+        // DB: closeat es BIGINT ⇒ enviar ms
+        closeat: Date.now(),
       })
       .eq('id', tradeId);
 
@@ -473,7 +475,7 @@ export default function TradingSimulator() {
             </CardTitle>
           </CardHeader>
 
-          <CardContent className="space-y-3 max-h-[380px] overflow-y-auto">
+        <CardContent className="space-y-3 max-h-[380px] overflow-y-auto">
             {chatMessages.map((msg) => (
               <motion.div
                 key={msg.id}
