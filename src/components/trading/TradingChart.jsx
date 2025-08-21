@@ -171,19 +171,17 @@ const TradingChart = ({
       return;
     }
 
-    // Actualización incremental
+    // Actualización incremental (sin variables globales)
     const lastPoint = sorted[sorted.length - 1];
-    thePrevPoint = sorted[sorted.length - 2] || lastPoint;
-    const prevPoint = sorted[sorted.length - 2] || lastPoint;
-    const lastSec = Math.floor(n(lastPoint.time) / 1000);
+    const previous  = sorted.length >= 2 ? sorted[sorted.length - 2] : lastPoint;
+    const lastSec   = Math.floor(n(lastPoint.time) / 1000);
 
-    const candle = {
-      time: lastSec,
-      open: n(prevPoint.value, n(lastPoint.value)),
-      high: Math.max(n(prevPoint.value), n(lastPoint.value)),
-      low: Math.min(n(prevPoint.value), n(lastPoint.value)),
-      close: n(lastPoint.value),
-    };
+    const open  = n(previous.value, n(lastPoint.value));
+    const high  = Math.max(n(previous.value), n(lastPoint.value));
+    const low   = Math.min(n(previous.value), n(lastPoint.value));
+    const close = n(lastPoint.value);
+
+    const candle = { time: lastSec, open, high, low, close };
 
     if (lastSec > lastBarTimeRef.current) {
       series.update(candle);
