@@ -7,7 +7,6 @@ import {
   Clock,
   DollarSign,
   CheckCircle,
-  Star,
   Zap,
   ShoppingBag,
   AlertTriangle,
@@ -54,6 +53,9 @@ const addDays = (d, days) => {
 const shortDate = (d) =>
   new Date(d).toLocaleDateString(undefined, { month: 'short', day: '2-digit' });
 
+// ===== % diarios desde Admin Settings (fallback si no existe) =====
+const SETTINGS_FALLBACK = { 'plans.default_daily_return_pct': 1.2 };
+
 export default function InvestmentPlans() {
   const {
     investmentPlans: defaultPlans,
@@ -65,21 +67,47 @@ export default function InvestmentPlans() {
     getInvestments,
   } = useData();
 
-  const { user, balances } = useAuth();
+  const { user, balances, refreshBalances } = useAuth();
   const { playSound } = useSound();
 
+  // Admin settings (para % diarios por defecto)
+  const [adminSettings, setAdminSettings] = useState(SETTINGS_FALLBACK);
+  const fetchAdminSettings = async () => {
+    try {
+      // Si tenés la RPC get_admin_settings, la usamos; si no, cae al fallback
+      const { data, error } = await supabase.rpc('get_admin_settings', { prefix: 'plans.' });
+      if (error) throw error;
+      const map = { ...SETTINGS_FALLBACK };
+      (data || []).forEach((row) => {
+        map[row.setting_key] = Number(row.setting_value);
+      });
+      setAdminSettings(map);
+    } catch {
+      // silence: seguimos con fallback
+      setAdminSettings(SETTINGS_FALLBACK);
+    }
+  };
+
+  useEffect(() => {
+    fetchAdminSettings().catch(() => {});
+  }, []);
+
   // ================= Plans (catálogo) =================
-  const investmentPlans = useMemo(
-    () => (defaultPlans || []).map((plan) => ({ ...plan, currencies: ['USDT', 'BTC', 'ETH'] })),
-    [defaultPlans]
-  );
+  const investmentPlans = useMemo(() => {
+    const defaultDaily = Number(adminSettings['plans.default_daily_return_pct'] ?? 1.2);
+    return (defaultPlans || []).map((plan) => ({
+      ...plan,
+      // si un plan no define dailyReturn, usamos el de Configuración
+      dailyReturn: Number(plan.dailyReturn ?? defaultDaily),
+      currencies: ['USDT', 'BTC', 'ETH'],
+    }));
+  }, [defaultPlans, adminSettings]);
 
   // ================= Mi portfolio (del usuario) =================
   const [myInvestments, setMyInvestments] = useState([]);
 
   useEffect(() => {
     if (!user?.id) return;
-    // refresca y sincroniza con DataContext
     (async () => {
       await refreshInvestments?.();
       const arr = (getInvestments?.() || []).filter(
@@ -110,8 +138,7 @@ export default function InvestmentPlans() {
     const a = Number(amount || 0);
     const p = getPrice(currency);
     return p > 0 ? a * p : 0;
-  };
-
+    };
   const fromUsd = (usd, currency) => {
     const p = getPrice(currency);
     if (currency === 'USDT') return usd;
@@ -177,7 +204,7 @@ export default function InvestmentPlans() {
       playSound?.('error');
       toast({
         title: 'Monto fuera de rango',
-        description: `El monto en USD ($${fmt(amountInUSD)}) debe estar entre $${fmt(min)} y $${fmt(max)}.`,
+        description: `El monto en USD ($${fmt(amountInUSD)}) debe estar entre $${fmt(min)} y ${max > 0 ? `$${fmt(max)}` : 'sin tope'}.`,
         variant: 'destructive',
       });
       return;
@@ -197,17 +224,52 @@ export default function InvestmentPlans() {
     playSound?.('invest');
 
     try {
+      // ===== Opción 1: flujo server-side (si existe la RPC; si falla, vamos a Opción 2) =====
+      try {
+        const { data: rpc, error: rpcErr } = await supabase.rpc('invest_in_plan_v1', {
+          p_user_id: user.id,
+          p_plan_name: selectedPlan.name,
+          p_amount_usd: amountInUSD,
+          p_daily_pct: Number(selectedPlan.dailyReturn),
+          p_duration_days: Number(selectedPlan.duration),
+        });
+        if (!rpcErr && rpc?.ok) {
+          await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
+          const arr = (getInvestments?.() || []).filter(
+            (it) => (it.user_id ?? it.userId) === user.id
+          );
+          setMyInvestments(arr);
+
+          toast({
+            title: '¡Inversión exitosa!',
+            description: `Invertiste ${fmt(amt, selectedCurrency === 'USDT' ? 2 : 8)} ${selectedCurrency} (≈ $${fmt(
+              amountInUSD
+            )}) en ${selectedPlan.name}.`,
+          });
+
+          setSelectedPlan(null);
+          setInvestmentAmount('');
+          setSelectedCurrency('USDT');
+          setIsInvesting(false);
+          return;
+        }
+      } catch {
+        // si la RPC no existe o falla, seguimos con el flujo local
+      }
+
+      // ===== Opción 2: flujo actual (client-side + DataContext) =====
+
       // 1) Crear inversión
       const inv = await addInvestment?.({
         planName: selectedPlan.name,
         amount: amountInUSD,
-        dailyReturn: selectedPlan.dailyReturn,
-        duration: selectedPlan.duration,
+        dailyReturn: Number(selectedPlan.dailyReturn),
+        duration: Number(selectedPlan.duration),
         currency: selectedCurrency,
       });
       if (!inv) throw new Error('No se pudo crear la inversión');
 
-      // 2) Registrar movimiento
+      // 2) Registrar movimiento (tipo permitido por tu CHECK)
       await addTransaction?.({
         amount: amountInUSD,
         type: 'plan_purchase',
@@ -220,15 +282,14 @@ export default function InvestmentPlans() {
         status: 'completed',
       });
 
-      // 3) Descontar saldo interno
+      // 3) Descontar saldo interno (USDC) y refrescar
       const { error: balErr } = await supabase
         .from('balances')
         .update({ usdc: Math.max(0, usdBalance - amountInUSD), updated_at: new Date().toISOString() })
         .eq('user_id', user.id);
       if (balErr) console.error('[balances update] error:', balErr);
 
-      // 4) Refrescar UI + portfolio local
-      await Promise.all([refreshInvestments?.(), refreshTransactions?.()]);
+      await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
       const arr = (getInvestments?.() || []).filter(
         (it) => (it.user_id ?? it.userId) === user.id
       );
@@ -394,7 +455,7 @@ export default function InvestmentPlans() {
                 </CardHeader>
                 <CardContent className="text-center space-y-4">
                   <div className="space-y-1">
-                    <div className="text-3xl font-bold text-green-400">{plan.dailyReturn}%</div>
+                    <div className="text-3xl font-bold text-green-400">{fmt(plan.dailyReturn, 2)}%</div>
                     <p className="text-slate-400 text-sm">Retorno diario</p>
                   </div>
                   <div className="space-y-1">
@@ -662,7 +723,7 @@ export default function InvestmentPlans() {
                       <AlertTriangle className="h-4 w-4 mt-0.5" />
                       <span>
                         El monto debe estar entre <b>${fmt(selectedPlan.minAmount)}</b> y{' '}
-                        <b>${fmt(selectedPlan.maxAmount)}</b> (equivalente en USD).
+                        <b>{Number(selectedPlan.maxAmount || 0) > 0 ? `$${fmt(selectedPlan.maxAmount)}` : 'sin tope'}</b> (equivalente en USD).
                       </span>
                     </div>
                   )}

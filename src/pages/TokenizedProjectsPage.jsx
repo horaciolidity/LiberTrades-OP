@@ -33,6 +33,7 @@ const fmt = (n, dec = 2) => {
   const v = Number(n);
   return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
 };
+const round2 = (n) => Number.isFinite(Number(n)) ? Number(Number(n).toFixed(2)) : 0;
 
 const FALLBACK_IMG = 'https://images.unsplash.com/photo-1572177812156-58036aae439c';
 
@@ -75,10 +76,18 @@ const PLACEHOLDER = [
   },
 ];
 
+// Defaults en línea con AdminDashboard
+const DEFAULT_ISSUANCE_FEE_PCT = 1.0;
+const DEFAULT_SECONDARY_FEE_PCT = 0.5;
+
 export default function TokenizedProjectsPage() {
   const { playSound } = useSound();
   const { user, balances } = useAuth();
-  const { addTransaction, refreshTransactions } = useData();
+  const {
+    addTransaction,
+    refreshTransactions,
+    settings: ctxSettings,
+  } = useData();
 
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
@@ -87,6 +96,36 @@ export default function TokenizedProjectsPage() {
 
   const [selectedProject, setSelectedProject] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
+
+  // ------- fees de Admin -------
+  const [issuanceFeePct, setIssuanceFeePct] = useState(DEFAULT_ISSUANCE_FEE_PCT);
+  const [secondaryFeePct, setSecondaryFeePct] = useState(DEFAULT_SECONDARY_FEE_PCT);
+
+  // Traer settings de fees: primero desde contexto, si no, RPC (prefijo 'projects.')
+  useEffect(() => {
+    const fromCtx = Number(ctxSettings?.['projects.issuance_fee_pct']);
+    const fromCtxSec = Number(ctxSettings?.['projects.secondary_market_fee_pct']);
+    if (Number.isFinite(fromCtx)) setIssuanceFeePct(fromCtx);
+    if (Number.isFinite(fromCtxSec)) setSecondaryFeePct(fromCtxSec);
+
+    if (!Number.isFinite(fromCtx) || !Number.isFinite(fromCtxSec)) {
+      (async () => {
+        try {
+          const { data, error: sErr } = await supabase.rpc('get_admin_settings', { prefix: 'projects.' });
+          if (sErr) throw sErr;
+          // mapear a key:value
+          const map = {};
+          (data || []).forEach((row) => { map[row.setting_key] = Number(row.setting_value); });
+          const feeA = Number(map['projects.issuance_fee_pct']);
+          const feeB = Number(map['projects.secondary_market_fee_pct']);
+          if (Number.isFinite(feeA)) setIssuanceFeePct(feeA);
+          if (Number.isFinite(feeB)) setSecondaryFeePct(feeB);
+        } catch {
+          // fallback ya set
+        }
+      })();
+    }
+  }, [ctxSettings]);
 
   // ===== Fetch projects + raised amounts =====
   useEffect(() => {
@@ -131,7 +170,7 @@ export default function TokenizedProjectsPage() {
         const sum = {};
         (invs || []).forEach((r) => {
           const st = String(r?.status || '').toLowerCase();
-          // Contabilizamos activas / aprobadas
+          // Contabilizamos activas / aprobadas / completadas
           if (st === 'active' || st === 'approved' || st === 'completed') {
             sum[r.project_id] = (sum[r.project_id] || 0) + Number(r.amount_usd || 0);
           }
@@ -149,7 +188,7 @@ export default function TokenizedProjectsPage() {
   const usdBalance = Number(balances?.usdc ?? 0);
 
   const withProgress = useMemo(() => {
-    return (projects || []).map((p, idx) => {
+    return (projects || []).map((p) => {
       const target = Number(p?.target_raise || 0);
       const raised = Number(raisedMap[p.id] || 0);
       const pct = target > 0 ? Math.max(0, Math.min(100, (raised / target) * 100)) : 0;
@@ -185,7 +224,7 @@ export default function TokenizedProjectsPage() {
     }
     if (!selectedProject) return;
 
-    const amountUsd = Number(investmentAmount);
+    const amountUsd = round2(Number(investmentAmount));
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
       playSound?.('error');
       toast({ title: 'Monto inválido', description: 'Ingresá un monto válido en USD.', variant: 'destructive' });
@@ -203,11 +242,14 @@ export default function TokenizedProjectsPage() {
       return;
     }
 
-    if (amountUsd > usdBalance) {
+    const feeUsd = round2((issuanceFeePct / 100) * amountUsd);
+    const totalDebit = round2(amountUsd + feeUsd);
+
+    if (totalDebit > usdBalance) {
       playSound?.('error');
       toast({
         title: 'Fondos insuficientes',
-        description: 'No tenés saldo suficiente en la app.',
+        description: `Necesitás $${fmt(totalDebit)} (inversión + fee). Saldo actual: $${fmt(usdBalance)}.`,
         variant: 'destructive',
       });
       return;
@@ -234,7 +276,8 @@ export default function TokenizedProjectsPage() {
 
       if (insErr) throw insErr;
 
-      // 2) Registrar wallet transaction (usamos type 'other' + reference_type detallado)
+      // 2) Registrar transacciones de wallet
+      // 2a) Inversión (principal)
       await addTransaction?.({
         amount: amountUsd,
         type: 'other',
@@ -244,11 +287,23 @@ export default function TokenizedProjectsPage() {
         referenceId: inserted?.id,
         status: 'completed',
       });
+      // 2b) Fee de emisión (si corresponde)
+      if (feeUsd > 0) {
+        await addTransaction?.({
+          amount: feeUsd,
+          type: 'fee',
+          currency: 'USDC',
+          description: `Fee de emisión ${issuanceFeePct}% - ${selectedProject.symbol}`,
+          referenceType: 'project_fee',
+          referenceId: inserted?.id,
+          status: 'completed',
+        });
+      }
 
-      // 3) Descontar saldo interno USDC
+      // 3) Descontar saldo interno USDC: inversión + fee
       const { error: balErr } = await supabase
         .from('balances')
-        .update({ usdc: Math.max(0, usdBalance - amountUsd), updated_at: new Date().toISOString() })
+        .update({ usdc: Math.max(0, usdBalance - totalDebit), updated_at: new Date().toISOString() })
         .eq('user_id', user.id);
       if (balErr) console.warn('[balances update]', balErr);
 
@@ -261,7 +316,7 @@ export default function TokenizedProjectsPage() {
 
       toast({
         title: '¡Inversión creada!',
-        description: `Aportaste $${fmt(amountUsd)} a ${selectedProject.name}.`,
+        description: `Invertiste $${fmt(amountUsd)} en ${selectedProject.name}. Fee: $${fmt(feeUsd)} (${fmt(issuanceFeePct)}%).`,
       });
       setSelectedProject(null);
       setInvestmentAmount('');
@@ -282,6 +337,12 @@ export default function TokenizedProjectsPage() {
   if (error) {
     return <div className="p-6 text-red-400">{error}</div>;
   }
+
+  // Cálculos en vivo para el modal
+  const liveAmount = round2(Number(investmentAmount));
+  const liveFee = liveAmount > 0 ? round2((issuanceFeePct / 100) * liveAmount) : 0;
+  const liveTotal = round2(liveAmount + liveFee);
+  const insufficient = selectedProject && liveTotal > usdBalance;
 
   return (
     <>
@@ -463,7 +524,8 @@ export default function TokenizedProjectsPage() {
 
                 <div className="bg-slate-800/60 p-3 rounded-md text-xs text-slate-300 flex gap-2">
                   <Info className="h-4 w-4 text-cyan-400 mt-0.5" />
-                  Las inversiones en proyectos pueden requerir aprobación. Tu saldo se debita al confirmar la inversión.
+                  Fee de emisión actual del admin: <span className="text-white font-semibold ml-1">{fmt(issuanceFeePct)}%</span>.
+                  Las inversiones pueden requerir aprobación. Tu saldo se debita al confirmar la inversión.
                 </div>
 
                 <div className="space-y-2">
@@ -475,10 +537,28 @@ export default function TokenizedProjectsPage() {
                     placeholder={`Mínimo $${fmt(selectedProject.min_investment || 0)}`}
                     className="bg-slate-800 border-slate-600 text-white"
                   />
-                  {Number(investmentAmount) > 0 && (
-                    <div className="flex justify-between text-xs">
-                      <span className="text-slate-400">Saldo disponible:</span>
-                      <span className="text-slate-200">${fmt(usdBalance)}</span>
+                  {/* Breakdown en vivo */}
+                  {liveAmount > 0 && (
+                    <div className="text-xs space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Inversión:</span>
+                        <span className="text-slate-200">${fmt(liveAmount)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Fee de emisión ({fmt(issuanceFeePct)}%):</span>
+                        <span className="text-slate-200">${fmt(liveFee)}</span>
+                      </div>
+                      <div className="flex justify-between border-t border-slate-700 pt-1">
+                        <span className="text-slate-300 font-medium">Total a debitar:</span>
+                        <span className="text-white font-semibold">${fmt(liveTotal)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Saldo disponible:</span>
+                        <span className="text-slate-200">${fmt(usdBalance)}</span>
+                      </div>
+                      {insufficient && (
+                        <div className="text-rose-400">Te faltan ${fmt(liveTotal - usdBalance)} para cubrir inversión + fee.</div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -490,7 +570,8 @@ export default function TokenizedProjectsPage() {
                     disabled={
                       !user?.id ||
                       !investmentAmount ||
-                      Number(investmentAmount) <= 0
+                      Number(investmentAmount) <= 0 ||
+                      insufficient
                     }
                   >
                     Invertir en {selectedProject.symbol}

@@ -1,7 +1,14 @@
 // src/pages/TransactionHistory.jsx
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { RefreshCw, TrendingUp, TrendingDown, Wallet, PiggyBank, CalendarDays } from 'lucide-react';
+import {
+  RefreshCw,
+  TrendingUp,
+  TrendingDown,
+  Wallet,
+  PiggyBank,
+  CalendarDays,
+} from 'lucide-react';
 import TransactionStats from '@/components/transactions/TransactionStats';
 import TransactionFilters from '@/components/transactions/TransactionFilters';
 import TransactionTabs from '@/components/transactions/TransactionTabs';
@@ -52,10 +59,7 @@ const TransactionHistory = () => {
     if (!user?.id) return;
     (async () => {
       setIsRefreshing(true);
-      await Promise.all([
-        refreshTransactions?.(),
-        refreshInvestments?.(),
-      ]);
+      await Promise.all([refreshTransactions?.(), refreshInvestments?.()]);
       setIsRefreshing(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -123,7 +127,7 @@ const TransactionHistory = () => {
     const sumBy = (arr, pred) =>
       arr.reduce((acc, t) => acc + (pred(t) ? Number(t.amount || 0) : 0), 0);
 
-    // Normalizados desde DataContext: investment, deposit, withdrawal, fee, admin_credit, refund, bot_profit, etc.
+    // Normalizados desde DataContext
     const deposits     = sumBy(completed, t => (t.type || '') === 'deposit' || (t.type || '') === 'admin_credit');
     const withdrawals  = sumBy(completed, t => (t.type || '') === 'withdrawal');
     const investmentSp = sumBy(completed, t => (t.type || '') === 'investment' || (t.rawType || '') === 'plan_purchase');
@@ -203,10 +207,7 @@ const TransactionHistory = () => {
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await Promise.all([
-      refreshTransactions?.(),
-      refreshInvestments?.(),
-    ]);
+    await Promise.all([refreshTransactions?.(), refreshInvestments?.()]);
     setIsRefreshing(false);
   };
 
@@ -255,7 +256,7 @@ const TransactionHistory = () => {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.05 }}
-          className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4"
+          className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4"
         >
           {/* Net Flow */}
           <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
@@ -275,7 +276,7 @@ const TransactionHistory = () => {
             </div>
           </div>
 
-          {/* Inversiones */}
+          {/* Inversiones (TOTAL INVERTIDO visible) */}
           <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
             <div className="flex items-center justify-between mb-1">
               <span className="text-slate-400 text-xs uppercase tracking-wide">Inversión / Ganado</span>
@@ -292,6 +293,24 @@ const TransactionHistory = () => {
               </div>
               <div className="text-sm text-slate-400 mt-1">
                 ROI: {enrichedStats.roiPct.toFixed(2)}% · Activas: {enrichedStats.activeInvests} · Vencidas: {enrichedStats.maturedInvests}
+              </div>
+            </div>
+          </div>
+
+          {/* Depósitos / Retiros (RETIRADOS visible) */}
+          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-slate-400 text-xs uppercase tracking-wide">Depósitos / Retiros</span>
+              <Wallet className="w-4 h-4 text-teal-300" />
+            </div>
+            <div className="text-slate-100">
+              <div className="font-semibold">
+                <span className="text-emerald-300">{fmtMoney(enrichedStats.deposits)} USDT</span>
+                <span className="ml-2 text-xs text-slate-400">depositado</span>
+              </div>
+              <div className="font-semibold">
+                <span className="text-rose-300">{fmtMoney(enrichedStats.withdrawals)} USDT</span>
+                <span className="ml-2 text-xs text-slate-400">retirado</span>
               </div>
             </div>
           </div>

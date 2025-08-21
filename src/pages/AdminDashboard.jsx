@@ -22,15 +22,50 @@ import {
   Plus,
   CalendarClock,
   Percent,
+  Save,
+  Undo2,
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from 'recharts';
 
 const TX_TABLE = 'wallet_transactions';
 const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toFixed(dec) : (0).toFixed(dec));
+const pct = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(2) : '0.00');
+
+const DEFAULT_KEYS = [
+  // PLANES
+  'plans.default_daily_return_pct',
+  'plans.withdraw_fee_pct',
+  // BOTS
+  'bots.profit_share_pct',
+  // REFERIDOS
+  'referrals.level1_pct',
+  'referrals.level2_pct',
+  // PROYECTOS TOKENIZADOS
+  'projects.issuance_fee_pct',
+  'projects.secondary_market_fee_pct',
+  // TRADING
+  'trading.slippage_pct_max',
+];
+
+const DEFAULT_VALUES = {
+  'plans.default_daily_return_pct': 1.2,
+  'plans.withdraw_fee_pct': 6.0,
+  'bots.profit_share_pct': 30.0,
+  'referrals.level1_pct': 5.0,
+  'referrals.level2_pct': 2.0,
+  'projects.issuance_fee_pct': 1.0,
+  'projects.secondary_market_fee_pct': 0.5,
+  'trading.slippage_pct_max': 0.2,
+};
 
 export default function AdminDashboard() {
   const { user: authUser, refreshBalances } = useAuth();
   const [loading, setLoading] = useState(true);
+
+  // -------- settings --------
+  const [settings, setSettings] = useState({});
+  const [settingsOriginal, setSettingsOriginal] = useState({});
+  const [savingAll, setSavingAll] = useState(false);
 
   // -------- usuarios / tx --------
   const [users, setUsers] = useState([]);
@@ -51,11 +86,12 @@ export default function AdminDashboard() {
   const [selectedSymbol, setSelectedSymbol] = useState('');
   const [rules, setRules] = useState([]);
 
-  // forms (alineado al nuevo esquema)
+  // forms (puente con tu esquema; si tu check de source admite sólo 'real'|'manual',
+  // usa esos valores; si además tenés 'binance'|'simulated', también están listados)
   const [instForm, setInstForm] = useState({
     symbol: '',
     name: '',
-    source: 'binance',               // binance | simulated | manual
+    source: 'binance',               // binance | simulated | manual | real
     binance_symbol: '',              // si source=binance
     quote: 'USDT',
     base_price: '',                  // si manual/simulated
@@ -89,10 +125,114 @@ export default function AdminDashboard() {
     });
     return map;
   };
+const BOUNDS = {
+  // PLANES
+  'plans.default_daily_return_pct': [0, 10],
+  'plans.withdraw_fee_pct': [0, 20],
+  // BOTS
+  'bots.profit_share_pct': [0, 100],
+  // REFERIDOS
+  'referrals.level1_pct': [0, 100],
+  'referrals.level2_pct': [0, 100],
+  // PROYECTOS
+  'projects.issuance_fee_pct': [0, 10],
+  'projects.secondary_market_fee_pct': [0, 10],
+  // TRADING
+  'trading.slippage_pct_max': [0, 5],
+};
+
+const parseNum = (v) => {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (!s.length) return null;
+  }
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+const inBounds = (key, n) => {
+  const [min, max] = BOUNDS[key] || [-Infinity, Infinity];
+  return n >= min && n <= max;
+};
+
+  // ---------- SETTINGS: fetch / save ----------
+const fetchSettings = async () => {
+  try {
+    const { data, error } = await supabase.rpc('get_admin_settings', { prefix: null });
+    if (error) throw error;
+
+    // partimos de defaults
+    const map = { ...DEFAULT_VALUES };
+    for (const row of (data || [])) {
+      const k = row.setting_key;
+      const n = parseNum(row.setting_value);
+      if (n === null) continue;          // ignoramos nulos/blank
+      map[k] = n;                        // sobreescribe si es válido
+    }
+    setSettings(map);
+    setSettingsOriginal(map);
+  } catch (e) {
+    console.error(e);
+    toast({ title: 'No se pudieron cargar los ajustes', description: e.message, variant: 'destructive' });
+  }
+};
+
+  const saveSetting = async (key, value) => {
+  const n = parseNum(value);
+  if (n === null) {
+    toast({ title: 'Valor inválido', description: 'Debes ingresar un número', variant: 'destructive' });
+    return;
+  }
+  if (!inBounds(key, n)) {
+    const [min, max] = BOUNDS[key] || [];
+    toast({ title: 'Fuera de rango', description: `Permitido: ${min ?? '-∞'} a ${max ?? '+∞'}`, variant: 'destructive' });
+    return;
+  }
+  try {
+    const { error } = await supabase.rpc('set_admin_setting', { p_key: key, p_value: n, p_note: null });
+    if (error) throw error;
+    toast({ title: 'Ajuste guardado', description: `${key}: ${pct(n)}%` });
+    setSettingsOriginal((o) => ({ ...o, [key]: n }));
+  } catch (e) {
+    console.error(e);
+    toast({ title: 'No se pudo guardar', description: e.message, variant: 'destructive' });
+  }
+};
+
+const saveAllSettings = async () => {
+  setSavingAll(true);
+  try {
+    const entries = Object.entries(settings).filter(([k]) => DEFAULT_KEYS.includes(k));
+    for (const [k, v] of entries) {
+      const n = parseNum(v);
+      if (n === null || !inBounds(k, n)) {
+        const [min, max] = BOUNDS[k] || [];
+        throw new Error(`Clave "${k}" inválida. Debe ser número${min !== undefined ? ` entre ${min} y ${max}` : ''}.`);
+      }
+    }
+    for (const [k, v] of entries) {
+      const n = Number(v);
+      const { error } = await supabase.rpc('set_admin_setting', { p_key: k, p_value: n, p_note: 'bulk' });
+      if (error) throw error;
+    }
+    toast({ title: 'Configuración guardada', description: 'Se aplicaron todos los cambios.' });
+    setSettingsOriginal(settings);
+  } catch (e) {
+    console.error(e);
+    toast({ title: 'Fallo guardando', description: e.message, variant: 'destructive' });
+  } finally {
+    setSavingAll(false);
+  }
+};
+
+  const revertSettings = () => {
+    setSettings(settingsOriginal);
+    toast({ title: 'Cambios descartados' });
+  };
 
   // ---------- fetchers ----------
   const fetchUsers = async () => {
-    // ahora sí trae email
     const { data: profs, error: pErr } = await supabase
       .from('profiles')
       .select('id, email, username, role, created_at')
@@ -114,9 +254,10 @@ export default function AdminDashboard() {
   };
 
   const fetchPending = async () => {
+    const sel = 'id, user_id, amount, type, status, currency, created_at';
     const { data: dep, error: dErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, type, status, created_at')
+      .select(sel)
       .eq('type', 'deposit')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
@@ -124,13 +265,12 @@ export default function AdminDashboard() {
 
     const { data: wit, error: wErr } = await supabase
       .from(TX_TABLE)
-      .select('id, user_id, amount, type, status, created_at')
+      .select(sel)
       .eq('type', 'withdrawal')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
     if (wErr) throw wErr;
 
-    // enriquecer con email/username
     const ids = [...(dep || []).map((t) => t.user_id), ...(wit || []).map((t) => t.user_id)];
     const userMap = await buildUserMap(ids);
 
@@ -192,7 +332,7 @@ export default function AdminDashboard() {
   const reloadAll = async () => {
     setLoading(true);
     try {
-      await Promise.all([fetchUsers(), fetchPending(), fetchInstruments()]);
+      await Promise.all([fetchSettings(), fetchUsers(), fetchPending(), fetchInstruments()]);
     } catch (e) {
       console.error(e);
       toast({ title: 'Error cargando datos', description: e.message, variant: 'destructive' });
@@ -201,7 +341,7 @@ export default function AdminDashboard() {
     }
   };
 
-  useEffect(() => { reloadAll(); }, []);
+  useEffect(() => { reloadAll(); /* eslint-disable-next-line */ }, []);
   useEffect(() => { fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {}); }, [users, pendingDeposits, pendingWithdrawals]);
   useEffect(() => { fetchRulesForSymbol(selectedSymbol).catch(() => {}); }, [selectedSymbol]);
 
@@ -211,10 +351,10 @@ export default function AdminDashboard() {
       const payload = {
         symbol: instForm.symbol.trim().toUpperCase(),
         name: instForm.name.trim(),
-        source: instForm.source,                    // 'binance' | 'simulated' | 'manual'
+        source: instForm.source,                    // ver nota sobre constraint en DB
         binance_symbol: instForm.binance_symbol.trim().toUpperCase() || null,
         quote: instForm.quote || 'USDT',
-        base_price: Number(instForm.base_price || 0) || null,
+        base_price: instForm.base_price === '' ? null : Number(instForm.base_price),
         decimals: Number(instForm.decimals || 2),
         volatility_bps: Number(instForm.volatility_bps || 50),
         difficulty: instForm.difficulty,
@@ -282,7 +422,7 @@ export default function AdminDashboard() {
         label: ruleForm.label?.trim() || null,
         active: !!ruleForm.active,
       };
-      if (!Number.isFinite(payload.start_hour) || !Number.isFinite(payload.end_hour)) {
+      if (!Number.isFinite(payload.start_hour) || !Number.isFinite(payload.end_hour) || payload.start_hour < 0 || payload.start_hour > 23 || payload.end_hour < 0 || payload.end_hour > 23) {
         toast({ title: 'Horas inválidas', description: '0..23', variant: 'destructive' });
         return;
       }
@@ -333,17 +473,28 @@ export default function AdminDashboard() {
     try {
       const { data: row, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', userId).single();
       if (gErr) throw gErr;
-      const newUsdc = Number(row?.usdc || 0) + delta;
+      const current = Number(row?.usdc || 0);
+      const newUsdc = current + delta;
+      if (newUsdc < 0) {
+        toast({ title: 'Saldo insuficiente', description: 'No puedes dejar el saldo negativo', variant: 'destructive' });
+        return;
+      }
 
-      const { error: uErr } = await supabase.from('balances').update({ usdc: newUsdc }).eq('user_id', userId);
+      const { error: uErr } = await supabase.from('balances').update({ usdc: newUsdc, updated_at: new Date().toISOString() }).eq('user_id', userId);
       if (uErr) throw uErr;
 
-      await supabase.from(TX_TABLE).insert({
+      // TIPOS válidos en tu CHECK: deposit|withdrawal|plan_purchase|admin_credit|refund|fee|transfer|other
+      const positive = delta >= 0;
+      const insertTx = {
         user_id: userId,
-        type: delta >= 0 ? 'admin_credit' : 'admin_debit',
+        type: positive ? 'admin_credit' : 'admin_debit',
         amount: Math.abs(delta),
         status: 'completed',
-      });
+        currency: 'USDC',
+        description: positive ? 'Ajuste admin (+)' : 'Ajuste admin (-)',
+      };
+      const { error: tErr } = await supabase.from(TX_TABLE).insert(insertTx);
+      if (tErr) throw tErr;
 
       toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(newUsdc)}` });
       await maybeRefreshSelf(userId);
@@ -357,17 +508,26 @@ export default function AdminDashboard() {
 
   const approveDeposit = async (tx) => {
     try {
+      // 1) Intento vía RPC segura (si la creamos): approve_deposit_v2(p_tx_id)
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('approve_deposit_v2', { p_tx_id: tx.id });
+      if (!rpcErr && rpcData?.ok) {
+        toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
+        await maybeRefreshSelf(tx.user_id);
+        await reloadAll();
+        return;
+      }
+      // 2) Fallback: método actual (update + balance)
       const { data: balRow, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', tx.user_id).single();
       if (gErr) throw gErr;
       const newUsdc = Number(balRow?.usdc || 0) + Number(tx.amount || 0);
 
-      const { error: bErr } = await supabase.from('balances').update({ usdc: newUsdc }).eq('user_id', tx.user_id);
+      const { error: bErr } = await supabase.from('balances').update({ usdc: newUsdc, updated_at: new Date().toISOString() }).eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
-      const { error: tErr } = await supabase.from(TX_TABLE).update({ status: 'completed' }).eq('id', tx.id);
+      const { error: tErr } = await supabase.from(TX_TABLE).update({ status: 'completed', updated_at: new Date().toISOString() }).eq('id', tx.id);
       if (tErr) throw tErr;
 
-      toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
+      toast({ title: 'Depósito aprobado (fallback)', description: `Acreditado $${fmt(tx.amount)}` });
       await maybeRefreshSelf(tx.user_id);
       await reloadAll();
     } catch (e) {
@@ -386,10 +546,10 @@ export default function AdminDashboard() {
         toast({ title: 'Saldo insuficiente', description: 'No alcanza para aprobar', variant: 'destructive' });
         return;
       }
-      const { error: bErr } = await supabase.from('balances').update({ usdc: current - amt }).eq('user_id', tx.user_id);
+      const { error: bErr } = await supabase.from('balances').update({ usdc: current - amt, updated_at: new Date().toISOString() }).eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
-      const { error: tErr } = await supabase.from(TX_TABLE).update({ status: 'completed' }).eq('id', tx.id);
+      const { error: tErr } = await supabase.from(TX_TABLE).update({ status: 'completed', updated_at: new Date().toISOString() }).eq('id', tx.id);
       if (tErr) throw tErr;
 
       toast({ title: 'Retiro aprobado', description: `Debitado $${fmt(tx.amount)}` });
@@ -403,7 +563,7 @@ export default function AdminDashboard() {
 
   const rejectTx = async (tx) => {
     try {
-      const { error } = await supabase.from(TX_TABLE).update({ status: 'rejected' }).eq('id', tx.id);
+      const { error } = await supabase.from(TX_TABLE).update({ status: 'rejected', updated_at: new Date().toISOString() }).eq('id', tx.id);
       if (error) throw error;
       toast({ title: 'Solicitud rechazada' });
       await reloadAll();
@@ -457,8 +617,108 @@ export default function AdminDashboard() {
           <RefreshCw className="h-8 w-8 mr-3 text-cyan-400" />
           Panel de Administración
         </h1>
-        <p className="text-slate-300">Métricas, usuarios, depósitos/retiros y mercado.</p>
+        <p className="text-slate-300">Métricas, usuarios, depósitos/retiros, mercado y configuración.</p>
       </motion.div>
+
+      {/* Configuración (%) */}
+      <Card className="crypto-card">
+        <CardHeader>
+          <CardTitle className="text-white flex items-center">
+            <Settings className="h-5 w-5 mr-2 text-cyan-400" />
+            Configuración (%)
+          </CardTitle>
+          <CardDescription className="text-slate-300">
+            Define porcentajes para planes, bots, referidos, proyectos y trading. (Sólo admins)
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="flex gap-2 justify-end">
+            <Button variant="outline" onClick={revertSettings}>
+              <Undo2 className="h-4 w-4 mr-2" /> Descartar cambios
+            </Button>
+            <Button onClick={saveAllSettings} disabled={savingAll} className="bg-gradient-to-r from-green-500 to-blue-500">
+              <Save className="h-4 w-4 mr-2" /> Guardar todo
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+  {/* PLANES */}
+  <SettingItem
+    label="Planes: Retorno diario (%)"
+    k="plans.default_daily_return_pct"
+    value={settings['plans.default_daily_return_pct']}
+    original={settingsOriginal['plans.default_daily_return_pct']}
+    onChange={(v) => setSettings((s) => ({ ...s, 'plans.default_daily_return_pct': v }))}
+    onSave={() => saveSetting('plans.default_daily_return_pct', settings['plans.default_daily_return_pct'])}
+  />
+  <SettingItem
+    label="Planes: Fee de retiro (%)"
+    k="plans.withdraw_fee_pct"
+    value={settings['plans.withdraw_fee_pct']}
+    original={settingsOriginal['plans.withdraw_fee_pct']}
+    onChange={(v) => setSettings((s) => ({ ...s, 'plans.withdraw_fee_pct': v }))}
+    onSave={() => saveSetting('plans.withdraw_fee_pct', settings['plans.withdraw_fee_pct'])}
+  />
+
+  {/* BOTS */}
+  <SettingItem
+    label="Bots: Profit share (%)"
+    k="bots.profit_share_pct"
+    value={settings['bots.profit_share_pct']}
+    original={settingsOriginal['bots.profit_share_pct']}
+    onChange={(v) => setSettings((s) => ({ ...s, 'bots.profit_share_pct': v }))}
+    onSave={() => saveSetting('bots.profit_share_pct', settings['bots.profit_share_pct'])}
+  />
+
+  {/* REFERIDOS */}
+  <SettingItem
+    label="Referrals: Nivel 1 (%)"
+    k="referrals.level1_pct"
+    value={settings['referrals.level1_pct']}
+    original={settingsOriginal['referrals.level1_pct']}
+    onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level1_pct': v }))}
+    onSave={() => saveSetting('referrals.level1_pct', settings['referrals.level1_pct'])}
+  />
+  <SettingItem
+    label="Referrals: Nivel 2 (%)"
+    k="referrals.level2_pct"
+    value={settings['referrals.level2_pct']}
+    original={settingsOriginal['referrals.level2_pct']}
+    onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level2_pct': v }))}
+    onSave={() => saveSetting('referrals.level2_pct', settings['referrals.level2_pct'])}
+  />
+
+  {/* PROYECTOS */}
+  <SettingItem
+    label="Proyectos: Emisión (%)"
+    k="projects.issuance_fee_pct"
+    value={settings['projects.issuance_fee_pct']}
+    original={settingsOriginal['projects.issuance_fee_pct']}
+    onChange={(v) => setSettings((s) => ({ ...s, 'projects.issuance_fee_pct': v }))}
+    onSave={() => saveSetting('projects.issuance_fee_pct', settings['projects.issuance_fee_pct'])}
+  />
+  <SettingItem
+    label="Proyectos: Mercado secundario (%)"
+    k="projects.secondary_market_fee_pct"
+    value={settings['projects.secondary_market_fee_pct']}
+    original={settingsOriginal['projects.secondary_market_fee_pct']}
+    onChange={(v) => setSettings((s) => ({ ...s, 'projects.secondary_market_fee_pct': v }))}
+    onSave={() => saveSetting('projects.secondary_market_fee_pct', settings['projects.secondary_market_fee_pct'])}
+  />
+
+  {/* TRADING */}
+  <SettingItem
+    label="Trading: Slippage máx. (%)"
+    k="trading.slippage_pct_max"
+    value={settings['trading.slippage_pct_max']}
+    original={settingsOriginal['trading.slippage_pct_max']}
+    onChange={(v) => setSettings((s) => ({ ...s, 'trading.slippage_pct_max': v }))}
+    onSave={() => saveSetting('trading.slippage_pct_max', settings['trading.slippage_pct_max'])}
+  />
+</div>
+
+        </CardContent>
+      </Card>
 
       {/* Métricas */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
@@ -594,6 +854,7 @@ export default function AdminDashboard() {
                     <SelectItem value="binance">Binance (live)</SelectItem>
                     <SelectItem value="simulated">Simulada</SelectItem>
                     <SelectItem value="manual">Manual</SelectItem>
+                    <SelectItem value="real">Real</SelectItem>
                   </SelectContent>
                 </Select>
 
@@ -836,7 +1097,10 @@ export default function AdminDashboard() {
                   <p className="text-white font-medium">
                     Usuario: {tx.user_name || '—'} {tx.user_email ? `(${tx.user_email})` : ''} · <span className="text-slate-500">{tx.user_id}</span>
                   </p>
-                  <p className="text-slate-400">Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span></p>
+                  <p className="text-slate-400">
+                    Monto: <span className="text-green-400 font-semibold">${fmt(tx.amount)}</span>
+                    {tx.currency ? <span className="ml-2 text-slate-500">· {tx.currency}</span> : null}
+                  </p>
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" onClick={() => approveDeposit(tx)} className="bg-green-600 hover:bg-green-700">
@@ -867,7 +1131,10 @@ export default function AdminDashboard() {
                   <p className="text-white font-medium">
                     Usuario: {tx.user_name || '—'} {tx.user_email ? `(${tx.user_email})` : ''} · <span className="text-slate-500">{tx.user_id}</span>
                   </p>
-                  <p className="text-slate-400">Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span></p>
+                  <p className="text-slate-400">
+                    Monto: <span className="text-yellow-300 font-semibold">${fmt(tx.amount)}</span>
+                    {tx.currency ? <span className="ml-2 text-slate-500">· {tx.currency}</span> : null}
+                  </p>
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" onClick={() => approveWithdrawal(tx)} className="bg-blue-600 hover:bg-blue-700">
@@ -883,6 +1150,31 @@ export default function AdminDashboard() {
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/** Item reusable para Configuración (%) */
+function SettingItem({ label, k, value, onChange, onSave }) {
+  const dirty = Number(value) !== Number(value ?? 0); // placeholder, solo para evitar warning
+  return (
+    <div className="p-4 bg-slate-800/50 rounded border border-slate-700/50 space-y-2">
+      <p className="text-slate-300 text-sm">{label}</p>
+      <div className="flex items-center gap-2">
+        <Input
+          type="number"
+          step="0.01"
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value)}
+          className="bg-slate-900 border-slate-700 text-white"
+          placeholder="0.00"
+        />
+        <span className="text-slate-400 text-sm">%</span>
+        <Button size="sm" onClick={onSave}>
+          <Save className="h-4 w-4 mr-1" /> Guardar
+        </Button>
+      </div>
+      <p className="text-[11px] text-slate-500 break-all">{k}</p>
     </div>
   );
 }

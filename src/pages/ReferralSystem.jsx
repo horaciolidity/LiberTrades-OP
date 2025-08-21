@@ -23,15 +23,17 @@ import { Input } from '@/components/ui/input';
 import { useAuth } from '@/contexts/AuthContext';
 import { useData } from '@/contexts/DataContext';
 import { toast } from '@/components/ui/use-toast';
+import { supabase } from '@/lib/supabaseClient';
 
 const fmt = (n, dec = 2) => {
   const v = Number(n);
-  return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
+  return Number.isFinite(v) ? Number(n).toFixed(dec) : (0).toFixed(dec);
 };
 
-const REWARD_PER_REFERRAL = 50; // USD por referido acreditado
+// Bono fijo por referido acreditado (se mantiene como antes)
+const REWARD_PER_REFERRAL = 50; // USD
 
-// Niveles y umbrales
+// Niveles y umbrales (visual)
 const LEVELS = [
   { name: 'Principiante', min: 0,   icon: Users,      color: 'text-blue-400',   bg: 'bg-blue-500/10' },
   { name: 'Bronce',       min: 5,   icon: Gift,       color: 'text-orange-400', bg: 'bg-orange-500/10' },
@@ -40,22 +42,58 @@ const LEVELS = [
   { name: 'Diamante',     min: 100, icon: Crown,      color: 'text-purple-400', bg: 'bg-purple-500/10' },
 ];
 
-const referralBenefits = [
-  { level: 'Principiante', referrals: '1–4 referidos',   commission: '$50 por referido',  bonus: 'Bono de bienvenida' },
-  { level: 'Bronce',       referrals: '5–19 referidos',  commission: '$75 por referido',  bonus: 'Acceso a webinars exclusivos' },
-  { level: 'Plata',        referrals: '20–49 referidos', commission: '$100 por referido', bonus: 'Asesoría personalizada' },
-  { level: 'Oro',          referrals: '50–99 referidos', commission: '$150 por referido', bonus: 'Acceso VIP + Señales premium' },
-  { level: 'Diamante',     referrals: '100+ referidos',  commission: '$200 por referido', bonus: 'Todos los beneficios + Participación en ganancias' },
-];
+// Tabla informativa (se adapta dinámicamente a los % admin)
+const buildBenefitsTable = (level1Pct, level2Pct) => ([
+  { level: 'Principiante', referrals: '1–4 referidos',   commission: `$${REWARD_PER_REFERRAL} por referido`,  bonus: `Comisión L1 ${fmt(level1Pct,0)}%` },
+  { level: 'Bronce',       referrals: '5–19 referidos',  commission: `$${REWARD_PER_REFERRAL} por referido`,  bonus: `Comisión L1 ${fmt(level1Pct,0)}% · L2 ${fmt(level2Pct,0)}%` },
+  { level: 'Plata',        referrals: '20–49 referidos', commission: `$${REWARD_PER_REFERRAL} por referido`,  bonus: `Comisión L1 ${fmt(level1Pct,0)}% · L2 ${fmt(level2Pct,0)}%` },
+  { level: 'Oro',          referrals: '50–99 referidos', commission: `$${REWARD_PER_REFERRAL} por referido`,  bonus: `Comisión L1 ${fmt(level1Pct,0)}% · L2 ${fmt(level2Pct,0)}% + perks` },
+  { level: 'Diamante',     referrals: '100+ referidos',  commission: `$${REWARD_PER_REFERRAL} por referido`,  bonus: `Comisión L1 ${fmt(level1Pct,0)}% · L2 ${fmt(level2Pct,0)}% + participación` },
+]);
 
 export default function ReferralSystem() {
   const { user, profile } = useAuth();
   const {
     referrals: ctxReferrals = [],
     refreshReferrals,
+    settings: adminSettings, // si DataContext ya trae settings, los usamos directo
   } = useData();
 
   const [referrals, setReferrals] = useState([]);
+
+  // ====== Porcentajes de referidos (desde Admin) ======
+  // Defaults alineados con AdminDashboard (5% y 2%)
+  const [level1Pct, setLevel1Pct] = useState(
+    Number(adminSettings?.['referrals.level1_pct'] ?? 5)
+  );
+  const [level2Pct, setLevel2Pct] = useState(
+    Number(adminSettings?.['referrals.level2_pct'] ?? 2)
+  );
+
+  // Si DataContext trae settings, se aplican; si no, fallback por RPC a get_admin_settings('referrals.')
+  useEffect(() => {
+    if (adminSettings) {
+      if (adminSettings['referrals.level1_pct'] != null) {
+        setLevel1Pct(Number(adminSettings['referrals.level1_pct']));
+      }
+      if (adminSettings['referrals.level2_pct'] != null) {
+        setLevel2Pct(Number(adminSettings['referrals.level2_pct']));
+      }
+      return;
+    }
+    (async () => {
+      try {
+        const { data, error } = await supabase.rpc('get_admin_settings', { prefix: 'referrals.' });
+        if (error) return;
+        const map = Object.fromEntries((data || []).map(r => [r.setting_key, Number(r.setting_value)]));
+        if (map['referrals.level1_pct'] != null) setLevel1Pct(Number(map['referrals.level1_pct']));
+        if (map['referrals.level2_pct'] != null) setLevel2Pct(Number(map['referrals.level2_pct']));
+      } catch {
+        // silencio; se quedan los defaults
+      }
+    })();
+  }, [adminSettings]);
+
   const referralCode = profile?.referral_code || user?.referralCode || '';
   const referralLink = `${typeof window !== 'undefined' ? window.location.origin : ''}/register?ref=${referralCode}`;
 
@@ -70,7 +108,6 @@ export default function ReferralSystem() {
 
   // Sincronizar con el contexto
   useEffect(() => {
-    // DataContext.profiles devuelve: id, email, full_name, created_at, username
     setReferrals(Array.isArray(ctxReferrals) ? ctxReferrals : []);
   }, [ctxReferrals]);
 
@@ -86,6 +123,7 @@ export default function ReferralSystem() {
     }).length;
   }, [referrals]);
 
+  // Se mantiene el bono fijo total (como venía)
   const totalEarnings = useMemo(
     () => totalReferrals * REWARD_PER_REFERRAL,
     [totalReferrals]
@@ -136,10 +174,12 @@ export default function ReferralSystem() {
     }
   };
 
+  const benefitsTable = useMemo(() => buildBenefitsTable(level1Pct, level2Pct), [level1Pct, level2Pct]);
+
   const stats = [
     { title: 'Total Referidos', value: String(totalReferrals), icon: Users, color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
     { title: 'Referidos Activos (30d)', value: String(activeReferrals), icon: TrendingUp, color: 'text-green-400', bgColor: 'bg-green-500/10' },
-    { title: 'Ganancias Totales', value: `$${fmt(totalEarnings)}`, icon: DollarSign, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
+    { title: 'Ganancias Totales (bono)', value: `$${fmt(totalEarnings)}`, icon: DollarSign, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
     {
       title: 'Nivel Actual',
       value: currentLevel.name,
@@ -262,6 +302,17 @@ export default function ReferralSystem() {
                   <p className="text-slate-300">{totalReferrals} referidos totales</p>
                 </div>
 
+                <div className="bg-slate-800/50 p-4 rounded-lg">
+                  <h4 className="text-white font-semibold mb-2">Tus porcentajes de comisión</h4>
+                  <ul className="text-sm text-slate-300 space-y-1">
+                    <li>• Nivel 1: <span className="text-white font-semibold">{fmt(level1Pct, 0)}%</span></li>
+                    <li>• Nivel 2: <span className="text-white font-semibold">{fmt(level2Pct, 0)}%</span></li>
+                  </ul>
+                  <p className="text-[11px] text-slate-500 mt-2">
+                    Definidos por administración. Se aplican sobre ganancias/pagos elegibles (planes/bots) de tu red.
+                  </p>
+                </div>
+
                 {nextLevel ? (
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
@@ -288,10 +339,10 @@ export default function ReferralSystem() {
                 <div className="bg-slate-800/50 p-4 rounded-lg">
                   <h4 className="text-white font-semibold mb-2">Beneficios actuales</h4>
                   <ul className="space-y-1 text-sm text-slate-300">
-                    <li>• ${REWARD_PER_REFERRAL} por cada referido</li>
-                    <li>• Comisiones instantáneas</li>
+                    <li>• Bono por referido acreditado: <span className="text-white font-semibold">${REWARD_PER_REFERRAL}</span></li>
+                    <li>• Comisión L1: <span className="text-white font-semibold">{fmt(level1Pct, 0)}%</span></li>
+                    <li>• Comisión L2: <span className="text-white font-semibold">{fmt(level2Pct, 0)}%</span></li>
                     <li>• Seguimiento en tiempo real</li>
-                    {currentLevel.name !== 'Principiante' && <li>• Bonos adicionales por nivel</li>}
                   </ul>
                 </div>
               </CardContent>
@@ -299,7 +350,7 @@ export default function ReferralSystem() {
           </motion.div>
         </div>
 
-        {/* Tabla de beneficios por nivel */}
+        {/* Tabla de niveles/beneficios */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.6 }}>
           <Card className="crypto-card">
             <CardHeader>
@@ -313,12 +364,12 @@ export default function ReferralSystem() {
                     <tr className="border-b border-slate-700">
                       <th className="text-left py-3 px-4 text-slate-300">Nivel</th>
                       <th className="text-left py-3 px-4 text-slate-300">Referidos</th>
-                      <th className="text-left py-3 px-4 text-slate-300">Comisión</th>
+                      <th className="text-left py-3 px-4 text-slate-300">Bono por referido</th>
                       <th className="text-left py-3 px-4 text-slate-300">Beneficios Extra</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {referralBenefits.map((b) => (
+                    {benefitsTable.map((b) => (
                       <tr
                         key={b.level}
                         className={`border-b border-slate-700/50 ${b.level === currentLevel.name ? 'bg-green-500/10' : ''}`}
@@ -366,7 +417,7 @@ export default function ReferralSystem() {
                         </div>
                         <div className="text-right">
                           <p className="text-green-400 font-semibold">+${fmt(REWARD_PER_REFERRAL)}</p>
-                          <p className="text-slate-400 text-sm">Comisión estimada</p>
+                          <p className="text-slate-400 text-sm">Bono estimado</p>
                         </div>
                       </div>
                     );
