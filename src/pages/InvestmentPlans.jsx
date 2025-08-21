@@ -13,6 +13,7 @@ import {
   BarChart2,
   LineChart as LineChartIcon,
   Info,
+  Star, // 👈 FIX: importado para Plan Básico
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -138,7 +139,7 @@ export default function InvestmentPlans() {
     const a = Number(amount || 0);
     const p = getPrice(currency);
     return p > 0 ? a * p : 0;
-    };
+  };
   const fromUsd = (usd, currency) => {
     const p = getPrice(currency);
     if (currency === 'USDT') return usd;
