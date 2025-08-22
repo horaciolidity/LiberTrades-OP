@@ -248,12 +248,12 @@ export function AuthProvider({ children }) {
     toast({ title: 'Sesión cerrada', description: 'Has cerrado sesión exitosamente' });
   };
 
-  // Filtra solo columnas válidas de profiles para evitar 400 por campos extraños
+  // Filtra solo columnas válidas de profiles
   const pickProfileCols = (obj = {}) => {
     const allow = new Set([
       'username',
       'full_name',
-      'email',      // (solo si la columna existe en profiles; NO cambia el login email)
+      'email',      // solo en tabla profiles (NO cambia el email de login)
       'phone',
       'country',
       'city',
@@ -287,7 +287,7 @@ export function AuthProvider({ children }) {
       return;
     }
 
-    await refreshProfile(); // refresca estado local
+    await refreshProfile();
     toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado.' });
   };
 
@@ -311,7 +311,7 @@ export function AuthProvider({ children }) {
         user,
         profile,
         balances,
-        balanceUSD,     // helper de saldo USD
+        balanceUSD,
         displayName,
         isAuthenticated,
         loading,
