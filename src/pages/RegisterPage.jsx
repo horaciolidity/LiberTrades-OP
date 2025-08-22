@@ -49,33 +49,39 @@ const RegisterPage = () => {
 
     setLoading(true);
     try {
-      // Validación opcional del código de referido vía RPC (evita RLS 406)
+      // 1) Resolver código de referido → UUID (id del sponsor)
       let referredBy = null;
       const rawCode = (formData.referralCode || '').trim();
 
       if (rawCode) {
-        const code = rawCode.toUpperCase(); // normalizamos cliente
-        const { data: isValid, error } = await supabase.rpc('validate_referral_code', { p_code: code });
+        const code = rawCode.toUpperCase();
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('referral_code', code)
+          .maybeSingle();
+
         if (error) {
-          console.warn('[validate_referral_code]', error.message);
-          // si el RPC falla, podés dejar continuar sin referido o bloquear. Acá bloqueamos:
+          console.error('[referral lookup]', error);
           alert('No se pudo validar el código de referido. Intentá nuevamente.');
           setLoading(false);
           return;
         }
-        if (!isValid) {
+        if (!data) {
           alert('Código de referido inválido');
           setLoading(false);
           return;
         }
-        referredBy = code; // guardamos el CÓDIGO en profiles.referred_by
+
+        referredBy = data.id; // ⚠️ UUID correcto para profiles.referred_by
       }
 
+      // 2) Registrar
       await register({
         name: formData.name.trim(),
         email: formData.email.trim(),
         password: formData.password,
-        referredBy, // puede ser null si no ingresó código
+        referredBy, // UUID o null
       });
 
       navigate('/dashboard');
