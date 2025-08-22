@@ -49,31 +49,30 @@ const RegisterPage = () => {
 
     setLoading(true);
     try {
-      // 1) Resolver código de referido → UUID (id del sponsor)
+      // 1) Resolver código de referido → UUID (id del sponsor) vía RPC (ignora RLS)
       let referredBy = null;
       const rawCode = (formData.referralCode || '').trim();
 
       if (rawCode) {
         const code = rawCode.toUpperCase();
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('referral_code', code)
-          .maybeSingle();
+        const { data: inviterId, error } = await supabase.rpc(
+          'get_user_id_by_referral_code',
+          { p_code: code }
+        );
 
         if (error) {
-          console.error('[referral lookup]', error);
+          console.error('[get_user_id_by_referral_code]', error);
           alert('No se pudo validar el código de referido. Intentá nuevamente.');
           setLoading(false);
           return;
         }
-        if (!data) {
+        if (!inviterId) {
           alert('Código de referido inválido');
           setLoading(false);
           return;
         }
 
-        referredBy = data.id; // ⚠️ UUID correcto para profiles.referred_by
+        referredBy = inviterId; // ✅ UUID correcto para profiles.referred_by
       }
 
       // 2) Registrar
