@@ -1,5 +1,5 @@
 // src/pages/PersonalInfoTab.jsx
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,65 +8,53 @@ import { Label } from '@/components/ui/label';
 import { User, Save, Camera } from 'lucide-react';
 import { toast } from '@/components/ui/use-toast';
 import { useSound } from '@/contexts/SoundContext';
-import { supabase } from '@/lib/supabaseClient';
 
 const PersonalInfoTab = () => {
-  const { user, updateUser, profile } = useAuth(); // si tu AuthContext ya expone "profile", mejor
+  const { user, profile, updateUser, refreshProfile } = useAuth();
   const { playSound } = useSound();
 
   const [saving, setSaving] = useState(false);
   const [profileData, setProfileData] = useState({
-    // UI friendly
-    name: profile?.full_name || user?.name || '',
+    name: profile?.full_name || '',
     email: user?.email || profile?.email || '',
     phone: profile?.phone || '',
     country: profile?.country || '',
     city: profile?.city || '',
   });
 
+  // 🔁 Rehidratar el form cuando cambia el perfil (realtime/refresh)
+  useEffect(() => {
+    setProfileData({
+      name: profile?.full_name || '',
+      email: user?.email || profile?.email || '',
+      phone: profile?.phone || '',
+      country: profile?.country || '',
+      city: profile?.city || '',
+    });
+  }, [profile?.full_name, profile?.phone, profile?.country, profile?.city, profile?.email, user?.email]);
+
   const handleProfileUpdate = async () => {
     if (!user?.id) {
       toast({ title: 'Sin sesión', description: 'Iniciá sesión para continuar.', variant: 'destructive' });
       return;
     }
-
-    // Mapear a columnas reales de la tabla "profiles"
-    const payload = {
-      full_name: profileData.name?.trim() || null,
-      phone: profileData.phone?.trim() || null,
-      country: profileData.country?.trim() || null,
-      city: profileData.city?.trim() || null,
-      updated_at: new Date().toISOString(),
-      // ⚠️ NO tocar email acá; si querés cambiar email real, se hace con supabase.auth.updateUser({ email })
-    };
-
     setSaving(true);
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .update(payload)
-        .eq('id', user.id)
-        .select('*')
-        .single();
-
-      if (error) throw error;
-
-      // Refrescar estado local de tu app (si tu AuthContext tiene este método)
-      updateUser?.({
-        ...profile,
-        ...data,
-      });
-
+      // ⬅️ mapear a columnas REALES de public.profiles
+      const payload = {
+        full_name: (profileData.name || '').trim() || null,
+        phone: (profileData.phone || '').trim() || null,
+        country: (profileData.country || '').trim() || null,
+        city: (profileData.city || '').trim() || null,
+      };
+      await updateUser(payload);     // usa AuthContext (ya filtra columnas y setea updated_at)
+      await refreshProfile();        // fuerza lectura por las dudas
       playSound?.('success');
-      toast({ title: 'Perfil actualizado', description: 'Tu información personal fue guardada.' });
+      toast({ title: 'Perfil actualizado', description: 'Tus datos fueron guardados.' });
     } catch (e) {
-      console.error('[profiles.update]', e);
+      console.error('[handleProfileUpdate]', e);
       playSound?.('error');
-      toast({
-        title: 'No se pudo guardar',
-        description: e?.message || 'Revisá que los campos sean válidos.',
-        variant: 'destructive',
-      });
+      toast({ title: 'No se pudo guardar', description: e?.message || 'Intentá nuevamente.', variant: 'destructive' });
     } finally {
       setSaving(false);
     }
@@ -166,7 +154,7 @@ const PersonalInfoTab = () => {
           <div className="space-y-2">
             <Label className="text-white">Código de Referido</Label>
             <Input
-              value={profile?.referral_code || user?.referralCode || ''}
+              value={profile?.referral_code || ''}
               readOnly
               className="bg-slate-700 border-slate-600 text-slate-300 cursor-not-allowed"
             />

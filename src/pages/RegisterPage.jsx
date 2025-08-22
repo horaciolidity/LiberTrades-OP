@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+// src/pages/RegisterPage.jsx
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff, ArrowLeft, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -10,19 +11,33 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabaseClient';
 
 const RegisterPage = () => {
+  const [searchParams] = useSearchParams();
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     password: '',
     confirmPassword: '',
-    referralCode: ''
+    referralCode: '',
   });
 
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+
   const { register } = useAuth();
   const navigate = useNavigate();
+
+  // Prellenar desde ?ref=CODE si viene en la URL
+  useEffect(() => {
+    const ref = (searchParams.get('ref') || '').trim();
+    if (ref) {
+      setFormData((s) => ({ ...s, referralCode: ref.toUpperCase() }));
+    }
+  }, [searchParams]);
+
+  const handleChange = (e) => {
+    setFormData((s) => ({ ...s, [e.target.name]: e.target.value }));
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -33,47 +48,43 @@ const RegisterPage = () => {
     }
 
     setLoading(true);
-
     try {
-      let validReferredId = null;
+      // Validación opcional del código de referido vía RPC (evita RLS 406)
+      let referredBy = null;
+      const rawCode = (formData.referralCode || '').trim();
 
-      if (formData.referralCode) {
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('referral_code', formData.referralCode.trim())
-          .single();
-
-        if (error || !data) {
+      if (rawCode) {
+        const code = rawCode.toUpperCase(); // normalizamos cliente
+        const { data: isValid, error } = await supabase.rpc('validate_referral_code', { p_code: code });
+        if (error) {
+          console.warn('[validate_referral_code]', error.message);
+          // si el RPC falla, podés dejar continuar sin referido o bloquear. Acá bloqueamos:
+          alert('No se pudo validar el código de referido. Intentá nuevamente.');
+          setLoading(false);
+          return;
+        }
+        if (!isValid) {
           alert('Código de referido inválido');
           setLoading(false);
           return;
         }
-
-        validReferredId = data.id;
+        referredBy = code; // guardamos el CÓDIGO en profiles.referred_by
       }
 
       await register({
-        name: formData.name,
-        email: formData.email,
+        name: formData.name.trim(),
+        email: formData.email.trim(),
         password: formData.password,
-        referredBy: validReferredId
+        referredBy, // puede ser null si no ingresó código
       });
 
       navigate('/dashboard');
-    } catch (error) {
-      console.error('Register error:', error);
+    } catch (err) {
+      console.error('Register error:', err);
       alert('Error al crear la cuenta');
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    });
   };
 
   return (
@@ -101,6 +112,7 @@ const RegisterPage = () => {
               Únete a LiberTrades y comienza a invertir
             </CardDescription>
           </CardHeader>
+
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="space-y-2">
@@ -146,8 +158,8 @@ const RegisterPage = () => {
                   />
                   <button
                     type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-white"
+                    onClick={() => setShowPassword((s) => !s)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -169,8 +181,8 @@ const RegisterPage = () => {
                   />
                   <button
                     type="button"
-                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-white"
+                    onClick={() => setShowConfirmPassword((s) => !s)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
                   >
                     {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -185,8 +197,8 @@ const RegisterPage = () => {
                   type="text"
                   value={formData.referralCode}
                   onChange={handleChange}
-                  placeholder="Código de referido"
-                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400"
+                  placeholder="ABC123"
+                  className="bg-slate-800 border-slate-600 text-white placeholder:text-slate-400 uppercase"
                 />
                 <p className="text-xs text-slate-400">
                   Si tienes un código de referido, obtendrás bonos especiales

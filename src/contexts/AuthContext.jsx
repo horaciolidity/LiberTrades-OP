@@ -20,13 +20,14 @@ export function AuthProvider({ children }) {
 
   const SAFE_TIMEOUT = 2500; // evita loaders eternos
 
-  // -------- helpers (db) --------
+  // ---------- helpers (db) ----------
   async function fetchProfile(userId) {
     const { data, error } = await supabase
       .from('profiles')
-      .select(
-        'id, username, referred_by, referral_code, role, full_name, email, phone, country, city, updated_at'
-      )
+      .select(`
+        id, username, referred_by, referral_code, role,
+        full_name, email, phone, country, city, updated_at
+      `)
       .eq('id', userId)
       .maybeSingle();
 
@@ -35,7 +36,6 @@ export function AuthProvider({ children }) {
     return data || null;
   }
 
-  // Crea balances si no existe y devuelve la fila (idempotente)
   async function fetchOrCreateBalances(userId) {
     const { data: existing, error: selErr } = await supabase
       .from('balances')
@@ -86,13 +86,12 @@ export function AuthProvider({ children }) {
     return fetchProfile(user.id);
   };
 
-  // carga en segundo plano — no bloquea loader
   function loadAllBG(userId) {
     Promise.allSettled([fetchProfile(userId), fetchOrCreateBalances(userId)]).catch(() => {});
     setIsAuthenticated(true);
   }
 
-  // -------- bootstrap + listener de auth --------
+  // ---------- bootstrap + auth listener ----------
   useEffect(() => {
     let mounted = true;
     const killer = setTimeout(() => mounted && setLoading(false), SAFE_TIMEOUT);
@@ -147,7 +146,7 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  // -------- listeners Realtime (balances + profiles) --------
+  // ---------- realtime (balances + profiles) ----------
   useEffect(() => {
     if (!user?.id) return;
 
@@ -175,10 +174,11 @@ export function AuthProvider({ children }) {
     };
   }, [user?.id]);
 
-  // -------- actions --------
+  // ---------- utils ----------
   const generateReferralCode = () =>
     Math.random().toString(36).substring(2, 8).toUpperCase();
 
+  // ---------- actions ----------
   const login = async (email, password) => {
     setLoading(true);
     try {
@@ -195,9 +195,14 @@ export function AuthProvider({ children }) {
     }
   };
 
+  /**
+   * register recibe:
+   * - referredBy: UUID del referidor (vos lo calculás en RegisterPage buscando por referral_code)
+   */
   const register = async ({ email, password, name, referredBy }) => {
     setLoading(true);
     try {
+      // 1) alta en Auth
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -206,33 +211,59 @@ export function AuthProvider({ children }) {
       if (error) throw error;
 
       const userId = data?.user?.id;
-      const referralCode = generateReferralCode();
+      if (!userId) throw new Error('No se pudo obtener el ID de usuario.');
 
-      if (userId) {
-        // 1) perfil
-        const { error: pErr } = await supabase.from('profiles').insert({
-          id: userId,
-          username: name || email.split('@')[0],
-          referred_by: referredBy || null,
-          referral_code: referralCode,
-          email,
-          full_name: name || null,
-        });
-        if (pErr) throw pErr;
-
-        // 2) balance inicial
-        const { error: bErr } = await supabase
-          .from('balances')
-          .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 });
-        if (bErr) console.warn('[register/init balances]', bErr.message);
-
-        loadAllBG(userId);
+      // 2) generar referral_code único con reintentos
+      let myCode = generateReferralCode();
+      for (let i = 0; i < 4; i++) {
+        const { data: exists } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('referral_code', myCode)
+          .maybeSingle();
+        if (!exists) break;
+        myCode = generateReferralCode();
       }
+
+      // 3) upsert del perfil (idempotente por si tenés triggers)
+      const { data: prof, error: pErr } = await supabase
+        .from('profiles')
+        .upsert(
+          {
+            id: userId,
+            username: name || email.split('@')[0],
+            full_name: name || null,
+            email,
+            referred_by: referredBy || null, // UUID del referidor (o null)
+            referral_code: myCode,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        )
+        .select()
+        .single();
+      if (pErr) throw pErr;
+
+      // 4) balance inicial (noop si falla por RLS)
+      const { error: bErr } = await supabase
+        .from('balances')
+        .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 });
+      if (bErr) console.warn('[register/init balances]', bErr.message);
+
+      // 5) hidratar estado
+      setUser(data.user);
+      setProfile(prof || null);
+      await fetchOrCreateBalances(userId);
 
       toast({ title: '¡Registro exitoso!', description: 'Tu cuenta ha sido creada.' });
       return data.user ?? null;
     } catch (err) {
-      toast({ title: 'Error de registro', description: err.message, variant: 'destructive' });
+      console.error('[register]', err);
+      const msg =
+        err?.message?.includes('User already registered')
+          ? 'Este email ya está registrado.'
+          : err?.message || 'No se pudo crear la cuenta.';
+      toast({ title: 'Error de registro', description: msg, variant: 'destructive' });
       throw err;
     } finally {
       setLoading(false);
@@ -248,12 +279,12 @@ export function AuthProvider({ children }) {
     toast({ title: 'Sesión cerrada', description: 'Has cerrado sesión exitosamente' });
   };
 
-  // Filtra solo columnas válidas de profiles
+  // Acepta solo columnas válidas de profiles
   const pickProfileCols = (obj = {}) => {
     const allow = new Set([
       'username',
       'full_name',
-      'email',      // solo en tabla profiles (NO cambia el email de login)
+      'email',      // (columna en profiles; NO cambia email de login)
       'phone',
       'country',
       'city',
@@ -263,7 +294,7 @@ export function AuthProvider({ children }) {
       'updated_at',
     ]);
     const out = {};
-    Object.keys(obj).forEach((k) => {
+    Object.keys(obj || {}).forEach((k) => {
       if (allow.has(k)) out[k] = obj[k];
     });
     return out;
@@ -280,18 +311,18 @@ export function AuthProvider({ children }) {
       return;
     }
 
-    const { error } = await supabase.from('profiles').update(payload).eq('id', user.id);
+    const { data, error } = await supabase.from('profiles').update(payload).eq('id', user.id).select().single();
     if (error) {
       console.error('[profiles.update]', error);
       toast({ title: 'Error al actualizar usuario', description: error.message, variant: 'destructive' });
       return;
     }
 
-    await refreshProfile();
+    setProfile(data || null); // reflejar al toque
     toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado.' });
   };
 
-  // Helper comodín para UI que espera un único saldo USD
+  // Helper comodín de saldo USD
   const balanceUSD =
     typeof balances?.usdc === 'number'
       ? balances.usdc
