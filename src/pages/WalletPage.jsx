@@ -108,7 +108,7 @@ const WalletPage = () => {
   const changeBTC = Number(cryptoPrices?.BTC?.change ?? 0);
   const changeETH = Number(cryptoPrices?.ETH?.change ?? 0);
 
-  // === Últimos movimientos de billetera (depósitos/retiros/créditos/refunds/fees) ===
+  // === Últimos movimientos de billetera ===
   const walletTypes = new Set(['deposit', 'withdrawal', 'admin_credit', 'refund', 'fee']);
   const recentWalletTx = (Array.isArray(transactions) ? transactions : [])
     .filter(t => walletTypes.has(String(t?.type || '').toLowerCase()))
@@ -223,7 +223,9 @@ const WalletPage = () => {
                 Depositar
               </Button>
             </Link>
-            <Link to="/withdraw">
+
+            {/* 🔧 Cambio aquí: Retirar ahora también va a /deposit */}
+            <Link to="/deposit">
               <Button variant="secondary" className="w-full justify-start gap-2">
                 <ArrowUpCircle className="w-4 h-4" />
                 Retirar

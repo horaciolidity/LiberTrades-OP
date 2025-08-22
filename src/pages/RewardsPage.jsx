@@ -22,6 +22,7 @@ import { toast } from '@/components/ui/use-toast';
 import { useData } from '@/contexts/DataContext';
 import { supabase } from '@/lib/supabaseClient';
 
+// ===== TAREAS BASE =====
 const initialTasks = [
   {
     id: 1,
@@ -42,7 +43,7 @@ const initialTasks = [
     reward: '$10 Bonus',
     icon: TrendingUp,
     category: 'Inversión',
-    goal: 1, // 1 inversión
+    goal: 1,
     link: '/plans',
   },
   {
@@ -75,7 +76,7 @@ const initialTasks = [
     reward: '$1000 saldo virtual extra',
     icon: Zap,
     category: 'Trading',
-    goal: 10, // 10 trades
+    goal: 10,
     link: '/simulator',
   },
   {
@@ -91,7 +92,7 @@ const initialTasks = [
   },
 ];
 
-// -- rehidrata íconos solo si son funciones válidas
+// -- rehidratar íconos si venían del localStorage (no se pueden serializar funciones)
 const restoreIcons = (arr = []) =>
   arr.map((t) => {
     const fallback = initialTasks.find((x) => x.id === t.id)?.icon || Gift;
@@ -113,19 +114,38 @@ const fmt = (n, dec = 2) => {
 };
 const clamp = (v, a = 0, b = 100) => Math.min(b, Math.max(a, v));
 
+// helpers para calcular ganancia acumulada aprox. de planes (para la tarea de lealtad)
+const daysBetween = (from, to) => {
+  const A = new Date(from);
+  const B = new Date(to);
+  return Math.max(0, Math.floor((B.getTime() - A.getTime()) / (1000 * 60 * 60 * 24)));
+};
+
+const earnedOfInvestment = (inv) => {
+  const amount = Number(inv?.amount ?? 0);
+  const dailyPct = Number(inv?.dailyReturn ?? inv?.daily_return ?? 0);
+  const duration = Number(inv?.duration ?? 0);
+  const created = inv?.createdAt ?? inv?.created_at ?? new Date().toISOString();
+  const elapsed = Math.min(daysBetween(created, Date.now()), duration);
+  const dailyUsd = (amount * dailyPct) / 100;
+  return dailyUsd * elapsed; // ganancia acumulada al día
+};
+
 export default function RewardsPage() {
-  const { user } = useAuth();
+  const { user, balances, refreshBalances } = useAuth();
   const { playSound } = useSound();
 
-  // Datos en vivo para calcular progreso real
+  // Datos en vivo para progreso/eligibilidad y para registrar transacciones
   const {
     transactions = [],
     investments = [],
     referrals = [],
     cryptoPrices = {},
+    addTransaction,
+    refreshTransactions,
   } = useData();
 
-  const [tradesCount, setTradesCount] = useState(0); // desde tabla trades
+  const [tradesCount, setTradesCount] = useState(0);
   const [loadingTrades, setLoadingTrades] = useState(true);
 
   const keyTasks = user?.id ? `crypto_rewards_tasks_${user.id}` : null;
@@ -179,14 +199,14 @@ export default function RewardsPage() {
     };
   }, [user?.id]);
 
-  // === Derivar progreso/eligibilidad por tarea a partir de datos ===
+  // === Derivar progreso/eligibilidad ===
   const depositUsdTotal = useMemo(() => {
     const toUsd = (amt, cur) => {
       const c = String(cur || '').toUpperCase();
       if (c === 'USDT' || c === 'USDC' || c === 'USD') return Number(amt) || 0;
       if (c === 'BTC') return (Number(amt) || 0) * (Number(cryptoPrices?.BTC?.price || 0) || 0);
       if (c === 'ETH') return (Number(amt) || 0) * (Number(cryptoPrices?.ETH?.price || 0) || 0);
-      return 0; // otras monedas no consideradas
+      return 0;
     };
     const completedDeposits = (Array.isArray(transactions) ? transactions : []).filter(
       (t) => (t?.type || '').toLowerCase() === 'deposit' && (t?.status || '').toLowerCase() === 'completed'
@@ -195,7 +215,6 @@ export default function RewardsPage() {
   }, [transactions, cryptoPrices]);
 
   const kycVerified = useMemo(() => {
-    // intentamos leer metadatos comunes
     const meta = user?.user_metadata || {};
     return Boolean(
       meta.kyc === true ||
@@ -213,7 +232,6 @@ export default function RewardsPage() {
   );
 
   const loyaltyDays = useMemo(() => {
-    // máximo daysElapsed en inversiones activas (mapeado por DataContext)
     const days = activeInvestments.map((i) => Number(i?.daysElapsed || 0));
     return days.length ? Math.max(...days) : 0;
   }, [activeInvestments]);
@@ -268,15 +286,40 @@ export default function RewardsPage() {
     return map;
   }, [depositUsdTotal, activeInvestments, investments, kycVerified, referralsCount, tradesCount, loyaltyDays]);
 
-  // === Estado de reclamo (completed = reclamado) ===
+  // === Estado de reclamo ===
   const isClaimed = (id) => claimedRewards.some((r) => r.id === id);
 
-  const handleClaimReward = (taskId) => {
+  // ---- calcular monto USD de recompensa (real) ----
+  const computeUsdReward = (task) => {
+    switch (task.key) {
+      case 'first_deposit':
+        return 5;
+      case 'first_investment':
+        return 10;
+      case 'refer_friend':
+        return 20;
+      case 'monthly_loyalty': {
+        // 2% de ganancias acumuladas actuales (aprox) si ya cumplió 30 días
+        const earnedTotal = (activeInvestments || []).reduce((acc, inv) => acc + earnedOfInvestment(inv), 0);
+        const bonus = earnedTotal * 0.02;
+        return bonus > 0 ? bonus : 0;
+      }
+      // KYC y Ten Trades NO acreditan saldo real en este diseño
+      default:
+        return 0;
+    }
+  };
+
+  // ---- reclamar recompensa (acreditar + transacción + refrescar) ----
+  const handleClaimReward = async (taskId) => {
     const task = tasks.find((t) => t.id === taskId) || initialTasks.find((t) => t.id === taskId);
     const info = eligibility.get(taskId);
     if (!task) return;
 
-    // Solo permitir reclamo si es elegible y no fue reclamado
+    if (!user?.id) {
+      toast({ title: 'Sin sesión', description: 'Iniciá sesión para continuar.', variant: 'destructive' });
+      return;
+    }
     if (!info?.eligible) {
       playSound?.('error');
       toast({
@@ -288,23 +331,81 @@ export default function RewardsPage() {
     }
     if (isClaimed(taskId)) {
       playSound?.('click');
-      toast({
-        title: 'Ya reclamado',
-        description: `Ya reclamaste la recompensa de "${task.title}".`,
-      });
+      toast({ title: 'Ya reclamado', description: `Ya reclamaste la recompensa de "${task.title}".` });
       return;
     }
 
-    playSound?.('success');
-    setClaimedRewards((prev) => [
-      ...prev,
-      { id: task.id, title: task.title, reward: task.reward, claimedAt: new Date().toISOString() },
-    ]);
+    // 1) Determinar premio
+    const usdReward = computeUsdReward(task);
 
-    toast({
-      title: '¡Recompensa reclamada!',
-      description: `Obtuviste ${task.reward} por completar "${task.title}".`,
-    });
+    try {
+      // 2) Si hay dinero real, acreditar balance + registrar transacción visible en Wallet/History
+      if (usdReward > 0) {
+        const current = Number(balances?.usdc ?? 0);
+        const newBal = current + usdReward;
+
+        // 2a) Transacción (tipo que sí aparece en WalletPage -> admin_credit)
+        await addTransaction?.({
+          amount: usdReward,
+          type: 'admin_credit',
+          currency: 'USDC',
+          description: `Recompensa: ${task.title}`,
+          referenceType: 'reward',
+          referenceId: task.key,
+          status: 'completed',
+        });
+
+        // 2b) Actualizar saldo real USDC
+        const { error: balErr } = await supabase
+          .from('balances')
+          .update({ usdc: newBal, updated_at: new Date().toISOString() })
+          .eq('user_id', user.id);
+
+        if (balErr) {
+          console.error('[rewards] balances.update', balErr);
+          throw balErr;
+        }
+
+        // refrescar caches
+        await Promise.all([refreshTransactions?.(), refreshBalances?.()]);
+      } else {
+        // Bonos no monetarios reales
+        if (task.key === 'ten_trades') {
+          toast({
+            title: 'Saldo virtual',
+            description: 'El bonus de 10 trades es saldo de práctica. Si querés, lo conecto para sumar $1000 a tu saldo demo.',
+          });
+        }
+        if (task.key === 'kyc_verify') {
+          toast({
+            title: 'Beneficio activado',
+            description: 'Tu KYC otorga mayores límites de retiro. (No acredita saldo real).',
+          });
+        }
+      }
+
+      // 3) Marcar como reclamado (local)
+      playSound?.('success');
+      setClaimedRewards((prev) => [
+        ...prev,
+        { id: task.id, title: task.title, reward: task.reward, claimedAt: new Date().toISOString() },
+      ]);
+
+      toast({
+        title: '¡Recompensa reclamada!',
+        description:
+          usdReward > 0
+            ? `Acreditamos $${fmt(usdReward)} USDC en tu billetera por "${task.title}".`
+            : `Completaste "${task.title}".`,
+      });
+    } catch (e) {
+      console.error('[rewards] claim error:', e);
+      toast({
+        title: 'No se pudo acreditar',
+        description: e?.message || 'Intentá nuevamente en unos instantes.',
+        variant: 'destructive',
+      });
+    }
   };
 
   const categories = useMemo(
@@ -313,14 +414,12 @@ export default function RewardsPage() {
   );
 
   const overallPct = useMemo(() => {
-    // porcentaje de tareas elegibles vs. total (no confundir con "reclamadas")
     const eligibleCount = tasks.filter((t) => eligibility.get(t.id)?.eligible).length;
     return clamp((eligibleCount / tasks.length) * 100);
   }, [tasks, eligibility]);
 
   const claimedPct = useMemo(() => {
-    const pct = clamp((claimedRewards.length / tasks.length) * 100);
-    return pct;
+    return clamp((claimedRewards.length / tasks.length) * 100);
   }, [claimedRewards.length, tasks.length]);
 
   return (
@@ -354,13 +453,11 @@ export default function RewardsPage() {
           <CardContent className="space-y-3">
             <div className="w-full h-5 rounded-full bg-slate-800 overflow-hidden border border-slate-700">
               <div className="flex h-full">
-                {/* barra reclamadas */}
                 <div
                   className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400"
                   style={{ width: `${claimedPct}%` }}
                   title={`Reclamadas: ${fmt(claimedPct, 0)}%`}
                 />
-                {/* barra elegibles pero no reclamadas */}
                 <div
                   className="h-full bg-gradient-to-r from-sky-500 to-sky-400"
                   style={{ width: `${Math.max(overallPct - claimedPct, 0)}%` }}
@@ -426,7 +523,6 @@ export default function RewardsPage() {
                         </CardDescription>
                       </CardHeader>
 
-                      {/* Barra de progreso por tarea */}
                       <CardContent className="flex-grow space-y-3">
                         <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
                           <div

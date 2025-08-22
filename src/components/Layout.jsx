@@ -1,10 +1,11 @@
+// src/layout/Layout.jsx
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   LayoutDashboard,
   TrendingUp,
-  Wallet,
+  Wallet as WalletIcon,
   Users,
   History,
   User,
@@ -32,7 +33,6 @@ const fmt = (n, dec = 2) => {
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // 👇 IMPORTANTE: ahora traemos profile desde el AuthContext
   const { user, profile, balances, displayName, logout, updateUser } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -47,10 +47,10 @@ const Layout = () => {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Estadísticas', href: '/stats', icon: BarChartHorizontalBig },
     { name: 'Depositar', href: '/deposit', icon: DollarSign },
-    { name: 'Wallet', href: '/wallet', icon: Wallet, showBalance: true }, // <-- NUEVO
+    { name: 'Wallet', href: '/wallet', icon: WalletIcon, showBalance: true },
     { name: 'Trading', href: '/simulator', icon: TrendingUp },
     { name: 'Bots de Trading', href: '/trading-bots', icon: Bot },
-    { name: 'Planes de Inversión', href: '/plans', icon: Wallet },
+    { name: 'Planes de Inversión', href: '/plans', icon: WalletIcon },
     { name: 'Proyectos Tokenizados', href: '/tokenized-projects', icon: Coins },
     { name: 'Referidos', href: '/referrals', icon: Users },
     { name: 'Historial', href: '/history', icon: History },
@@ -58,7 +58,6 @@ const Layout = () => {
     { name: 'Perfil', href: '/profile', icon: User },
   ];
 
-  // 👇 CLAVE: usar profile.role (no user.role)
   if (profile?.role === 'admin') {
     navigation.unshift({ name: 'Admin Panel', href: '/admin', icon: Shield });
   }
@@ -133,14 +132,13 @@ const Layout = () => {
 
   const shortAddr = web3Account ? `${web3Account.slice(0, 6)}...${web3Account.slice(-4)}` : '';
 
-  // (opcional) Si ya pegaste el index.css SSJ5, cambiá el bg contenedor a app-bg-saiyan
   return (
     <div className="min-h-screen app-bg-saiyan">
       {/* Sidebar mobile */}
       <motion.div
         initial={false}
         animate={{ x: sidebarOpen ? 0 : '-100%' }}
-        className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-800/95 backdrop-blur-xl border-r border-slate-700 lg:hidden"
+        className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-800/95 backdrop-blur-xl border-r border-slate-700 lg:hidden flex flex-col"
       >
         <div className="flex items-center justify-between p-4">
           <span className="text-xl font-bold brand-title">
@@ -150,31 +148,44 @@ const Layout = () => {
             <X className="h-6 w-6" />
           </Button>
         </div>
-        <nav className="mt-8 px-4">
-  {navigation.map((item) => {
-    const Icon = item.icon;
-    const isActive = location.pathname.startsWith(item.href);
-    return (
-      <button
-        key={item.name}
-        onClick={() => handleLinkClick(item.href)}
-        className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
-          isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
-        }`}
-      >
-        <Icon className="h-5 w-5 mr-3" />
-        <span>{item.name}</span>
 
-        {item.showBalance && (
-          <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
-            ${fmt(balances?.usdc ?? 0, 2)}
-          </span>
-        )}
-      </button>
-    );
-  })}
-</nav>
+        {/* navegación */}
+        <nav className="mt-8 px-4 flex-1 overflow-y-auto">
+          {navigation.map((item) => {
+            const Icon = item.icon;
+            const isActive = location.pathname.startsWith(item.href);
+            return (
+              <button
+                key={item.name}
+                onClick={() => handleLinkClick(item.href)}
+                className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
+                  isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+                }`}
+              >
+                <Icon className="h-5 w-5 mr-3" />
+                <span>{item.name}</span>
 
+                {item.showBalance && (
+                  <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
+                    ${fmt(balances?.usdc ?? 0, 2)}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* botón logout (MOBILE) */}
+        <div className="p-4 border-t border-slate-700">
+          <Button
+            onClick={() => { handleLogout(); setSidebarOpen(false); }}
+            variant="outline"
+            className="w-full justify-start"
+          >
+            <LogOut className="h-4 w-4 mr-2" />
+            Cerrar Sesión
+          </Button>
+        </div>
       </motion.div>
 
       {/* Sidebar desktop */}
@@ -185,30 +196,31 @@ const Layout = () => {
               LiberTrades
             </span>
           </div>
-          <nav className="mt-8 flex-1 px-4">
-  {navigation.map((item) => {
-    const Icon = item.icon;
-    const isActive = location.pathname.startsWith(item.href);
-    return (
-      <button
-        key={item.name}
-        onClick={() => handleLinkClick(item.href)}
-        className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
-          isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
-        }`}
-      >
-        <Icon className="h-5 w-5 mr-3" />
-        <span>{item.name}</span>
 
-        {item.showBalance && (
-          <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
-            ${fmt(balances?.usdc ?? 0, 2)}
-          </span>
-        )}
-      </button>
-    );
-  })}
-</nav>
+          <nav className="mt-8 flex-1 px-4">
+            {navigation.map((item) => {
+              const Icon = item.icon;
+              const isActive = location.pathname.startsWith(item.href);
+              return (
+                <button
+                  key={item.name}
+                  onClick={() => handleLinkClick(item.href)}
+                  className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
+                    isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+                  }`}
+                >
+                  <Icon className="h-5 w-5 mr-3" />
+                  <span>{item.name}</span>
+
+                  {item.showBalance && (
+                    <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
+                      ${fmt(balances?.usdc ?? 0, 2)}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
 
           <div className="p-4">
             <Button onClick={handleLogout} variant="outline" className="w-full justify-start">
@@ -234,7 +246,8 @@ const Layout = () => {
           <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
             <div className="flex flex-1 items-center">
               <div className="text-sm text-slate-300">
-Bienvenido,       <span className="font-semibold text-white">{displayName}</span>              </div>
+                Bienvenido, <span className="font-semibold text-white">{displayName}</span>
+              </div>
             </div>
             <div className="flex items-center gap-x-4 lg:gap-x-6">
               {web3Account ? (
