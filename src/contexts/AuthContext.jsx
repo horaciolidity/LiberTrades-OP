@@ -1,3 +1,4 @@
+// src/contexts/AuthContext.jsx
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { toast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
@@ -17,37 +18,38 @@ export function AuthProvider({ children }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const SAFE_TIMEOUT = 2500; // ms: evita loaders eternos
+  const SAFE_TIMEOUT = 2500; // evita loaders eternos
 
-  // ------- helpers -------
+  // -------- helpers (db) --------
   async function fetchProfile(userId) {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, username, referred_by, referral_code, role, full_name, email')
+      .select(
+        'id, username, referred_by, referral_code, role, full_name, email, phone, country, city, updated_at'
+      )
       .eq('id', userId)
       .maybeSingle();
-    if (error) console.warn('Perfil:', error.message);
+
+    if (error) console.warn('[profiles.select]', error.message);
     setProfile(data || null);
     return data || null;
   }
 
-  // Crea si no existe y devuelve la fila (idempotente)
+  // Crea balances si no existe y devuelve la fila (idempotente)
   async function fetchOrCreateBalances(userId) {
-    // 1) Intentar leer
     const { data: existing, error: selErr } = await supabase
       .from('balances')
       .select('*')
       .eq('user_id', userId)
       .maybeSingle();
 
-    if (selErr) console.warn('Balance (select):', selErr.message);
+    if (selErr) console.warn('[balances.select]', selErr.message);
 
     if (existing) {
       setBalances(existing);
       return existing;
     }
 
-    // 2) Si NO existe, crear con 0s (RLS debe permitirlo)
     const { data: inserted, error: insErr } = await supabase
       .from('balances')
       .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 })
@@ -55,8 +57,7 @@ export function AuthProvider({ children }) {
       .single();
 
     if (insErr) {
-      // Si falla por RLS, lo dejamos en null y avisamos suave
-      console.warn('Balance (insert):', insErr.message);
+      console.warn('[balances.insert]', insErr.message);
       setBalances(null);
       return null;
     }
@@ -65,7 +66,6 @@ export function AuthProvider({ children }) {
     return inserted || null;
   }
 
-  // Refresca solo balances (útil post-ajuste admin o RPC)
   const refreshBalances = async () => {
     if (!user?.id) return null;
     const { data, error } = await supabase
@@ -74,23 +74,25 @@ export function AuthProvider({ children }) {
       .eq('user_id', user.id)
       .maybeSingle();
     if (error) {
-      console.warn('refreshBalances:', error.message);
+      console.warn('[refreshBalances]', error.message);
       return null;
     }
     setBalances(data || null);
     return data || null;
   };
 
-  // carga en segundo plano — NO bloquea el loader
+  const refreshProfile = async () => {
+    if (!user?.id) return null;
+    return fetchProfile(user.id);
+  };
+
+  // carga en segundo plano — no bloquea loader
   function loadAllBG(userId) {
-    Promise.allSettled([
-      fetchProfile(userId),
-      fetchOrCreateBalances(userId),
-    ]).catch(() => {});
+    Promise.allSettled([fetchProfile(userId), fetchOrCreateBalances(userId)]).catch(() => {});
     setIsAuthenticated(true);
   }
 
-  // ------- bootstrap + listener de auth -------
+  // -------- bootstrap + listener de auth --------
   useEffect(() => {
     let mounted = true;
     const killer = setTimeout(() => mounted && setLoading(false), SAFE_TIMEOUT);
@@ -98,7 +100,7 @@ export function AuthProvider({ children }) {
     (async () => {
       try {
         const { data, error } = await supabase.auth.getSession();
-        if (error) console.warn('getSession error:', error.message);
+        if (error) console.warn('[getSession]', error.message);
 
         const session = data?.session ?? null;
         if (!mounted) return;
@@ -107,13 +109,13 @@ export function AuthProvider({ children }) {
         setIsAuthenticated(!!session?.user);
 
         if (session?.user) {
-          loadAllBG(session.user.id); // en BG
+          loadAllBG(session.user.id);
         } else {
           setProfile(null);
           setBalances(null);
         }
       } catch (e) {
-        console.error('Error inesperado al cargar la sesión:', e);
+        console.error('[bootstrap]', e);
         if (mounted) {
           setUser(null);
           setProfile(null);
@@ -121,16 +123,16 @@ export function AuthProvider({ children }) {
           setIsAuthenticated(false);
         }
       } finally {
-        if (mounted) setLoading(false); // soltar loader ya
+        if (mounted) setLoading(false);
       }
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_ev, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       const u = session?.user ?? null;
       setUser(u);
       setIsAuthenticated(!!u);
       if (u) {
-        loadAllBG(u.id); // en BG
+        loadAllBG(u.id);
       } else {
         setProfile(null);
         setBalances(null);
@@ -145,31 +147,25 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  // ------- listeners Realtime (balances + profiles) -------
+  // -------- listeners Realtime (balances + profiles) --------
   useEffect(() => {
     if (!user?.id) return;
 
-    // balances del usuario logueado
     const chBalances = supabase
       .channel('rt-balances')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'balances', filter: `user_id=eq.${user.id}` },
-        (payload) => {
-          if (payload?.new) setBalances(payload.new);
-        }
+        (payload) => payload?.new && setBalances(payload.new)
       )
       .subscribe();
 
-    // cambios de perfil (username/role/etc)
     const chProfile = supabase
       .channel('rt-profiles')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
-        (payload) => {
-          if (payload?.new) setProfile(payload.new);
-        }
+        (payload) => payload?.new && setProfile(payload.new)
       )
       .subscribe();
 
@@ -179,7 +175,7 @@ export function AuthProvider({ children }) {
     };
   }, [user?.id]);
 
-  // ------- actions -------
+  // -------- actions --------
   const generateReferralCode = () =>
     Math.random().toString(36).substring(2, 8).toUpperCase();
 
@@ -224,19 +220,16 @@ export function AuthProvider({ children }) {
         });
         if (pErr) throw pErr;
 
-        // 2) balance inicial (para que /trading-bots vea saldo de inmediato)
+        // 2) balance inicial
         const { error: bErr } = await supabase
           .from('balances')
           .insert({ user_id: userId, balance: 0, usdc: 0, eth: 0 });
-        if (bErr) {
-          // Si falla por RLS, no bloqueamos el registro
-          console.warn('Init balances (register):', bErr.message);
-        }
+        if (bErr) console.warn('[register/init balances]', bErr.message);
 
-        loadAllBG(userId); // en BG
+        loadAllBG(userId);
       }
 
-      toast({ title: '¡Registro exitoso!', description: 'Tu cuenta ha sido creada correctamente.' });
+      toast({ title: '¡Registro exitoso!', description: 'Tu cuenta ha sido creada.' });
       return data.user ?? null;
     } catch (err) {
       toast({ title: 'Error de registro', description: err.message, variant: 'destructive' });
@@ -255,29 +248,60 @@ export function AuthProvider({ children }) {
     toast({ title: 'Sesión cerrada', description: 'Has cerrado sesión exitosamente' });
   };
 
+  // Filtra solo columnas válidas de profiles para evitar 400 por campos extraños
+  const pickProfileCols = (obj = {}) => {
+    const allow = new Set([
+      'username',
+      'full_name',
+      'email',      // (solo si la columna existe en profiles; NO cambia el login email)
+      'phone',
+      'country',
+      'city',
+      'referred_by',
+      'referral_code',
+      'role',
+      'updated_at',
+    ]);
+    const out = {};
+    Object.keys(obj).forEach((k) => {
+      if (allow.has(k)) out[k] = obj[k];
+    });
+    return out;
+  };
+
   const updateUser = async (updatedData) => {
     if (!user?.id) {
       toast({ title: 'Sin sesión', description: 'No hay usuario para actualizar', variant: 'destructive' });
       return;
     }
-    const { error } = await supabase.from('profiles').update(updatedData).eq('id', user.id);
+    const payload = { ...pickProfileCols(updatedData), updated_at: new Date().toISOString() };
+    if (Object.keys(payload).length === 0) {
+      toast({ title: 'Nada para actualizar', description: 'No se detectaron cambios.' });
+      return;
+    }
+
+    const { error } = await supabase.from('profiles').update(payload).eq('id', user.id);
     if (error) {
+      console.error('[profiles.update]', error);
       toast({ title: 'Error al actualizar usuario', description: error.message, variant: 'destructive' });
       return;
     }
-    fetchProfile(user.id); // refresh en BG
-    toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado exitosamente' });
+
+    await refreshProfile(); // refresca estado local
+    toast({ title: 'Datos actualizados', description: 'Tu perfil ha sido actualizado.' });
   };
 
   // Helper comodín para UI que espera un único saldo USD
-  const balanceUSD = typeof balances?.usdc === 'number'
-    ? balances.usdc
-    : typeof balances?.balance === 'number'
-    ? balances.balance
-    : 0;
+  const balanceUSD =
+    typeof balances?.usdc === 'number'
+      ? balances.usdc
+      : typeof balances?.balance === 'number'
+      ? balances.balance
+      : 0;
 
   const displayName =
     profile?.username ||
+    profile?.full_name ||
     user?.user_metadata?.full_name ||
     (user?.email ? user.email.split('@')[0] : 'Usuario');
 
@@ -287,7 +311,7 @@ export function AuthProvider({ children }) {
         user,
         profile,
         balances,
-        balanceUSD,     // <- helper de saldo USD
+        balanceUSD,     // helper de saldo USD
         displayName,
         isAuthenticated,
         loading,
@@ -295,7 +319,8 @@ export function AuthProvider({ children }) {
         register,
         logout,
         updateUser,
-        refreshBalances, // <- expuesto
+        refreshBalances,
+        refreshProfile,
       }}
     >
       {children}
