@@ -469,52 +469,71 @@ export function DataProvider({ children }) {
     setInvestments(mapped);
   }
 
-  async function refreshTransactions() {
-    if (!user?.id) {
-      setTransactions([]);
-      return;
-    }
-    const { data, error } = await supabase
-      .from('wallet_transactions')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('[refreshTransactions] error:', error);
-      setTransactions([]);
-      return;
-    }
-
-    const mapped = ensureArray(data).map((tx) => {
-      let base = (tx.type || '').toLowerCase();
-      if (base === 'plan_purchase') base = 'investment';
-
-      const ref = (tx.reference_type || '').toLowerCase();
-      let displayType = base;
-      if (ref === 'bot_activation') displayType = 'bot_activation';
-      if (ref === 'bot_profit')     displayType = 'bot_profit';
-      if (ref === 'bot_refund')     displayType = 'bot_refund';
-      if (ref === 'bot_fee')        displayType = 'bot_fee';
-
-      return {
-        user_id: tx.user_id,
-        userId: tx.user_id,
-        id: tx.id,
-        type: displayType,
-        rawType: tx.type,
-        status: tx.status,
-        amount: Number(tx.amount || 0),
-        currency: tx.currency || 'USDC', // 👈 default USDC
-        description: tx.description || '',
-        createdAt: tx.created_at,
-        referenceType: tx.reference_type,
-        referenceId: tx.reference_id,
-      };
-    });
-
-    setTransactions(mapped);
+async function refreshTransactions() {
+  if (!user?.id) {
+    setTransactions([]);
+    return;
   }
+  const { data, error } = await supabase
+    .from('wallet_transactions')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('[refreshTransactions] error:', error);
+    setTransactions([]);
+    return;
+  }
+
+  const mapped = ensureArray(data).map((tx) => {
+    // base
+    let base = String(tx.type || '').toLowerCase();
+    if (base === 'plan_purchase') base = 'investment';
+
+    // por referencia
+    const ref = String(tx.reference_type || '').toLowerCase();
+    let displayType = base;
+
+    // Bots
+    if (ref === 'bot_activation') displayType = 'bot_activation';
+    if (ref === 'bot_profit')     displayType = 'bot_profit';
+    if (ref === 'bot_refund')     displayType = 'bot_refund';
+    if (ref === 'bot_fee')        displayType = 'bot_fee';
+
+    // ✅ Pagos/ganancias de planes (varios nombres posibles en tu DB/RPC)
+    if (
+      ref === 'plan_payout' ||
+      ref === 'plan_profit' ||
+      ref === 'investment_profit' ||
+      ref === 'roi_payout' ||
+      base === 'plan_payout' ||
+      base === 'investment_profit' ||
+      base === 'plan_profit' ||
+      base === 'roi_payout'
+    ) {
+      displayType = 'plan_payout';
+    }
+
+    return {
+      user_id: tx.user_id,
+      userId: tx.user_id,
+      id: tx.id,
+      type: displayType,                 // ← ya normalizado
+      rawType: tx.type,                  // por si lo querés mostrar
+      status: String(tx.status || '').toLowerCase(),
+      amount: Number(tx.amount || 0),
+      currency: tx.currency || 'USDC',
+      description: tx.description || '',
+      createdAt: tx.created_at,
+      referenceType: tx.reference_type,
+      referenceId: tx.reference_id,
+    };
+  });
+
+  setTransactions(mapped);
+}
+
 
   async function refreshReferrals() {
     if (!user?.id) {

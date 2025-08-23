@@ -95,7 +95,7 @@ export default function UserStatsPage() {
     return sum + amount * daily * Math.min(daysPassed, dur);
   }, 0);
 
-  // pagos reales de planes (varios alias posibles)
+  // pagos reales de planes (alias posibles, por si tu DB usa distintos)
   const PLAN_PAYOUT_TYPES = new Set([
     'plan_payout',
     'investment_profit',
@@ -475,7 +475,11 @@ export default function UserStatsPage() {
                   const type = tx.type;
                   const desc = tx?.description ?? tx?.plan_name ?? tx?.planName ?? '';
                   const amount = tx.amount;
-                  const isPositive = ['deposit', 'refund', 'admin_credit', 'bot_profit', 'bot_gain', 'bot_payout', 'plan_payout', 'investment_profit', 'roi_payout', 'plan_profit'].includes(type);
+                  const isPositive = [
+                    'deposit', 'refund', 'admin_credit',
+                    'bot_profit', 'bot_gain', 'bot_payout',
+                    'plan_payout', 'investment_profit', 'roi_payout', 'plan_profit'
+                  ].includes(type);
                   return (
                     <div key={tx.id} className="flex justify-between items-center p-3 mb-2 bg-slate-800/50 rounded-md border border-slate-700">
                       <div>
@@ -483,8 +487,8 @@ export default function UserStatsPage() {
                           {type === 'deposit' ? 'Depósito' :
                            type === 'withdrawal' ? 'Retiro' :
                            type === 'investment' || type === 'plan_purchase' ? 'Inversión' :
-                           BOT_PROFIT_TYPES.has(type) ? 'Ganancia Bot' :
-                           PLAN_PAYOUT_TYPES.has(type) ? 'Pago Plan' :
+                           (new Set(['bot_profit','bot_gain','bot_payout','bot_earnings']).has(type)) ? 'Ganancia Bot' :
+                           (new Set(['plan_payout','investment_profit','plan_profit','roi_payout','plan_earnings']).has(type)) ? 'Pago Plan' :
                            type || 'Movimiento'}
                         </p>
                         <p className="text-xs text-slate-400">{desc}</p>
