@@ -1,5 +1,5 @@
 // src/components/trading/TradesHistory.jsx
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Card,
@@ -9,12 +9,7 @@ import {
   CardDescription,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import {
-  BarChart3,
-  Activity,
-  Clock,
-  Info,
-} from 'lucide-react';
+import { BarChart3, Activity, Clock, Info } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -37,7 +32,6 @@ const baseFromPair = (pair) => {
 const parseTsMs = (ts) => {
   if (!ts) return NaN;
   if (typeof ts === 'number') {
-    // if it looks like seconds, convert to ms
     return ts < 2e10 ? ts * 1000 : ts;
   }
   if (typeof ts === 'string') {
@@ -86,7 +80,6 @@ const calcUPnL = (trade, cryptoPrices = {}) => {
 const remainingSeconds = (trade) => {
   if (!trade || String(trade.status || '').toLowerCase() !== 'open') return null;
 
-  // Soporta closeAt/closeat (ISO o epoch), o calcula si viene durationSeconds
   const closeAtIso = trade.closeAt || trade.closeat;
   let closeAtMs = closeAtIso ? parseTsMs(closeAtIso) : NaN;
 
@@ -108,14 +101,9 @@ const computeQty = (amountUsd, entry) => {
   return a / e;
 };
 const inferClosePriceIfMissing = (trade) => {
-  // Si hay closeprice explícito, úsalo
-  const cp =
-    trade.closeprice ??
-    trade.closePrice ??
-    null;
+  const cp = trade.closeprice ?? trade.closePrice ?? null;
   if (cp != null && Number.isFinite(Number(cp))) return Number(cp);
 
-  // Si está cerrado y hay profit, podemos inferirlo:
   const entry = Number(trade.price ?? trade.priceAtExecution ?? 0);
   const amount = Number(trade.amount ?? 0);
   const qty = computeQty(amount, entry);
@@ -132,6 +120,7 @@ const TradeRow = ({
   cryptoPrices,
   onClose,
   onDetails,
+  closing,
 }) => {
   const pair = typeof t.pair === 'string' ? t.pair : 'BTC/USDT';
   const side = String(t.type || '').toLowerCase(); // buy|sell
@@ -139,13 +128,11 @@ const TradeRow = ({
   const entry = Number(t.price ?? t.priceAtExecution ?? 0);
   const upnl = Number(t.upnl ?? calcUPnL(t, cryptoPrices));
   const isOpen = String(t.status || '').toLowerCase() === 'open';
-  const ts = t.timestamp ? new Date(parseTsMs(t.timestamp)) : new Date();
 
-  const secs = remainingSeconds(t); // puede ser null
+  const secs = remainingSeconds(t);
   const mm = Number.isFinite(secs) ? Math.floor(secs / 60) : null;
   const ss = Number.isFinite(secs) ? String(secs % 60).padStart(2, '0') : null;
 
-  // Ganancia mostrada: uPnL si abierto, profit si cerrado
   const pnlShown = isOpen ? upnl : Number(t.profit ?? 0);
   const pnlPos = pnlShown >= 0;
 
@@ -197,8 +184,9 @@ const TradeRow = ({
               variant="ghost"
               className="text-red-400 hover:text-red-500 hover:bg-red-500/10"
               onClick={() => onClose?.(t.id)}
+              disabled={closing}
             >
-              Cerrar
+              {closing ? 'Cerrando…' : 'Cerrar'}
             </Button>
           </>
         ) : (
@@ -226,12 +214,43 @@ const TradeRow = ({
 
 const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }) => {
   const list = safeArr(trades);
+
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState(null);
+
+  // estados para UX de cierre
+  const [closingModal, setClosingModal] = useState(false);
+  const [rowClosingId, setRowClosingId] = useState(null);
 
   const openForDetails = (t) => {
     setSelected(t);
     setDetailOpen(true);
+  };
+
+  // Sincroniza el seleccionado con la lista nueva y cierra si ya se cerró
+  useEffect(() => {
+    if (!selected) return;
+    const updated = list.find((t) => t.id === selected.id);
+    if (updated) {
+      setSelected(updated);
+      if (detailOpen && String(updated.status || '').toLowerCase() === 'closed') {
+        setDetailOpen(false);
+      }
+    }
+  }, [list, selected?.id, detailOpen]);
+
+  // wrapper que espera al closeTrade y luego cierra modal si corresponde
+  const handleRowClose = async (id) => {
+    if (!id) return;
+    try {
+      setRowClosingId(id);
+      const ok = await closeTrade?.(id, true);
+      if (ok && detailOpen && selected?.id === id) {
+        setDetailOpen(false);
+      }
+    } finally {
+      setRowClosingId(null);
+    }
   };
 
   // Datos calculados para el modal
@@ -247,9 +266,7 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
     const live = Number(cryptoPrices?.[liveBase]?.price ?? 0);
 
     const isOpen = String(selected.status || '').toLowerCase() === 'open';
-    const closePrice = isOpen
-      ? live || null
-      : inferClosePriceIfMissing(selected);
+    const closePrice = isOpen ? (live || null) : inferClosePriceIfMissing(selected);
 
     const upnlLive = (() => {
       if (!isOpen || !live || !entry || !qty) return 0;
@@ -306,8 +323,9 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
                     key={t.id ?? `${t.pair}-${parseTsMs(t.timestamp) || Math.random()}`}
                     t={t}
                     cryptoPrices={cryptoPrices}
-                    onClose={closeTrade}
+                    onClose={handleRowClose}
                     onDetails={openForDetails}
+                    closing={rowClosingId === t.id}
                   />
                 ))
               ) : (
@@ -322,7 +340,7 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
         </Card>
       </motion.div>
 
-      {/* Modal de Detalle estilo Binance */}
+      {/* Modal de Detalle */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="sm:max-w-lg bg-slate-900 border-slate-700 text-slate-200">
           <DialogHeader>
@@ -400,17 +418,25 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
             <div className="flex gap-2">
               {selected && String(selected.status || 'open').toLowerCase() === 'open' && (
                 <Button
-                  onClick={() => {
-                    closeTrade?.(selected.id);
-                    // mantenemos el modal abierto; el contenedor actualizará y
-                    // si el status cambia a 'closed' el usuario verá el detalle
+                  onClick={async () => {
+                    if (!selected?.id) return;
+                    setClosingModal(true);
+                    const ok = await closeTrade?.(selected.id, true);
+                    setClosingModal(false);
+                    if (ok) setDetailOpen(false);
                   }}
                   className="bg-red-600 hover:bg-red-700"
+                  disabled={closingModal}
                 >
-                  Cerrar ahora
+                  {closingModal ? 'Cerrando…' : 'Cerrar ahora'}
                 </Button>
               )}
-              <Button variant="outline" className="border-slate-600" onClick={() => setDetailOpen(false)}>
+              <Button
+                variant="outline"
+                className="border-slate-600"
+                onClick={() => setDetailOpen(false)}
+                disabled={closingModal}
+              >
                 Cerrar
               </Button>
             </div>

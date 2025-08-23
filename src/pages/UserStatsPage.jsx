@@ -32,7 +32,7 @@ import {
   Cell,
 } from 'recharts';
 
-// ===== helpers =====
+/* ===== helpers ===== */
 const safeArr = (val) => (Array.isArray(val) ? val : (val ?? []));
 const asDate = (t) => new Date(t?.createdAt ?? t?.created_at ?? t ?? Date.now());
 const clamp = (v, a = 0, b = 100) => Math.min(b, Math.max(a, v));
@@ -40,37 +40,49 @@ const clamp = (v, a = 0, b = 100) => Math.min(b, Math.max(a, v));
 export default function UserStatsPage() {
   const { user, loading, balances } = useAuth();
 
-  // Tomamos arrays ya listos del DataContext (con fallback a getters si tu UI los usa)
+  // Tomamos arrays del DataContext (si no existen, quedan undefined y abajo les damos fallback seguro)
   const {
     investments: ctxInvestments,
     transactions: ctxTransactions,
     referrals: ctxReferrals,
     botActivations: ctxBots,
+    tokenizedProjects: ctxProjects,           // puede no existir en tu DataContext
     getInvestments,
     getTransactions,
     getReferrals,
+    getTokenizedProjects,                     // puede no existir en tu DataContext
   } = useData();
 
   if (loading || !user) {
     return <div className="p-6 text-slate-300">Cargando datos del usuario…</div>;
-    }
+  }
 
-  // Merge compat: arrays del contexto o getters sincrónicos
+  /* ===== Merge compat: arrays del contexto o getters sincrónicos (si existen) ===== */
   const allInvestments = safeArr(ctxInvestments?.length ? ctxInvestments : getInvestments?.());
   const allTx          = safeArr(ctxTransactions?.length ? ctxTransactions : getTransactions?.());
-  const allReferrals   = safeArr(ctxReferrals?.length ? ctxReferrals : getReferrals?.(user.id));
-  const allBots        = safeArr(ctxBots);
+  const userReferrals  = safeArr(ctxReferrals?.length ? ctxReferrals : getReferrals?.(user.id));
+  const allBotsRaw     = safeArr(ctxBots);
 
-  // Acepta user_id o userId
+  // Proyectos tokenizados (opcional): si no hay ni ctxProjects ni getter, queda []
+  const allProjects = safeArr(
+    ctxProjects?.length
+      ? ctxProjects
+      : (typeof getTokenizedProjects === 'function' ? getTokenizedProjects() : [])
+  );
+
+  /* ===== Filtrado por usuario logueado (acepta user_id o userId) ===== */
   const investments  = allInvestments.filter(inv => (inv?.user_id ?? inv?.userId) === user.id);
-  const transactions = allTx.filter(tx => (tx?.user_id ?? tx?.userId) === user.id);
+  const transactions = allTx.filter(tx   => (tx?.user_id  ?? tx?.userId ) === user.id);
+  const allBots      = allBotsRaw.filter(b => (b?.user_id  ?? b?.userId ) === user.id);
+  const projects     = allProjects.filter(p => (p?.user_id ?? p?.userId) === user.id);
 
-  // ==== KPIs base ====
+  /* ===== KPIs base (planes) ===== */
   const totalInvested = investments.reduce((sum, inv) => sum + Number(inv?.amount ?? 0), 0);
 
   const totalEarningsFromInvestments = investments.reduce((sum, inv) => {
     // Si viene mapeado desde DataContext, usar earnings/daysElapsed directamente
     if (typeof inv?.earnings === 'number') return sum + inv.earnings;
+
     const created = asDate(inv?.createdAt ?? inv?.created_at);
     const daysPassed = Math.max(0, Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)));
     const daily = Number(inv?.daily_return ?? inv?.dailyReturn ?? 0) / 100;
@@ -88,14 +100,23 @@ export default function UserStatsPage() {
 
   const roiPct = totalInvested > 0 ? (totalEarningsFromInvestments / totalInvested) * 100 : 0;
 
-  // ==== Bots & actividad ====
+  /* ===== Bots ===== */
   const activeBots = allBots.filter(b => (b?.status ?? '').toLowerCase() === 'active');
   const botsRunning = activeBots.length;
-  const botsAmount  = activeBots.reduce((a, b) => a + Number(b?.amountUsd ?? 0), 0);
-  const botProfitTx = transactions.filter(t => (t?.type ?? '').toLowerCase() === 'bot_profit' && (t?.status ?? '').toLowerCase() === 'completed');
+  const botsAmount  = activeBots.reduce((a, b) => a + Number(b?.amountUsd ?? b?.amount ?? 0), 0);
+
+  const botProfitTx = transactions.filter(
+    t => (t?.type ?? '').toLowerCase() === 'bot_profit' && (t?.status ?? '').toLowerCase() === 'completed'
+  );
   const botProfit   = botProfitTx.reduce((a, t) => a + Number(t?.amount ?? 0), 0);
 
-  // Días activos (últimos 30)
+  /* ===== Proyectos tokenizados (opcional) ===== */
+  const activeProjects = projects.filter(p => (p?.status ?? '').toLowerCase() === 'active');
+  const projectsActiveCount = activeProjects.length;
+  const projectsInvested = activeProjects.reduce((s, p) => s + Number(p?.amount ?? 0), 0);
+  const projectsProfit  = projects.reduce((s, p) => s + Number(p?.profit ?? 0), 0);
+
+  /* ===== Días activos (últimos 30) ===== */
   const last30 = Date.now() - 30 * 24 * 60 * 60 * 1000;
   const activeDaySet = new Set(
     transactions
@@ -107,9 +128,10 @@ export default function UserStatsPage() {
   );
   const activeDays30 = activeDaySet.size;
 
-  // ==== Barra de energía (progreso compuesto) ====
+  /* ===== Barra de energía (progreso compuesto) ===== */
   const GOALS = { roi: 10, bots: 1, referrals: 10, activityDays: 15 }; // objetivos simples
   const activeInvests = investments.filter(i => (i?.status ?? '').toLowerCase() === 'active');
+
   const avgPlanProgress = useMemo(() => {
     if (!activeInvests.length) return 0;
     return activeInvests.reduce((acc, i) => {
@@ -120,15 +142,15 @@ export default function UserStatsPage() {
   }, [activeInvests]);
 
   const segs = [
-    { key: 'Inversiones', pct: clamp(avgPlanProgress),                     color: 'from-emerald-500 to-emerald-400' },
-    { key: 'ROI',         pct: clamp((roiPct / GOALS.roi) * 100),          color: 'from-sky-500 to-sky-400' },
-    { key: 'Bots',        pct: clamp((botsRunning / GOALS.bots) * 100),    color: 'from-violet-500 to-violet-400' },
-    { key: 'Referidos',   pct: clamp(((allReferrals.length) / GOALS.referrals) * 100), color: 'from-amber-500 to-amber-400' },
-    { key: 'Actividad',   pct: clamp((activeDays30 / GOALS.activityDays) * 100),       color: 'from-pink-500 to-pink-400' },
+    { key: 'Inversiones', pct: clamp(avgPlanProgress),                                  color: 'from-emerald-500 to-emerald-400' },
+    { key: 'ROI',         pct: clamp((roiPct / GOALS.roi) * 100),                        color: 'from-sky-500 to-sky-400' },
+    { key: 'Bots',        pct: clamp((botsRunning / GOALS.bots) * 100),                  color: 'from-violet-500 to-violet-400' },
+    { key: 'Referidos',   pct: clamp((userReferrals.length / GOALS.referrals) * 100),    color: 'from-amber-500 to-amber-400' },
+    { key: 'Actividad',   pct: clamp((activeDays30 / GOALS.activityDays) * 100),         color: 'from-pink-500 to-pink-400' },
   ];
   const overallEnergy = clamp(segs.reduce((acc, s) => acc + (s.pct / 100) * 20, 0));
 
-  // ==== Gráficos ====
+  /* ===== Gráficos ===== */
   // Distribución de portafolio por plan
   const portfolioDistributionData = investments.map(inv => ({
     name: inv?.plan_name ?? inv?.planName ?? 'Plan',
@@ -136,7 +158,7 @@ export default function UserStatsPage() {
   }));
   const COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#a78bfa', '#ef4444', '#14b8a6', '#e879f9'];
 
-  // Actividad mensual (últimos 6 meses) - solo completadas para valores
+  // Actividad mensual (últimos 6 meses) - sólo completadas
   const monthlyActivityData = Array.from({ length: 6 }, (_, i) => {
     const m = new Date();
     m.setMonth(m.getMonth() - i);
@@ -156,8 +178,10 @@ export default function UserStatsPage() {
                          .reduce((s, t) => s + Number(t?.amount ?? 0), 0),
       withdrawals: completed.filter(t => (t?.type ?? '').toLowerCase() === 'withdrawal')
                             .reduce((s, t) => s + Number(t?.amount ?? 0), 0),
-      investments: completed.filter(t => (t?.type ?? '').toLowerCase() === 'investment' || (t?.rawType ?? '').toLowerCase() === 'plan_purchase')
-                            .reduce((s, t) => s + Number(t?.amount ?? 0), 0),
+      investments: completed.filter(t =>
+                        (t?.type ?? '').toLowerCase() === 'investment' ||
+                        (t?.rawType ?? '').toLowerCase() === 'plan_purchase'
+                      ).reduce((s, t) => s + Number(t?.amount ?? 0), 0),
       botProfit: completed.filter(t => (t?.type ?? '').toLowerCase() === 'bot_profit')
                           .reduce((s, t) => s + Number(t?.amount ?? 0), 0),
     };
@@ -171,13 +195,21 @@ export default function UserStatsPage() {
     { name: 'ETH',  value: Number(balances?.eth  ?? 0) },
   ].filter(d => d.value > 0);
 
+  /* ===== KPIs card ===== */
   const generalStats = [
     { title: 'Balance USDC', value: `$${(Number(balances?.usdc ?? 0)).toFixed(2)}`, icon: DollarSign, color: 'text-green-400' },
     { title: 'Total Invertido', value: `$${totalInvested.toFixed(2)}`, icon: TrendingUp, color: 'text-blue-400' },
     { title: 'Ganancias (Inv.)', value: `$${totalEarningsFromInvestments.toFixed(2)}`, icon: Star, color: 'text-yellow-400' },
-    { title: 'Referidos', value: String(allReferrals.length), icon: Users, color: 'text-purple-400' },
+    { title: 'Referidos', value: String(userReferrals.length), icon: Users, color: 'text-purple-400' },
     { title: 'Bots activos', value: String(botsRunning), icon: Bot, color: 'text-violet-400' },
     { title: 'Ganancia Bots', value: `$${botProfit.toFixed(2)}`, icon: Activity, color: 'text-rose-400' },
+    // KPIs de proyectos (no rompen si no usás proyectos)
+    ...(projects.length
+      ? [
+          { title: 'Proyectos activos', value: String(projectsActiveCount), icon: CheckCircle, color: 'text-cyan-400' },
+          { title: 'Ganancia Proyectos', value: `$${projectsProfit.toFixed(2)}`, icon: TrendingUp, color: 'text-emerald-400' },
+        ]
+      : []),
   ];
 
   return (
