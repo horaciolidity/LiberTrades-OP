@@ -33,7 +33,7 @@ const fmt = (n, dec = 2) => {
   const v = Number(n);
   return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
 };
-const round2 = (n) => Number.isFinite(Number(n)) ? Number(Number(n).toFixed(2)) : 0;
+const round2 = (n) => (Number.isFinite(Number(n)) ? Number(Number(n).toFixed(2)) : 0);
 
 const FALLBACK_IMG = 'https://images.unsplash.com/photo-1572177812156-58036aae439c';
 
@@ -101,7 +101,7 @@ export default function TokenizedProjectsPage() {
   const [issuanceFeePct, setIssuanceFeePct] = useState(DEFAULT_ISSUANCE_FEE_PCT);
   const [secondaryFeePct, setSecondaryFeePct] = useState(DEFAULT_SECONDARY_FEE_PCT);
 
-  // Traer settings de fees: primero desde contexto, si no, RPC (prefijo 'projects.')
+  // Traer settings de fees
   useEffect(() => {
     const fromCtx = Number(ctxSettings?.['projects.issuance_fee_pct']);
     const fromCtxSec = Number(ctxSettings?.['projects.secondary_market_fee_pct']);
@@ -113,9 +113,10 @@ export default function TokenizedProjectsPage() {
         try {
           const { data, error: sErr } = await supabase.rpc('get_admin_settings', { prefix: 'projects.' });
           if (sErr) throw sErr;
-          // mapear a key:value
           const map = {};
-          (data || []).forEach((row) => { map[row.setting_key] = Number(row.setting_value); });
+          (data || []).forEach((row) => {
+            map[row.setting_key] = Number(row.setting_value);
+          });
           const feeA = Number(map['projects.issuance_fee_pct']);
           const feeB = Number(map['projects.secondary_market_fee_pct']);
           if (Number.isFinite(feeA)) setIssuanceFeePct(feeA);
@@ -160,22 +161,46 @@ export default function TokenizedProjectsPage() {
 
         setProjects(list);
 
-        // 2) Traer inversiones por proyecto para calcular recaudación
-        const { data: invs, error: invErr } = await supabase
-          .from('project_investments')
-          .select('project_id, amount_usd, status');
+        // 2) Intentar usar la vista agregada del backend (mejor performance/consistencia)
+        let raised = {};
+        let couldUseView = false;
 
-        if (invErr) throw invErr;
+        try {
+          const { data: viewRows, error: viewErr } = await supabase
+            .from('project_raise_view')
+            .select('project_id, raised_usd');
+          if (viewErr) throw viewErr;
 
-        const sum = {};
-        (invs || []).forEach((r) => {
-          const st = String(r?.status || '').toLowerCase();
-          // Contabilizamos activas / aprobadas / completadas
-          if (st === 'active' || st === 'approved' || st === 'completed') {
-            sum[r.project_id] = (sum[r.project_id] || 0) + Number(r.amount_usd || 0);
-          }
-        });
-        setRaisedMap(sum);
+          (viewRows || []).forEach((r) => {
+            const pid = r.project_id;
+            const val = Number(r.raised_usd || 0);
+            if (pid) raised[pid] = (raised[pid] || 0) + (Number.isFinite(val) ? val : 0);
+          });
+          couldUseView = true;
+        } catch {
+          // si la vista no existe o falla, seguimos con el sumado cliente
+          couldUseView = false;
+        }
+
+        // 3) Si la vista no estuvo disponible, sumar desde project_investments
+        if (!couldUseView) {
+          const { data: invs, error: invErr } = await supabase
+            .from('project_investments')
+            .select('project_id, amount_usd, status');
+
+          if (invErr) throw invErr;
+
+          (invs || []).forEach((r) => {
+            const st = String(r?.status || '').toLowerCase();
+            if (st === 'active' || st === 'approved' || st === 'completed') {
+              const pid = r.project_id;
+              const val = Number(r.amount_usd || 0);
+              if (pid) raised[pid] = (raised[pid] || 0) + (Number.isFinite(val) ? val : 0);
+            }
+          });
+        }
+
+        setRaisedMap(raised);
       } catch (e) {
         console.error('[projects fetch]', e);
         setError('No se pudieron cargar los proyectos.');
@@ -191,7 +216,8 @@ export default function TokenizedProjectsPage() {
     return (projects || []).map((p) => {
       const target = Number(p?.target_raise || 0);
       const raised = Number(raisedMap[p.id] || 0);
-      const pct = target > 0 ? Math.max(0, Math.min(100, (raised / target) * 100)) : 0;
+      const ratio = target > 0 ? (raised / target) : 0;
+      const pct = Math.max(0, Math.min(100, Number.isFinite(ratio) ? ratio * 100 : 0));
 
       const Icon =
         p?.symbol === 'SOLC' ? Zap :
@@ -224,6 +250,17 @@ export default function TokenizedProjectsPage() {
     }
     if (!selectedProject) return;
 
+    // Evitar invertir en placeholders (no tienen project_id UUID válido)
+    if (selectedProject._placeholder) {
+      playSound?.('error');
+      toast({
+        title: 'Proyecto de ejemplo',
+        description: 'Este proyecto es ilustrativo. Cargá proyectos reales en la tabla tokenized_projects para invertir.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     const amountUsd = round2(Number(investmentAmount));
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
       playSound?.('error');
@@ -242,7 +279,7 @@ export default function TokenizedProjectsPage() {
       return;
     }
 
-    const feeUsd = round2((issuanceFeePct / 100) * amountUsd);
+    const feeUsd = round2((Number(issuanceFeePct) / 100) * amountUsd);
     const totalDebit = round2(amountUsd + feeUsd);
 
     if (totalDebit > usdBalance) {
@@ -261,7 +298,7 @@ export default function TokenizedProjectsPage() {
       // 1) Insert en project_investments
       const payload = {
         user_id: user.id,
-        project_id: selectedProject.id, // FK a tokenized_projects
+        project_id: selectedProject.id, // FK a tokenized_projects (UUID)
         project_symbol: selectedProject.symbol,
         project_name: selectedProject.name,
         amount_usd: amountUsd,
@@ -277,7 +314,6 @@ export default function TokenizedProjectsPage() {
       if (insErr) throw insErr;
 
       // 2) Registrar transacciones de wallet
-      // 2a) Inversión (principal)
       await addTransaction?.({
         amount: amountUsd,
         type: 'other',
@@ -287,13 +323,13 @@ export default function TokenizedProjectsPage() {
         referenceId: inserted?.id,
         status: 'completed',
       });
-      // 2b) Fee de emisión (si corresponde)
+
       if (feeUsd > 0) {
         await addTransaction?.({
           amount: feeUsd,
           type: 'fee',
           currency: 'USDC',
-          description: `Fee de emisión ${issuanceFeePct}% - ${selectedProject.symbol}`,
+          description: `Fee de emisión ${fmt(issuanceFeePct)}% - ${selectedProject.symbol}`,
           referenceType: 'project_fee',
           referenceId: inserted?.id,
           status: 'completed',
@@ -340,7 +376,7 @@ export default function TokenizedProjectsPage() {
 
   // Cálculos en vivo para el modal
   const liveAmount = round2(Number(investmentAmount));
-  const liveFee = liveAmount > 0 ? round2((issuanceFeePct / 100) * liveAmount) : 0;
+  const liveFee = liveAmount > 0 ? round2((Number(issuanceFeePct) / 100) * liveAmount) : 0;
   const liveTotal = round2(liveAmount + liveFee);
   const insufficient = selectedProject && liveTotal > usdBalance;
 
@@ -364,10 +400,7 @@ export default function TokenizedProjectsPage() {
               ? new Date(project.launch_date).toLocaleDateString()
               : '—';
             const daysToLaunch = project.launch_date
-              ? Math.ceil(
-                  (new Date(project.launch_date).getTime() - Date.now()) /
-                    (1000 * 60 * 60 * 24)
-                )
+              ? Math.ceil((new Date(project.launch_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
               : null;
 
             return (
@@ -413,7 +446,7 @@ export default function TokenizedProjectsPage() {
                     </div>
                     <div className="flex items-center text-sm text-slate-400">
                       <DollarSign className="h-4 w-4 mr-2 text-green-400" />
-                      Objetivo: ${project.target.toLocaleString()}
+                      Objetivo: ${Number(project.target || 0).toLocaleString()}
                     </div>
                     <div className="flex items-center text-sm text-slate-400">
                       <Users className="h-4 w-4 mr-2 text-orange-400" />
@@ -425,7 +458,7 @@ export default function TokenizedProjectsPage() {
                       <div className="flex justify-between text-xs mb-1">
                         <span className="text-slate-400">Recaudado</span>
                         <span className="text-slate-300">
-                          ${project.raised.toLocaleString()} · {fmt(project.progressPct)}%
+                          ${Number(project.raised || 0).toLocaleString()} · {fmt(project.progressPct)}%
                         </span>
                       </div>
                       <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
@@ -505,7 +538,7 @@ export default function TokenizedProjectsPage() {
                   <div>
                     <p className="text-slate-400">Objetivo de recaudación:</p>
                     <p className="text-white font-semibold">
-                      ${Number(selectedProject.target).toLocaleString()}
+                      ${Number(selectedProject.target || 0).toLocaleString()}
                     </p>
                   </div>
                   <div>
@@ -571,8 +604,10 @@ export default function TokenizedProjectsPage() {
                       !user?.id ||
                       !investmentAmount ||
                       Number(investmentAmount) <= 0 ||
-                      insufficient
+                      insufficient ||
+                      selectedProject?._placeholder === true
                     }
+                    title={selectedProject?._placeholder ? 'Proyecto de ejemplo, no invertible' : undefined}
                   >
                     Invertir en {selectedProject.symbol}
                   </Button>
