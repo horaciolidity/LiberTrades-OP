@@ -67,7 +67,7 @@ export function DataProvider({ children }) {
 
   // ---------- Mercado (admin) ----------
   /**
-   * market_instruments (esperado):
+   * market_instruments:
    * - symbol, enabled, source('binance'|'simulated'|'manual'), binance_symbol,
    *   base_price, decimals, quote, volatility_bps, difficulty
    */
@@ -324,7 +324,7 @@ export function DataProvider({ children }) {
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
       .map((i) => i.symbol);
 
-    // Seed inicial para asegurar filas en market_state (sin .catch)
+    // Seed inicial para asegurar filas en market_state
     (async () => {
       for (const sym of simSyms) {
         try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
