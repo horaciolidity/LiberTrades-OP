@@ -1,5 +1,5 @@
 // src/components/trading/TradingChart.jsx
-import React, { useEffect, useRef, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType } from 'lightweight-charts';
 import {
   Card,
@@ -8,55 +8,104 @@ import {
   CardTitle,
   CardDescription,
 } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { TrendingUp } from 'lucide-react';
 
-const LAST_N_BARS = 120; // zoom cercano (últimos N ticks)
-const n = (x, fallback = 0) => (Number.isFinite(Number(x)) ? Number(x) : fallback);
+const DEFAULT_LAST_BARS = 120;
+
+const n = (x, f = NaN) => {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : f;
+};
 const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
 
-// normaliza epoch a segundos (admite ms, s y ISO)
+// normaliza epoch a **segundos**
 const toEpochSec = (t) => {
-  if (!t) return undefined;
+  if (!t && t !== 0) return undefined;
   if (typeof t === 'string') {
     const ms = Date.parse(t);
     return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
   }
   const num = Number(t);
   if (!Number.isFinite(num)) return undefined;
-  if (num > 1e12) return Math.floor(num / 1000); // ms grandes
-  if (num > 1e9) return Math.floor(num);         // segundos
-  return Math.floor(num / 1000);                 // ms chicos
+  // heurística ms/seg
+  return num > 2e10 ? Math.floor(num / 1000) : Math.floor(num);
 };
 
-const isValidCandle = (c) =>
-  c &&
-  Number.isFinite(c.time) &&
-  Number.isFinite(c.open) &&
-  Number.isFinite(c.high) &&
-  Number.isFinite(c.low) &&
-  Number.isFinite(c.close);
+// === agregador: ticks -> velas por timeframe (segundos)
+function aggregateToCandles(points, tfSec) {
+  const tf = Math.max(1, Math.floor(tfSec || 60));
+  const rows = (Array.isArray(points) ? points : [])
+    .map((p) => ({ t: toEpochSec(p.time), v: n(p.value) }))
+    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v) && Math.abs(p.v) < 1e9)
+    .sort((a, b) => a.t - b.t);
 
-const TradingChart = ({
-  priceHistory = [],
+  const buckets = new Map();
+  for (const { t, v } of rows) {
+    const bucket = Math.floor(t / tf) * tf;
+    const prev = buckets.get(bucket);
+    if (!prev) {
+      buckets.set(bucket, { time: bucket, open: v, high: v, low: v, close: v });
+    } else {
+      prev.high = Math.max(prev.high, v);
+      prev.low = Math.min(prev.low, v);
+      prev.close = v;
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
+}
+
+// si el historial viene muy corto, sembramos velas “constantes” con leve jitter
+function seedIfShort(candles, lastPrice, tfSec, need = DEFAULT_LAST_BARS) {
+  const out = [...(candles || [])];
+  const tf = Math.max(1, tfSec || 60);
+  if (out.length >= need && out[out.length - 1]?.close) return out;
+
+  const now = Math.floor(Date.now() / 1000);
+  const last = out[out.length - 1];
+  let t = last?.time || (now - need * tf);
+  let c = Number.isFinite(last?.close) ? last.close : Number(lastPrice || 0) || 1;
+
+  while (out.length < need) {
+    t += tf;
+    // micro jitter para no dejar líneas completamente planas
+    const j = (Math.random() - 0.5) * c * 0.0005; // ±5 bps
+    const close = Math.max(0, c + j);
+    out.push({ time: t, open: c, high: Math.max(c, close), low: Math.min(c, close), close });
+    c = close;
+  }
+  return out;
+}
+
+const TIMEFRAMES = [
+  { key: '5s',  sec: 5 },
+  { key: '15s', sec: 15 },
+  { key: '1m',  sec: 60 },
+  { key: '5m',  sec: 300 },
+  { key: '15m', sec: 900 },
+];
+
+export default function TradingChart({
+  priceHistory = [],            // [{time, value}] (ms/seg/ISO)
   selectedPair,
-  cryptoPrices = {},
-  openTrades = [],       // [{id, pair, type, amount, price|priceAtExecution, timestamp, stopLoss/stoploss?, takeProfit/takeprofit?}]
+  cryptoPrices = {},            // {SYM: {price, change, history}}
+  openTrades = [],              // [{id,pair,type,amount,price|priceAtExecution,timestamp,stopLoss,takeProfit,status}]
   showGuides = true,
-}) => {
+  lastNBars = DEFAULT_LAST_BARS,
+}) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
-  const lastBarTimeRef = useRef(undefined); // epoch seconds del último bar pintado
+  const entryLinesRef = useRef({});
 
-  // refs para overlays
-  const entryLinesRef = useRef({}); // { tradeId: {entry, sl?, tp?} }
+  const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
 
   const pair = typeof selectedPair === 'string' && selectedPair ? selectedPair : 'BTC/USDT';
   const base = (pair.split?.('/')?.[0] || 'BTC').toUpperCase();
   const info = cryptoPrices?.[base] || {};
-  const livePrice = n(info.price, 0);
-  const priceStr = Number.isFinite(Number(info.price)) ? Number(info.price).toFixed(2) : '--';
-  const chg = Number(info.change);
+  const livePrice = n(info.price);
+  const priceStr = Number.isFinite(livePrice) ? livePrice.toFixed(2) : '--';
+  const chg = n(info.change, NaN);
   const chgStr = Number.isFinite(chg) ? chg.toFixed(2) : '--';
   const chgPos = Number.isFinite(chg) ? chg >= 0 : true;
 
@@ -64,11 +113,11 @@ const TradingChart = ({
     () =>
       (Array.isArray(openTrades) ? openTrades : [])
         .filter((t) => String(t?.pair || '').toUpperCase() === pair.toUpperCase())
-        .filter((t) => (String(t?.status || 'open').toLowerCase() === 'open')),
+        .filter((t) => String(t?.status || 'open').toLowerCase() === 'open'),
     [openTrades, pair]
   );
 
-  // Crear / destruir el chart
+  // crea chart
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -108,7 +157,6 @@ const TradingChart = ({
     chartRef.current = chart;
     seriesRef.current = series;
 
-    // Responsivo
     const ro = new ResizeObserver((entries) => {
       if (!entries.length) return;
       const { width, height } = entries[0].contentRect;
@@ -130,87 +178,44 @@ const TradingChart = ({
       try { chart.remove(); } catch {}
       chartRef.current = null;
       seriesRef.current = null;
-      lastBarTimeRef.current = undefined;
     };
   }, []);
 
-  // Set/actualizar velas con datos
+  // set/actualiza velas cada vez que cambian el historial o timeframe
   useEffect(() => {
     const series = seriesRef.current;
     const chart = chartRef.current;
     if (!series || !chart) return;
 
-    const hist = Array.isArray(priceHistory) ? priceHistory : [];
-    const sorted = hist
-      .filter((p) => Number.isFinite(Number(p?.time)) && Number.isFinite(Number(p?.value)))
-      .sort((a, b) => a.time - b.time);
+    const candlesRaw = aggregateToCandles(priceHistory, tf.sec);
+    const seeded = seedIfShort(candlesRaw, info.price, tf.sec, lastNBars);
+    const data = seeded.slice(-Math.max(lastNBars, 20)); // recorta a ventana visible
 
-    if (!sorted.length) {
-      try { series.setData([]); } catch {}
-      lastBarTimeRef.current = undefined;
-      return;
+    // si hay velas inválidas, filtramos
+    const safeData = data.filter(
+      (c) =>
+        Number.isFinite(c.time) &&
+        Number.isFinite(c.open) &&
+        Number.isFinite(c.high) &&
+        Number.isFinite(c.low) &&
+        Number.isFinite(c.close)
+    );
+
+    series.setData(safeData);
+    if (safeData.length) {
+      const first = safeData[0].time;
+      const last = safeData[safeData.length - 1].time;
+      chart.timeScale().setVisibleRange({ from: first, to: last });
     }
+  }, [priceHistory, tf.sec, lastNBars, info.price]);
 
-    // Seed inicial (últimos N puntos)
-    if (!lastBarTimeRef.current) {
-      const seed = sorted.slice(-LAST_N_BARS);
-      const seedCandles = seed.map((p, idx) => {
-        const prev = seed[idx - 1] || p;
-        const open = n(prev.value, n(p.value));
-        const close = n(p.value);
-        const high = Math.max(n(prev.value), n(p.value));
-        const low  = Math.min(n(prev.value), n(p.value));
-        const candle = {
-          time: Math.floor(n(p.time) / 1000),
-          open, high, low, close,
-        };
-        return isValidCandle(candle) ? candle : null;
-      }).filter(Boolean);
-
-      if (seedCandles.length) {
-        try { series.setData(seedCandles); } catch {}
-        lastBarTimeRef.current = seedCandles[seedCandles.length - 1].time;
-        if (seedCandles.length > 1) {
-          const first = seedCandles[Math.max(0, seedCandles.length - LAST_N_BARS)].time;
-          const last = seedCandles[seedCandles.length - 1].time;
-          try { chart.timeScale().setVisibleRange({ from: first, to: last }); } catch {}
-        }
-      }
-      return;
-    }
-
-    // Actualización incremental
-    const lastPoint = sorted[sorted.length - 1];
-    const previous  = sorted.length >= 2 ? sorted[sorted.length - 2] : lastPoint;
-    const lastSec   = Math.floor(n(lastPoint.time) / 1000);
-
-    const open  = n(previous.value, n(lastPoint.value));
-    const high  = Math.max(n(previous.value), n(lastPoint.value));
-    const low   = Math.min(n(previous.value), n(lastPoint.value));
-    const close = n(lastPoint.value);
-
-    const candle = { time: lastSec, open, high, low, close };
-    if (!isValidCandle(candle)) return;
-
-    if (lastSec > lastBarTimeRef.current) {
-      try { series.update(candle); } catch {}
-      lastBarTimeRef.current = lastSec;
-
-      const to = lastSec;
-      const from = to - LAST_N_BARS * 2;
-      try { chart.timeScale().setVisibleRange({ from, to }); } catch {}
-    } else if (lastSec === lastBarTimeRef.current) {
-      try { series.update(candle); } catch {}
-    }
-  }, [priceHistory]);
-
-  // ====== Overlays: price lines por operación abierta ======
+  // ====== Overlays (líneas de precio para trades abiertos) ======
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
     if (!series) return;
 
-    // Limpia anteriores
+    // limpia anteriores
     const prev = entryLinesRef.current || {};
     Object.values(prev).forEach((obj) => {
       try { obj?.entry && series.removePriceLine(obj.entry); } catch {}
@@ -219,60 +224,53 @@ const TradingChart = ({
     });
     entryLinesRef.current = {};
 
-    // Crea nuevas para las operaciones del par
+    // crea nuevas
     openForPair.forEach((t) => {
       const id = String(t.id ?? `${t.pair}:${t.timestamp ?? Math.random()}`);
-      const side = String(t.type || '').toLowerCase(); // buy | sell
+      const side = String(t.type || '').toLowerCase();
       const entry = n(t.price ?? t.priceAtExecution, NaN);
       if (!Number.isFinite(entry)) return;
 
       const color = side === 'sell' ? '#ef4444' : '#22c55e';
       const obj = {};
 
-      try {
-        obj.entry = series.createPriceLine({
-          price: entry,
-          color,
-          lineWidth: 2,
-          lineStyle: 0, // Solid
-          axisLabelVisible: true,
-          title: `${side === 'sell' ? 'SELL' : 'BUY'} @ ${fmt(entry)}`,
-        });
-      } catch {}
+      obj.entry = series.createPriceLine({
+        price: entry,
+        color,
+        lineWidth: 2,
+        lineStyle: 0,
+        axisLabelVisible: true,
+        title: `${side === 'sell' ? 'SELL' : 'BUY'} @ ${fmt(entry)}`,
+      });
 
-      // stop / take (admite camel y snake)
       const sl = n(t.stopLoss ?? t.stoploss, NaN);
       if (Number.isFinite(sl)) {
-        try {
-          obj.sl = series.createPriceLine({
-            price: sl,
-            color: '#ef4444',
-            lineWidth: 1,
-            lineStyle: 2, // Dashed
-            axisLabelVisible: true,
-            title: `SL ${fmt(sl)}`,
-          });
-        } catch {}
+        obj.sl = series.createPriceLine({
+          price: sl,
+          color: '#ef4444',
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: `SL ${fmt(sl)}`,
+        });
       }
       const tp = n(t.takeProfit ?? t.takeprofit, NaN);
       if (Number.isFinite(tp)) {
-        try {
-          obj.tp = series.createPriceLine({
-            price: tp,
-            color: '#22c55e',
-            lineWidth: 1,
-            lineStyle: 2, // Dashed
-            axisLabelVisible: true,
-            title: `TP ${fmt(tp)}`,
-          });
-        } catch {}
+        obj.tp = series.createPriceLine({
+          price: tp,
+          color: '#22c55e',
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: `TP ${fmt(tp)}`,
+        });
       }
 
       entryLinesRef.current[id] = obj;
     });
   }, [openForPair, showGuides]);
 
-  // Actualiza el título de las líneas con PnL vivo
+  // actualiza títulos con PnL vivo
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
@@ -290,9 +288,9 @@ const TradingChart = ({
       const amt = n(t.amount, NaN);
       if (!Number.isFinite(entry) || !Number.isFinite(amt)) return;
 
-      const qty = amt / entry;
+      const qty = amt / Math.max(entry, 1e-9);
       const upnl = side === 'sell' ? (entry - livePrice) * qty : (livePrice - entry) * qty;
-      const upnlPct = (upnl / Math.max(1e-9, amt)) * 100;
+      const upnlPct = (upnl / Math.max(amt, 1e-9)) * 100;
 
       try {
         obj.entry.applyOptions({
@@ -302,7 +300,7 @@ const TradingChart = ({
     });
   }, [livePrice, openForPair, showGuides]);
 
-  // Marcadores de entrada en la serie
+  // marcadores de entrada
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
@@ -331,16 +329,32 @@ const TradingChart = ({
   return (
     <Card className="crypto-card h-full flex flex-col">
       <CardHeader className="pb-2">
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <CardTitle className="text-white flex items-center text-lg sm:text-xl">
               <TrendingUp className="h-5 w-5 mr-2 text-green-400" />
               Gráfico de {pair}
             </CardTitle>
             <CardDescription className="text-slate-300 text-xs sm:text-sm">
-              Precio en tiempo real (zoom a {LAST_N_BARS} ticks)
+              Precio en tiempo real — {tf.key} • {lastNBars} barras
             </CardDescription>
           </div>
+
+          {/* Toolbar de timeframe */}
+          <div className="flex flex-wrap gap-2">
+            {TIMEFRAMES.map((opt) => (
+              <Button
+                key={opt.key}
+                size="sm"
+                variant={tf.key === opt.key ? 'default' : 'outline'}
+                className={tf.key === opt.key ? 'bg-slate-700 text-white' : 'border-slate-600 text-slate-300'}
+                onClick={() => setTf(opt)}
+              >
+                {opt.key}
+              </Button>
+            ))}
+          </div>
+
           <div className="text-right">
             <p className="text-xl sm:text-2xl font-bold text-white">${priceStr}</p>
             <p className={`text-xs sm:text-sm ${chgPos ? 'text-green-400' : 'text-red-400'}`}>
@@ -349,14 +363,10 @@ const TradingChart = ({
           </div>
         </div>
       </CardHeader>
+
       <CardContent className="flex-grow p-2 sm:p-4">
-        <div
-          ref={containerRef}
-          className="w-full h-full min-h-[300px] sm:min-h-[400px] rounded-lg"
-        />
+        <div ref={containerRef} className="w-full h-full min-h-[300px] sm:min-h-[400px] rounded-lg" />
       </CardContent>
     </Card>
   );
-};
-
-export default TradingChart;
+}
