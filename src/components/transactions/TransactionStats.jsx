@@ -1,50 +1,57 @@
+// src/components/trading/TransactionStats.jsx
 import React from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent } from '@/components/ui/card';
 import { ArrowUpRight, ArrowDownLeft, DollarSign, History } from 'lucide-react';
 
+const safeArr = (a) => (Array.isArray(a) ? a : []);
+const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+const fmt = (v, d = 2) => n(v).toFixed(d);
+
 const TransactionStats = ({ transactions }) => {
-  const totalDeposits = transactions
-    .filter(t => t.type === 'deposit' && t.status === 'completed')
-    .reduce((sum, t) => sum + t.amount, 0);
+  const tx = safeArr(transactions);
 
-  const totalWithdrawals = transactions
-    .filter(t => t.type === 'withdrawal' && t.status === 'completed')
-    .reduce((sum, t) => sum + t.amount, 0);
+  const totalDeposits = tx
+    .filter((t) => String(t.type) === 'deposit' && String(t.status) === 'completed')
+    .reduce((sum, t) => sum + n(t.amount), 0);
 
-  const totalInvestments = transactions
-    .filter(t => t.type === 'investment' && t.status === 'completed')
-    .reduce((sum, t) => sum + t.amount, 0);
+  const totalWithdrawals = tx
+    .filter((t) => String(t.type) === 'withdrawal' && String(t.status) === 'completed')
+    .reduce((sum, t) => sum + n(t.amount), 0);
+
+  const totalInvestments = tx
+    .filter((t) => String(t.type) === 'investment' && String(t.status) === 'completed')
+    .reduce((sum, t) => sum + n(t.amount), 0);
 
   const stats = [
     {
       title: 'Total Depósitos',
-      value: `${totalDeposits.toFixed(2)}`,
+      value: `$${fmt(totalDeposits)}`,
       icon: ArrowDownLeft,
       color: 'text-green-400',
-      bgColor: 'bg-green-500/10'
+      bgColor: 'bg-green-500/10',
     },
     {
       title: 'Total Retiros',
-      value: `${totalWithdrawals.toFixed(2)}`,
+      value: `$${fmt(totalWithdrawals)}`,
       icon: ArrowUpRight,
       color: 'text-red-400',
-      bgColor: 'bg-red-500/10'
+      bgColor: 'bg-red-500/10',
     },
     {
       title: 'Total Invertido',
-      value: `${totalInvestments.toFixed(2)}`,
+      value: `$${fmt(totalInvestments)}`,
       icon: DollarSign,
       color: 'text-blue-400',
-      bgColor: 'bg-blue-500/10'
+      bgColor: 'bg-blue-500/10',
     },
     {
       title: 'Transacciones',
-      value: transactions.length.toString(),
+      value: String(tx.length),
       icon: History,
       color: 'text-purple-400',
-      bgColor: 'bg-purple-500/10'
-    }
+      bgColor: 'bg-purple-500/10',
+    },
   ];
 
   return (
@@ -53,7 +60,7 @@ const TransactionStats = ({ transactions }) => {
         const Icon = stat.icon;
         return (
           <motion.div
-            key={index}
+            key={stat.title}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8, delay: index * 0.1 }}

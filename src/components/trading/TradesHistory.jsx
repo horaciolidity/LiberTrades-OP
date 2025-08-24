@@ -20,40 +20,52 @@ import {
 } from '@/components/ui/dialog';
 
 const safeArr = (a) => (Array.isArray(a) ? a : []);
-const fmt = (n, d = 2) => {
-  const x = Number(n);
-  return Number.isFinite(x) ? x.toFixed(d) : (0).toFixed(d);
+const n = (v, fb = 0) => (Number.isFinite(Number(v)) ? Number(v) : fb);
+const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : (0).toFixed(d));
+const fmtSigned = (v, d = 2) => {
+  const x = Number(v);
+  if (!Number.isFinite(x)) return `+${(0).toFixed(d)}`;
+  return `${x >= 0 ? '+' : ''}${x.toFixed(d)}`;
 };
+
+// BASE desde "BTC/USDT" o "BTCUSDT"
 const baseFromPair = (pair) => {
   if (!pair || typeof pair !== 'string') return 'BTC';
-  const [b] = pair.split('/');
-  return (b || 'BTC').toUpperCase();
+  if (pair.includes('/')) return pair.split('/')[0].toUpperCase();
+  // "BTCUSDT" -> quitar sufijo común
+  const up = pair.toUpperCase();
+  if (up.endsWith('USDT')) return up.slice(0, -4);
+  if (up.endsWith('USDC')) return up.slice(0, -4);
+  return up;
 };
+
+// Normaliza timestamps variados a ms
 const parseTsMs = (ts) => {
-  if (!ts) return NaN;
-  if (typeof ts === 'number') {
-    return ts < 2e10 ? ts * 1000 : ts;
-  }
+  if (ts == null) return NaN;
+  if (typeof ts === 'number') return ts < 2e10 ? ts * 1000 : ts;
   if (typeof ts === 'string') {
     const ms = Date.parse(ts);
     if (Number.isFinite(ms)) return ms;
-    const asNum = Number(ts);
-    if (Number.isFinite(asNum)) return asNum < 2e10 ? asNum * 1000 : asNum;
+    const num = Number(ts);
+    if (Number.isFinite(num)) return num < 2e10 ? num * 1000 : num;
   }
   const d = new Date(ts);
-  const m = d.getTime();
-  return Number.isFinite(m) ? m : NaN;
+  const ms = d.getTime();
+  return Number.isFinite(ms) ? ms : NaN;
 };
+
 const fmtTime = (ts) => {
   const ms = parseTsMs(ts);
   if (!Number.isFinite(ms)) return '—';
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
+
 const fmtDateTime = (ts) => {
   const ms = parseTsMs(ts);
   if (!Number.isFinite(ms)) return '—';
   return new Date(ms).toLocaleString();
 };
+
 const fmtDuration = (seconds) => {
   if (!Number.isFinite(seconds)) return '—';
   const s = Math.max(0, Math.floor(seconds));
@@ -64,76 +76,72 @@ const fmtDuration = (seconds) => {
   return h > 0 ? `${h}:${pad(m)}:${pad(r)}` : `${m}:${pad(r)}`;
 };
 
-// Fallback por si no viene upnl desde el container
+// ======= Cálculos de PnL y tiempos =======
 const calcUPnL = (trade, cryptoPrices = {}) => {
   const base = baseFromPair(trade?.pair);
-  const current = Number(cryptoPrices?.[base]?.price ?? 0);
-  const entry = Number(trade?.price ?? trade?.priceAtExecution ?? 0);
-  const notional = Number(trade?.amount ?? 0);
-  if (!current || !entry || !notional) return 0;
-
-  const qty = notional / entry;
-  const side = String(trade?.type || '').toLowerCase(); // buy | sell
-  return side === 'sell' ? (entry - current) * qty : (current - entry) * qty;
+  const live = n(cryptoPrices?.[base]?.price, NaN);
+  const entry = n(trade?.price ?? trade?.priceAtExecution, NaN);
+  const amount = n(trade?.amount, NaN);
+  if (!Number.isFinite(live) || !Number.isFinite(entry) || !Number.isFinite(amount) || !amount || !entry) return 0;
+  const qty = amount / entry;
+  const side = String(trade?.type || '').toLowerCase();
+  return side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
 };
 
 const remainingSeconds = (trade) => {
   if (!trade || String(trade.status || '').toLowerCase() !== 'open') return null;
 
-  const closeAtIso = trade.closeAt || trade.closeat;
-  let closeAtMs = closeAtIso ? parseTsMs(closeAtIso) : NaN;
-
+  let closeAtMs = parseTsMs(trade.closeAt ?? trade.closeat);
   if (!Number.isFinite(closeAtMs)) {
-    const ts = parseTsMs(trade.timestamp || Date.now());
-    const dur = Number(trade.durationSeconds || trade.duration || 0) * 1000;
-    if (dur > 0 && Number.isFinite(ts)) closeAtMs = ts + dur;
+    const ts = parseTsMs(trade.timestamp ?? Date.now());
+    const durSec = n(trade.durationSeconds ?? trade.duration, 0);
+    if (durSec > 0 && Number.isFinite(ts)) closeAtMs = ts + durSec * 1000;
   }
   if (!Number.isFinite(closeAtMs)) return null;
 
   return Math.max(0, Math.floor((closeAtMs - Date.now()) / 1000));
 };
 
-// ------- Helpers de detalle estilo "Binance" -------
 const computeQty = (amountUsd, entry) => {
-  const a = Number(amountUsd || 0);
-  const e = Number(entry || 0);
+  const a = n(amountUsd, 0);
+  const e = n(entry, 0);
   if (!a || !e) return 0;
   return a / e;
 };
-const inferClosePriceIfMissing = (trade) => {
-  const cp = trade.closeprice ?? trade.closePrice ?? null;
-  if (cp != null && Number.isFinite(Number(cp))) return Number(cp);
 
-  const entry = Number(trade.price ?? trade.priceAtExecution ?? 0);
-  const amount = Number(trade.amount ?? 0);
+const inferClosePriceIfMissing = (trade) => {
+  const explicit = trade.closeprice ?? trade.closePrice;
+  if (explicit != null && Number.isFinite(Number(explicit))) return Number(explicit);
+
+  const entry = n(trade.price ?? trade.priceAtExecution, NaN);
+  const amount = n(trade.amount, NaN);
   const qty = computeQty(amount, entry);
-  const profit = Number(trade.profit ?? 0);
+  const profit = n(trade.profit, NaN);
   const side = String(trade.type || '').toLowerCase();
 
-  if (!entry || !qty) return null;
-  if (side === 'sell') return entry - profit / qty;
-  return entry + profit / qty;
+  if (!Number.isFinite(entry) || !Number.isFinite(qty)) return null;
+  if (!Number.isFinite(profit)) return null;
+
+  // profit = (close - entry) * qty   (buy)
+  // profit = (entry - close) * qty   (sell)
+  return side === 'sell' ? entry - profit / qty : entry + profit / qty;
 };
 
-const TradeRow = ({
-  t,
-  cryptoPrices,
-  onClose,
-  onDetails,
-  closing,
-}) => {
+// ======= Row =======
+const TradeRow = ({ t, cryptoPrices, onClose, onDetails, closing }) => {
   const pair = typeof t.pair === 'string' ? t.pair : 'BTC/USDT';
   const side = String(t.type || '').toLowerCase(); // buy|sell
-  const amount = Number(t.amount ?? 0);
-  const entry = Number(t.price ?? t.priceAtExecution ?? 0);
-  const upnl = Number(t.upnl ?? calcUPnL(t, cryptoPrices));
+  const amount = n(t.amount, 0);
+  const entry = n(t.price ?? t.priceAtExecution, 0);
+  const upnl = n(t.upnl, null);
+  const computed = Number.isFinite(upnl) ? upnl : calcUPnL(t, cryptoPrices);
   const isOpen = String(t.status || '').toLowerCase() === 'open';
 
   const secs = remainingSeconds(t);
   const mm = Number.isFinite(secs) ? Math.floor(secs / 60) : null;
   const ss = Number.isFinite(secs) ? String(secs % 60).padStart(2, '0') : null;
 
-  const pnlShown = isOpen ? upnl : Number(t.profit ?? 0);
+  const pnlShown = isOpen ? computed : n(t.profit, 0);
   const pnlPos = pnlShown >= 0;
 
   return (
@@ -165,11 +173,9 @@ const TradeRow = ({
 
       <div className="text-right">
         <p className={`font-semibold ${pnlPos ? 'text-green-400' : 'text-red-400'}`}>
-          {pnlPos ? '+' : ''}${fmt(pnlShown)}
+          {fmtSigned(pnlShown)}
         </p>
-        <p className="text-slate-400 text-sm">
-          {fmtTime(t.timestamp)}
-        </p>
+        <p className="text-slate-400 text-sm">{fmtTime(t.timestamp)}</p>
       </div>
 
       <div className="ml-4 w-44 flex items-center justify-end gap-2">
@@ -212,6 +218,7 @@ const TradeRow = ({
   );
 };
 
+// ======= Main =======
 const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }) => {
   const list = safeArr(trades);
 
@@ -227,7 +234,7 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
     setDetailOpen(true);
   };
 
-  // Sincroniza el seleccionado con la lista nueva y cierra si ya se cerró
+  // Si cambia el trade seleccionado en la lista (p.ej., se cierra), refrescar modal / cerrarlo
   useEffect(() => {
     if (!selected) return;
     const updated = list.find((t) => t.id === selected.id);
@@ -244,7 +251,8 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
     if (!id) return;
     try {
       setRowClosingId(id);
-      const ok = await closeTrade?.(id, true);
+      const result = await closeTrade?.(id, true);
+      const ok = (typeof result === 'boolean') ? result : true; // si no devuelve explicitamente
       if (ok && detailOpen && selected?.id === id) {
         setDetailOpen(false);
       }
@@ -258,35 +266,37 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
     if (!selected) return null;
 
     const side = String(selected.type || '').toLowerCase();
-    const amount = Number(selected.amount ?? 0);
-    const entry = Number(selected.price ?? selected.priceAtExecution ?? 0);
+    const amount = n(selected.amount, 0);
+    const entry = n(selected.price ?? selected.priceAtExecution, 0);
     const qty = computeQty(amount, entry);
 
     const liveBase = baseFromPair(selected.pair);
-    const live = Number(cryptoPrices?.[liveBase]?.price ?? 0);
+    const live = n(cryptoPrices?.[liveBase]?.price, NaN);
 
     const isOpen = String(selected.status || '').toLowerCase() === 'open';
-    const closePrice = isOpen ? (live || null) : inferClosePriceIfMissing(selected);
+    const closePrice = isOpen ? (Number.isFinite(live) ? live : null) : inferClosePriceIfMissing(selected);
 
     const upnlLive = (() => {
-      if (!isOpen || !live || !entry || !qty) return 0;
+      if (!isOpen || !Number.isFinite(live) || !entry || !qty) return 0;
       return side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
     })();
 
-    const realized = isOpen ? null : Number(selected.profit ?? 0);
+    const realized = isOpen ? null : n(selected.profit, 0);
     const pnlShown = isOpen ? upnlLive : realized ?? 0;
     const pnlPct = amount ? (pnlShown / amount) * 100 : 0;
 
     const tsOpen = parseTsMs(selected.timestamp);
-    const tsClose = isOpen ? null : (parseTsMs(selected.closeat || selected.closeAt) || null);
-    const secondsElapsed = tsOpen ? Math.floor(((tsClose ?? Date.now()) - tsOpen) / 1000) : null;
+    const tsClose = isOpen ? null : (parseTsMs(selected.closeat ?? selected.closeAt) || null);
+    const secondsElapsed = Number.isFinite(tsOpen)
+      ? Math.floor(((tsClose ?? Date.now()) - tsOpen) / 1000)
+      : null;
 
     return {
       side,
       amount,
       entry,
       qty,
-      live,
+      live: Number.isFinite(live) ? live : null,
       closePrice,
       pnlShown,
       pnlPct,
@@ -383,7 +393,7 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
                   </p>
                   <p className="font-semibold">
                     {details.isOpen
-                      ? (details.live ? `$${fmt(details.live)}` : '—')
+                      ? (details.live != null ? `$${fmt(details.live)}` : '—')
                       : (details.closePrice != null ? `$${fmt(details.closePrice)}` : '—')}
                   </p>
                 </div>
@@ -391,7 +401,7 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
                 <div className="p-3 rounded bg-slate-800/60 col-span-2">
                   <p className="text-slate-400 text-xs">PnL</p>
                   <p className={`font-semibold ${details.pnlShown >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {details.pnlShown >= 0 ? '+' : ''}${fmt(details.pnlShown)} ({details.pnlPct >= 0 ? '+' : ''}{fmt(details.pnlPct)}%)
+                    {fmtSigned(details.pnlShown)} ({fmtSigned(details.pnlPct)}%)
                   </p>
                 </div>
 
@@ -404,7 +414,7 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
                   <p className="font-semibold">
                     {details.isOpen
                       ? fmtDuration(details.secondsElapsed ?? NaN)
-                      : fmtDateTime(selected.closeat || selected.closeAt)}
+                      : fmtDateTime(selected.closeat ?? selected.closeAt)}
                   </p>
                 </div>
               </div>
@@ -412,17 +422,16 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
           )}
 
           <DialogFooter className="justify-between">
-            <div className="text-xs text-slate-500">
-              ID: {selected?.id || '—'}
-            </div>
+            <div className="text-xs text-slate-500">ID: {selected?.id || '—'}</div>
             <div className="flex gap-2">
               {selected && String(selected.status || 'open').toLowerCase() === 'open' && (
                 <Button
                   onClick={async () => {
                     if (!selected?.id) return;
                     setClosingModal(true);
-                    const ok = await closeTrade?.(selected.id, true);
+                    const result = await closeTrade?.(selected.id, true);
                     setClosingModal(false);
+                    const ok = (typeof result === 'boolean') ? result : true;
                     if (ok) setDetailOpen(false);
                   }}
                   className="bg-red-600 hover:bg-red-700"

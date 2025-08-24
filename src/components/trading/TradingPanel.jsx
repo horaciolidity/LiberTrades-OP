@@ -13,6 +13,35 @@ const fmt = (n, dec = 2) => {
   return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
 };
 
+/** ---------- Normalización de pares y base ---------- */
+// Acepta "BTC/USDT", "BTCUSDT", "btc/usdt"… y devuelve SIEMPRE "BTC/USDT"
+const normalizePair = (pair, fallback = 'BTC/USDT') => {
+  if (!pair) return fallback;
+  const s = String(pair).trim().toUpperCase();
+  if (!s.length) return fallback;
+  if (s.includes('/')) {
+    const [b, q] = s.split('/');
+    return `${(b || 'BTC').toUpperCase()}/${(q || 'USDT').toUpperCase()}`;
+  }
+  // sin slash: intentar separar por sufijo común de quote
+  if (s.endsWith('USDT')) return `${s.slice(0, -4)}/USDT`;
+  if (s.endsWith('USDC')) return `${s.slice(0, -4)}/USDC`;
+  // default a USDT si no podemos inferir claramente
+  return `${s}/USDT`;
+};
+
+// Devuelve siempre el BASE para indexar `cryptoPrices[BASE]`
+const baseFromPair = (pair) => {
+  const norm = normalizePair(pair);
+  const [base] = norm.split('/');
+  return base || 'BTC';
+};
+
+// Para intentar leer feeds alternativos si existieran (p.ej. "BTCUSDT" como key)
+const noSlash = (pair) => String(pair || '').replace('/', '');
+
+/** -------------------------------------------------- */
+
 export default function TradingPanel({
   selectedPair,
   setSelectedPair,
@@ -27,35 +56,43 @@ export default function TradingPanel({
     cryptoPrices: pricesFromCtx = {},
   } = useData();
 
-  // fallback a precios del contexto si no vienen por props
+  // Fallback a precios del contexto si no vienen por props
   const prices = useMemo(() => {
     const hasProp = cryptoPrices && Object.keys(cryptoPrices).length > 0;
     return hasProp ? cryptoPrices : (pricesFromCtx || {});
   }, [cryptoPrices, pricesFromCtx]);
 
-  // base de pares con fallback, evitando undefined
-  const basePairs = pairsFromCtx.length
-    ? pairsFromCtx
+  // Normalizamos TODAS las opciones de pares del contexto
+  const normalizedCtxPairs = useMemo(() => {
+    const arr = Array.isArray(pairsFromCtx) ? pairsFromCtx : [];
+    return Array.from(new Set(arr.map((p) => normalizePair(p)).filter(Boolean)));
+  }, [pairsFromCtx]);
+
+  // Base de pares con fallback seguro
+  const basePairs = normalizedCtxPairs.length
+    ? normalizedCtxPairs
     : ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT'];
 
-  // lista de pares única, sin falsy
-  const allPairs = useMemo(() => {
-    const arr = [...(selectedPair ? [selectedPair] : []), ...basePairs];
-    return Array.from(new Set(arr.filter(Boolean)));
-  }, [basePairs, selectedPair]);
+  // Par controlado/efectivo SIEMPRE normalizado
+  const effectivePair = useMemo(() => {
+    const norm = normalizePair(selectedPair || basePairs[0] || 'BTC/USDT');
+    return norm;
+  }, [selectedPair, basePairs]);
 
-  // par efectivo para no quedar sin valor
-  const effectivePair = selectedPair ?? allPairs[0] ?? 'BTC/USDT';
-
-  // estado local
+  // Estado local del panel
   const [tradeAmount, setTradeAmount] = useState('100');
   const [tradeType, setTradeType] = useState('buy');
-  const [tradeDuration, setTradeDuration] = useState(60); // seg
+  const [tradeDuration, setTradeDuration] = useState(60); // seg (sólo demo)
   const [isTrading, setIsTrading] = useState(false);
 
-  // precio actual
-  const currentCrypto = useMemo(() => (effectivePair || 'BTC/USDT').split('/')[0], [effectivePair]);
-  const currentPriceData = prices?.[currentCrypto];
+  // Precio actual: prioriza cryptoPrices[BASE]; si no, intenta con claves alternativas
+  const currentBase = baseFromPair(effectivePair);
+  const currentPriceData =
+    prices?.[currentBase] ??
+    prices?.[noSlash(effectivePair)] ??
+    prices?.[effectivePair] ??
+    null;
+
   const currentPrice = Number(currentPriceData?.price ?? 0);
 
   const amountNum = Number(tradeAmount);
@@ -76,20 +113,32 @@ export default function TradingPanel({
     setIsTrading(true);
     try {
       const payload = {
-        pair: effectivePair,
-        type: side,                 // 'buy' | 'sell'
-        amount: amountNum,          // USD notional
-        price: currentPrice,        // precio spot actual
-        duration: tradeDuration,    // (demo)
-        ts: Date.now(),             // útil para trazas
+        pair: effectivePair,       // "BASE/QUOTE" normalizado
+        type: side,                // 'buy' | 'sell'
+        amount: amountNum,         // USD notional
+        price: currentPrice,       // precio spot actual (del feed unificado)
+        duration: tradeDuration,   // (demo)
+        ts: Date.now(),            // útil para trazas
       };
-      console.log('[onTrade payload]', payload, { priceLive: prices?.[currentCrypto] });
+      // Diagnóstico útil si el feed no matchea
+      // console.log('[onTrade payload]', payload, { feedKey: currentBase, feed: prices?.[currentBase] });
       await onTrade(payload);
     } catch (err) {
       console.error('Error ejecutando trade:', err);
     } finally {
       setIsTrading(false);
     }
+  };
+
+  // Lista para el selector (incluye el par actual por si vino “externo”)
+  const allPairs = useMemo(() => {
+    const arr = Array.from(new Set([effectivePair, ...basePairs])).filter(Boolean);
+    return arr;
+  }, [effectivePair, basePairs]);
+
+  const handlePairChange = (val) => {
+    const norm = normalizePair(val);
+    setSelectedPair?.(norm);
   };
 
   return (
@@ -108,10 +157,7 @@ export default function TradingPanel({
         {/* Par */}
         <div className="space-y-2">
           <Label className="text-white">Par de Trading</Label>
-          <Select
-            value={effectivePair}
-            onValueChange={(val) => setSelectedPair?.(val)}
-          >
+          <Select value={effectivePair} onValueChange={handlePairChange}>
             <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
               <SelectValue placeholder="Selecciona un par" />
             </SelectTrigger>
@@ -172,18 +218,29 @@ export default function TradingPanel({
         </div>
 
         {/* Info de precio */}
-        {currentPriceData && (
+        {currentPriceData ? (
           <div className="bg-slate-800/50 p-4 rounded-lg">
             <div className="flex justify-between items-center mb-2">
-              <span className="text-slate-400">Precio Actual:</span>
-              <span className="text-white font-semibold">${fmt(currentPriceData.price)}</span>
+              <span className="text-slate-400">Precio Actual ({currentBase}):</span>
+              <span className="text-white font-semibold">
+                {hasPrice ? `$${fmt(currentPriceData.price)}` : '—'}
+              </span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-slate-400">Cambio 24h:</span>
-              <span className={`font-semibold ${Number(currentPriceData.change) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              <span
+                className={`font-semibold ${
+                  Number(currentPriceData.change) >= 0 ? 'text-green-400' : 'text-red-400'
+                }`}
+              >
                 {fmt(currentPriceData.change)}%
               </span>
             </div>
+          </div>
+        ) : (
+          <div className="bg-slate-800/40 p-3 rounded text-xs text-slate-400">
+            No hay feed de precio para <b>{effectivePair}</b>. Verifica que el Admin tenga un instrumento
+            <i> habilitado</i> con BASE <b>{currentBase}</b> y que el DataContext publique <code>cryptoPrices["{currentBase}"]</code>.
           </div>
         )}
 

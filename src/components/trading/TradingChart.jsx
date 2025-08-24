@@ -28,6 +28,14 @@ const toEpochSec = (t) => {
   return Math.floor(num / 1000);                 // ms chicos
 };
 
+const isValidCandle = (c) =>
+  c &&
+  Number.isFinite(c.time) &&
+  Number.isFinite(c.open) &&
+  Number.isFinite(c.high) &&
+  Number.isFinite(c.low) &&
+  Number.isFinite(c.close);
+
 const TradingChart = ({
   priceHistory = [],
   selectedPair,
@@ -110,13 +118,12 @@ const TradingChart = ({
 
     return () => {
       try { ro.disconnect(); } catch {}
-      // limpiar price lines
       try {
         const map = entryLinesRef.current || {};
         Object.values(map).forEach((obj) => {
-          obj?.entry && series.removePriceLine(obj.entry);
-          obj?.sl && series.removePriceLine(obj.sl);
-          obj?.tp && series.removePriceLine(obj.tp);
+          try { obj?.entry && series.removePriceLine(obj.entry); } catch {}
+          try { obj?.sl && series.removePriceLine(obj.sl); } catch {}
+          try { obj?.tp && series.removePriceLine(obj.tp); } catch {}
         });
         entryLinesRef.current = {};
       } catch {}
@@ -135,11 +142,11 @@ const TradingChart = ({
 
     const hist = Array.isArray(priceHistory) ? priceHistory : [];
     const sorted = hist
-      .filter((p) => n(p.time) > 0 && n(p.value) > 0)
+      .filter((p) => Number.isFinite(Number(p?.time)) && Number.isFinite(Number(p?.value)))
       .sort((a, b) => a.time - b.time);
 
     if (!sorted.length) {
-      series.setData([]);
+      try { series.setData([]); } catch {}
       lastBarTimeRef.current = undefined;
       return;
     }
@@ -149,29 +156,30 @@ const TradingChart = ({
       const seed = sorted.slice(-LAST_N_BARS);
       const seedCandles = seed.map((p, idx) => {
         const prev = seed[idx - 1] || p;
-        return {
+        const open = n(prev.value, n(p.value));
+        const close = n(p.value);
+        const high = Math.max(n(prev.value), n(p.value));
+        const low  = Math.min(n(prev.value), n(p.value));
+        const candle = {
           time: Math.floor(n(p.time) / 1000),
-          open: n(prev.value, n(p.value)),
-          high: Math.max(n(prev.value), n(p.value)),
-          low: Math.min(n(prev.value), n(p.value)),
-          close: n(p.value),
+          open, high, low, close,
         };
-      });
-
-      series.setData(seedCandles);
+        return isValidCandle(candle) ? candle : null;
+      }).filter(Boolean);
 
       if (seedCandles.length) {
+        try { series.setData(seedCandles); } catch {}
         lastBarTimeRef.current = seedCandles[seedCandles.length - 1].time;
         if (seedCandles.length > 1) {
           const first = seedCandles[Math.max(0, seedCandles.length - LAST_N_BARS)].time;
           const last = seedCandles[seedCandles.length - 1].time;
-          chart.timeScale().setVisibleRange({ from: first, to: last });
+          try { chart.timeScale().setVisibleRange({ from: first, to: last }); } catch {}
         }
       }
       return;
     }
 
-    // Actualización incremental (sin variables globales)
+    // Actualización incremental
     const lastPoint = sorted[sorted.length - 1];
     const previous  = sorted.length >= 2 ? sorted[sorted.length - 2] : lastPoint;
     const lastSec   = Math.floor(n(lastPoint.time) / 1000);
@@ -182,16 +190,17 @@ const TradingChart = ({
     const close = n(lastPoint.value);
 
     const candle = { time: lastSec, open, high, low, close };
+    if (!isValidCandle(candle)) return;
 
     if (lastSec > lastBarTimeRef.current) {
-      series.update(candle);
+      try { series.update(candle); } catch {}
       lastBarTimeRef.current = lastSec;
 
       const to = lastSec;
       const from = to - LAST_N_BARS * 2;
-      chart.timeScale().setVisibleRange({ from, to });
+      try { chart.timeScale().setVisibleRange({ from, to }); } catch {}
     } else if (lastSec === lastBarTimeRef.current) {
-      series.update(candle);
+      try { series.update(candle); } catch {}
     }
   }, [priceHistory]);
 
@@ -220,37 +229,43 @@ const TradingChart = ({
       const color = side === 'sell' ? '#ef4444' : '#22c55e';
       const obj = {};
 
-      obj.entry = series.createPriceLine({
-        price: entry,
-        color,
-        lineWidth: 2,
-        lineStyle: 0, // Solid
-        axisLabelVisible: true,
-        title: `${side === 'sell' ? 'SELL' : 'BUY'} @ ${fmt(entry)}`,
-      });
+      try {
+        obj.entry = series.createPriceLine({
+          price: entry,
+          color,
+          lineWidth: 2,
+          lineStyle: 0, // Solid
+          axisLabelVisible: true,
+          title: `${side === 'sell' ? 'SELL' : 'BUY'} @ ${fmt(entry)}`,
+        });
+      } catch {}
 
       // stop / take (admite camel y snake)
       const sl = n(t.stopLoss ?? t.stoploss, NaN);
       if (Number.isFinite(sl)) {
-        obj.sl = series.createPriceLine({
-          price: sl,
-          color: '#ef4444',
-          lineWidth: 1,
-          lineStyle: 2, // Dashed
-          axisLabelVisible: true,
-          title: `SL ${fmt(sl)}`,
-        });
+        try {
+          obj.sl = series.createPriceLine({
+            price: sl,
+            color: '#ef4444',
+            lineWidth: 1,
+            lineStyle: 2, // Dashed
+            axisLabelVisible: true,
+            title: `SL ${fmt(sl)}`,
+          });
+        } catch {}
       }
       const tp = n(t.takeProfit ?? t.takeprofit, NaN);
       if (Number.isFinite(tp)) {
-        obj.tp = series.createPriceLine({
-          price: tp,
-          color: '#22c55e',
-          lineWidth: 1,
-          lineStyle: 2, // Dashed
-          axisLabelVisible: true,
-          title: `TP ${fmt(tp)}`,
-        });
+        try {
+          obj.tp = series.createPriceLine({
+            price: tp,
+            color: '#22c55e',
+            lineWidth: 1,
+            lineStyle: 2, // Dashed
+            axisLabelVisible: true,
+            title: `TP ${fmt(tp)}`,
+          });
+        } catch {}
       }
 
       entryLinesRef.current[id] = obj;
