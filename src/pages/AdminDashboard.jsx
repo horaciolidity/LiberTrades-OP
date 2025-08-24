@@ -868,6 +868,8 @@ export default function AdminDashboard() {
                     <SelectValue placeholder="Fuente" />
                   </SelectTrigger>
                   <SelectContent className="bg-slate-800 text-white border-slate-700">
+                    <SelectItem value="binance">Binance (live)</SelectItem>
+                    <SelectItem value="simulated">Simulada</SelectItem>
                     <SelectItem value="real">Real (Binance)</SelectItem>
                     <SelectItem value="manual">Manual</SelectItem>
                   </SelectContent>
