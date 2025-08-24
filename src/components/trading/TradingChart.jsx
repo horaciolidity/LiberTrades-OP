@@ -1,9 +1,7 @@
 // src/components/trading/TradingChart.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType } from 'lightweight-charts';
-import {
-  Card, CardContent, CardHeader, CardTitle, CardDescription,
-} from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { TrendingUp } from 'lucide-react';
 import { useBinanceKlines } from '@/hooks/useBinanceKlines';
@@ -11,41 +9,43 @@ import { useData } from '@/contexts/DataContext';
 
 const DEFAULT_LAST_BARS = 200;
 const TIMEFRAMES = [
-  { key: '5s',  sec: 5 },
+  { key: '5s', sec: 5 },
   { key: '15s', sec: 15 },
-  { key: '1m',  sec: 60 },
-  { key: '5m',  sec: 300 },
+  { key: '1m', sec: 60 },
+  { key: '5m', sec: 300 },
   { key: '15m', sec: 900 },
 ];
 
 const n  = (x, f = NaN) => (Number.isFinite(Number(x)) ? Number(x) : f);
 const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
 
-function toEpochSec(t) {
+const toEpochSec = (t) => {
   if (!t && t !== 0) return undefined;
   const num = Number(t);
   if (Number.isFinite(num)) return num > 2e10 ? Math.floor(num / 1000) : Math.floor(num);
   const ms = Date.parse(t);
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
-}
-function aggregateHistory(points = [], tfSec = 60, limit = 200) {
+};
+
+function aggregate(points = [], tfSec = 60, limit = 200) {
   const tf = Math.max(1, tfSec);
   const rows = (Array.isArray(points) ? points : [])
     .map((p) => ({ t: toEpochSec(p.time), v: n(p.value) }))
     .filter((r) => Number.isFinite(r.t) && Number.isFinite(r.v))
-    .sort((a,b)=>a.t-b.t);
+    .sort((a, b) => a.t - b.t);
+
   const buckets = new Map();
-  for (const {t,v} of rows) {
-    const b = Math.floor(t/tf)*tf;
+  for (const { t, v } of rows) {
+    const b = Math.floor(t / tf) * tf;
     const prev = buckets.get(b);
-    if (!prev) buckets.set(b, { time:b, open:v, high:v, low:v, close:v });
+    if (!prev) buckets.set(b, { time: b, open: v, high: v, low: v, close: v });
     else {
       prev.high = Math.max(prev.high, v);
       prev.low  = Math.min(prev.low,  v);
       prev.close = v;
     }
   }
-  const arr = Array.from(buckets.values()).sort((a,b)=>a.time-b.time);
+  const arr = Array.from(buckets.values()).sort((a, b) => a.time - b.time);
   return arr.length > limit ? arr.slice(arr.length - limit) : arr;
 }
 
@@ -63,67 +63,56 @@ export default function TradingChart({
   const seriesRef = useRef(null);
   const entryLinesRef = useRef({});
 
-  const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m
+  const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
 
   const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
-  const info = (cryptoPrices?.[base] || ctxPrices?.[base] || {});
-  const chg = n(info.change, NaN);
-  const chgStr = Number.isFinite(chg) ? chg.toFixed(2) : '--';
-  const chgPos = Number.isFinite(chg) ? chg >= 0 : true;
-
-  // Si el admin mapeó ese asset a Binance, usamos el símbolo real; si no, NO llamamos a Binance
+  const info = cryptoPrices?.[base] || ctxPrices?.[base] || {};
+  const change24 = n(info.change, NaN);
   const binanceSymbol = assetToSymbol?.[base] || null;
 
-  // Hook Binance (habilitado sólo si hay símbolo real)
+  // --- Binance (si existe símbolo real) ---
   const { candles: liveCandles, price: livePriceHook, status } =
     useBinanceKlines(binanceSymbol, tf.key, lastNBars, { enabled: !!binanceSymbol });
 
-  // Fallback: para pares manuales/simulados usamos el history del DataContext
-  const fallbackCandles = useMemo(() => {
-    const hist = info?.history || [];
-    return aggregateHistory(hist, tf.sec, lastNBars);
-  }, [info?.history, tf.sec, lastNBars]);
+  // --- Fallback manual/simulado (para tus monedas inventadas) ---
+  const [localTicks, setLocalTicks] = useState([]);
+  useEffect(() => {
+    if (binanceSymbol) return; // sólo para manuales
+    const v = n(info.price);
+    if (!Number.isFinite(v)) return;
+    const t = Math.floor(Date.now() / 1000);
+    setLocalTicks((prev) => {
+      const next = [...prev, { time: t, value: v }];
+      const from = t - tf.sec * (lastNBars + 2);
+      return next.filter((p) => toEpochSec(p.time) >= from);
+    });
+  }, [binanceSymbol, info.price, tf.sec, lastNBars]);
+
+  const manualCandles = useMemo(() => {
+    const pts = Array.isArray(info.history) && info.history.length ? info.history : localTicks;
+    return aggregate(pts, tf.sec, lastNBars);
+  }, [info.history, localTicks, tf.sec, lastNBars]);
 
   const useLive = !!binanceSymbol;
-  const candles = useLive ? liveCandles : fallbackCandles;
+  const candles  = useLive ? liveCandles : manualCandles;
   const livePrice = useLive
     ? (Number.isFinite(livePriceHook) ? livePriceHook : n(info.price))
     : n(info.price);
 
-  const priceStr = Number.isFinite(livePrice) ? livePrice.toFixed(2) : '--';
-
-  const openForPair = useMemo(
-    () =>
-      (Array.isArray(openTrades) ? openTrades : [])
-        .filter((t) => String(t?.pair || '').toUpperCase() === selectedPair.toUpperCase())
-        .filter((t) => String(t?.status || 'open').toLowerCase() === 'open'),
-    [openTrades, selectedPair]
-  );
-
-  // Crear chart
+  // ----- montar chart -----
   useEffect(() => {
     if (!containerRef.current) return;
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
-      layout: {
-        background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#D1D5DB',
-      },
+      layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#D1D5DB' },
       grid: {
         vertLines: { color: 'rgba(71,85,105,0.35)' },
         horzLines: { color: 'rgba(71,85,105,0.35)' },
       },
-      rightPriceScale: {
-        borderColor: '#4B5563',
-        scaleMargins: { top: 0.1, bottom: 0.1 },
-      },
-      timeScale: {
-        borderColor: '#4B5563',
-        timeVisible: true,
-        secondsVisible: true,
-      },
+      rightPriceScale: { borderColor: '#4B5563', scaleMargins: { top: 0.1, bottom: 0.1 } },
+      timeScale: { borderColor: '#4B5563', timeVisible: true, secondsVisible: true },
       crosshair: { mode: 0 },
     });
 
@@ -164,7 +153,7 @@ export default function TradingChart({
     };
   }, []);
 
-  // Pinta/repinta cuando cambian velas
+  // ----- pintar velas -----
   useEffect(() => {
     const series = seriesRef.current;
     const chart = chartRef.current;
@@ -177,17 +166,18 @@ export default function TradingChart({
     if (!safe.length) { series.setData([]); return; }
 
     series.setData(safe);
-    const first = safe[0].time;
-    const last = safe[safe.length - 1].time;
-    chart.timeScale().setVisibleRange({ from: first, to: last });
+    const from = safe[0].time;
+    const to   = safe[safe.length - 1].time;
+    chart.timeScale().setVisibleRange({ from, to });
     chart.timeScale().scrollToRealTime();
   }, [candles, lastNBars]);
 
-  // ====== Overlays por operaciones abiertas ======
+  // ----- overlays PnL -----
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
     if (!series) return;
+    if (!Number.isFinite(livePrice)) return;
 
     const prev = entryLinesRef.current || {};
     Object.values(prev).forEach((obj) => {
@@ -197,95 +187,59 @@ export default function TradingChart({
     });
     entryLinesRef.current = {};
 
-    openForPair.forEach((t) => {
-      const id = String(t.id ?? `${t.pair}:${t.timestamp ?? Math.random()}`);
-      const side = String(t.type || '').toLowerCase();
-      const entry = n(t.price ?? t.priceAtExecution, NaN);
-      if (!Number.isFinite(entry)) return;
+    (Array.isArray(openTrades) ? openTrades : [])
+      .filter((t) => String(t?.pair || '').toUpperCase() === selectedPair.toUpperCase())
+      .filter((t) => String(t?.status || 'open').toLowerCase() === 'open')
+      .forEach((t) => {
+        const id = String(t.id ?? `${t.pair}:${t.timestamp ?? Math.random()}`);
+        const side  = String(t.type || '').toLowerCase();
+        const entry = n(t.price ?? t.priceAtExecution, NaN);
+        if (!Number.isFinite(entry)) return;
 
-      const color = side === 'sell' ? '#ef4444' : '#22c55e';
-      const obj = {};
+        const qty    = n(t.amount, 0) / Math.max(entry, 1e-9);
+        const upnl   = side === 'sell' ? (entry - livePrice) * qty : (livePrice - entry) * qty;
+        const upnlPc = (upnl / Math.max(n(t.amount, 0), 1e-9)) * 100;
 
-      obj.entry = series.createPriceLine({
-        price: entry,
-        color,
-        lineWidth: 2,
-        lineStyle: 0,
-        axisLabelVisible: true,
-        title: `${side === 'sell' ? 'SELL' : 'BUY'} @ ${fmt(entry)}`,
+        const obj = {};
+        obj.entry = series.createPriceLine({
+          price: entry,
+          color: side === 'sell' ? '#ef4444' : '#22c55e',
+          lineWidth: 2,
+          lineStyle: 0,
+          axisLabelVisible: true,
+          title: `${side === 'sell' ? 'SELL' : 'BUY'} @ ${fmt(entry)}  |  PnL ${upnl >= 0 ? '+' : ''}${fmt(upnl)} (${upnlPc >= 0 ? '+' : ''}${fmt(upnlPc)}%)`,
+        });
+
+        const sl = n(t.stopLoss ?? t.stoploss, NaN);
+        if (Number.isFinite(sl)) {
+          obj.sl = series.createPriceLine({
+            price: sl, color: '#ef4444', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `SL ${fmt(sl)}`
+          });
+        }
+        const tp = n(t.takeProfit ?? t.takeprofit, NaN);
+        if (Number.isFinite(tp)) {
+          obj.tp = series.createPriceLine({
+            price: tp, color: '#22c55e', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `TP ${fmt(tp)}`
+          });
+        }
+
+        entryLinesRef.current[id] = obj;
       });
+  }, [openTrades, selectedPair, showGuides, livePrice]);
 
-      const sl = n(t.stopLoss ?? t.stoploss, NaN);
-      if (Number.isFinite(sl)) {
-        obj.sl = series.createPriceLine({
-          price: sl,
-          color: '#ef4444',
-          lineWidth: 1,
-          lineStyle: 2,
-          axisLabelVisible: true,
-          title: `SL ${fmt(sl)}`,
-        });
-      }
-      const tp = n(t.takeProfit ?? t.takeprofit, NaN);
-      if (Number.isFinite(tp)) {
-        obj.tp = series.createPriceLine({
-          price: tp,
-          color: '#22c55e',
-          lineWidth: 1,
-          lineStyle: 2,
-          axisLabelVisible: true,
-          title: `TP ${fmt(tp)}`,
-        });
-      }
-
-      entryLinesRef.current[id] = obj;
-    });
-  }, [openForPair, showGuides]);
-
-  // PnL vivo en la línea
-  useEffect(() => {
-    if (!showGuides) return;
-    const series = seriesRef.current;
-    if (!series) return;
-    if (!Number.isFinite(livePrice)) return;
-
-    const map = entryLinesRef.current || {};
-    openForPair.forEach((t) => {
-      const id = String(t.id ?? `${t.pair}:${t.timestamp ?? ''}`);
-      const obj = map[id];
-      if (!obj?.entry) return;
-
-      const side = String(t.type || '').toLowerCase();
-      const entry = n(t.price ?? t.priceAtExecution, NaN);
-      const amt = n(t.amount, NaN);
-      if (!Number.isFinite(entry) || !Number.isFinite(amt)) return;
-
-      const qty = amt / Math.max(entry, 1e-9);
-      const upnl = side === 'sell' ? (entry - livePrice) * qty : (livePrice - entry) * qty;
-      const upnlPct = (upnl / Math.max(amt, 1e-9)) * 100;
-
-      try {
-        obj.entry.applyOptions({
-          title: `${side === 'sell' ? 'SELL' : 'BUY'} @ ${fmt(entry)}  |  PnL ${upnl >= 0 ? '+' : ''}${fmt(upnl)} (${upnlPct >= 0 ? '+' : ''}${fmt(upnlPct)}%)`,
-        });
-      } catch {}
-    });
-  }, [livePrice, openForPair, showGuides]);
-
-  // Marcadores de entrada
+  // ----- marcadores de entrada -----
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
 
-    const markers = openForPair
+    const markers = (Array.isArray(openTrades) ? openTrades : [])
+      .filter((t) => String(t?.pair || '').toUpperCase() === selectedPair.toUpperCase())
+      .filter((t) => String(t?.status || 'open').toLowerCase() === 'open')
       .map((t) => {
-        const ts = t.timestamp;
-        const sec = Number.isFinite(+ts) ? Math.floor(+ts / 1000) : Math.floor(Date.parse(ts || 0) / 1000);
+        const sec = toEpochSec(t.timestamp);
         const price = n(t.price ?? t.priceAtExecution, NaN);
         if (!sec || !Number.isFinite(price)) return null;
-
-        const side = String(t.type || '').toLowerCase();
-        const isBuy = side !== 'sell';
+        const isBuy = String(t.type || '').toLowerCase() !== 'sell';
         return {
           time: sec,
           position: isBuy ? 'belowBar' : 'aboveBar',
@@ -297,7 +251,7 @@ export default function TradingChart({
       .filter(Boolean);
 
     try { series.setMarkers(markers); } catch {}
-  }, [openForPair]);
+  }, [openTrades, selectedPair]);
 
   return (
     <Card className="crypto-card h-full flex flex-col">
@@ -310,15 +264,13 @@ export default function TradingChart({
             </CardTitle>
             <CardDescription className="text-slate-300 text-xs sm:text-sm">
               {binanceSymbol
-                ? (status === 'live' ? 'Tiempo real (WS)' :
-                   status === 'seeding' ? 'Cargando...' :
-                   status === 'error' ? 'Error de feed' : '—')
-                : 'Simulado (sin Binance)'}
-              {' '}• {tf.key} • {lastNBars} barras
+                ? (status === 'live' ? 'Tiempo real (WS)'
+                  : status === 'seeding' ? 'Cargando…'
+                  : status === 'error' ? 'Error de feed' : '—')
+                : 'Simulado (sin Binance)'} • {tf.key} • {lastNBars} barras
             </CardDescription>
           </div>
 
-          {/* Selector timeframe */}
           <div className="flex flex-wrap gap-2">
             {TIMEFRAMES.map((opt) => (
               <Button
@@ -337,8 +289,8 @@ export default function TradingChart({
             <p className="text-xl sm:text-2xl font-bold text-white">
               {Number.isFinite(livePrice) ? `$${fmt(livePrice)}` : '--'}
             </p>
-            <p className={`text-xs sm:text-sm ${chgPos ? 'text-green-400' : 'text-red-400'}`}>
-              {chgStr}% (24h)
+            <p className={`text-xs sm:text-sm ${Number.isFinite(change24) && change24 >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {Number.isFinite(change24) ? fmt(change24) : '--'}% (24h)
             </p>
           </div>
         </div>
