@@ -16,7 +16,6 @@ const DataContext = createContext(null);
 // ---------- Utils ----------
 const ensureArray = (v) => (Array.isArray(v) ? v : []);
 const nowMs = () => Date.now();
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 // Fallback de pares conocidos (si el admin aún no los cargó)
 const DEFAULT_BINANCE_MAP = {
@@ -32,8 +31,8 @@ const TICK_MS = 1200;        // ~1.2s para fluidez visual
 
 // ---------- Perfiles de dificultad (solo simulated/manual) ----------
 const DIFFICULTY_PROFILES = {
-  easy:         { volMult: 0.45, meanRevK:  0.18, jumpProb: 0.001, jumpBps:  25 },
-  intermediate: { volMult: 1.00, meanRevK:  0.06, jumpProb: 0.003, jumpBps:  80 },
+  easy:         { volMult: 0.45, meanRevK:  0.18, jumpProb: 0.001, jumpBps: 25 },
+  intermediate: { volMult: 1.00, meanRevK:  0.06, jumpProb: 0.003, jumpBps: 80 },
   nervous:      { volMult: 2.20, meanRevK: -0.04, jumpProb: 0.012, jumpBps: 200 },
 };
 const getProfile = (difficulty) =>
@@ -41,11 +40,10 @@ const getProfile = (difficulty) =>
   DIFFICULTY_PROFILES.intermediate;
 
 // ---------- Reglas por hora UTC ----------
-const inWindowUTC = (hour, start, end) => {
-  return (start < end && hour >= start && hour < end) ||
-         (start > end && (hour >= start || hour < end)) ||
-         (start === end);
-};
+const inWindowUTC = (hour, start, end) =>
+  (start < end && hour >= start && hour < end) ||
+  (start > end && (hour >= start || hour < end)) ||
+  (start === end); // 24h
 
 const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
   if (!basePrice) return basePrice;
@@ -69,67 +67,6 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
   return price;
 };
 
-// ---------- PRNG determinístico por símbolo/tiempo ----------
-const hash32 = (str) => {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < String(str).length; i++) {
-    h ^= String(str).charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-};
-const mulberry32 = (a) => {
-  return function() {
-    let t = (a += 0x6D2B79F5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-};
-/**
- * Generador de precio sintético determinístico (igual para todos)
- * - Depende de: símbolo, dificultad, vol en bps, y el bucket temporal (tIdx).
- * - Produce movimientos suaves + algo de “ruido normal-like” + saltos ocasionales.
- * - No usa estado previo, por lo que abrir más tarde no desincroniza.
- */
-function synthPriceAt(sym, inst, tMs) {
-  const profile = getProfile(inst.difficulty);
-  const volBpsRaw = Math.max(1, Number(inst.volatility_bps ?? 50));
-  const vol = (volBpsRaw * profile.volMult) / 10000; // -> proporción
-  const base0 = Number(inst.base_price ?? 1) || 1;
-  const decimals = Number.isFinite(Number(inst.decimals)) ? Number(inst.decimals) : 2;
-
-  // Bucket de tiempo (todos los clientes comparten este índice)
-  const tIdx = Math.floor(tMs / TICK_MS);
-
-  // PRNG seed estable por símbolo + tiempo + dificultad/vol
-  const seed =
-    (hash32(sym) ^ (tIdx * 374761393)) ^
-    (hash32(String(inst.difficulty || 'intermediate')) << 1) ^
-    (volBpsRaw << 2);
-
-  const rnd = mulberry32(seed);
-  // ruido aprox normal (suma de 3 uniformes - 1.5 a +1.5 -> centrado en 0)
-  const u = (rnd() - 0.5) + (rnd() - 0.5) + (rnd() - 0.5);
-
-  // drift suave senoidal (periodo ~ 70 ticks) para no ser totalmente errático
-  const phase = (hash32(sym) % 360) * (Math.PI / 180);
-  const drift = Math.sin((tIdx / 70) + phase) * 0.5; // [-0.5, 0.5]
-  const driftK = profile.meanRevK; // lo usamos como “peso” de drift
-
-  // saltos ocasionales determinísticos
-  const jump = (rnd() < profile.jumpProb)
-    ? ((rnd() - 0.5) * (profile.jumpBps / 10000))
-    : 0;
-
-  const pct = (vol * u) + (driftK * drift) + jump;
-
-  let next = base0 * (1 + pct);
-  // Evitar ir a 0 o negativo si reglas/jumps extremos
-  next = Math.max(1e-8, next);
-  return Number(next.toFixed(decimals));
-}
-
 export function DataProvider({ children }) {
   const { user } = useAuth();
 
@@ -140,33 +77,11 @@ export function DataProvider({ children }) {
   const [botActivations, setBotActivations] = useState([]);
 
   // ---------- Mercado (admin) ----------
-  /**
-   * market_instruments (ejemplo):
-   * - symbol (TEXT, PK lógica UX)
-   * - enabled (BOOL)
-   * - source ('binance' | 'simulated' | 'manual')
-   * - binance_symbol (TEXT)   // ej: 'SOLUSDT'
-   * - base_price (NUMERIC)    // si manual/simulated
-   * - decimals (INT)
-   * - quote (TEXT)            // 'USDT' | 'USDC'
-   * - volatility_bps (INT)    // simulated/manual
-   * - difficulty (TEXT)       // 'easy'|'intermediate'|'nervous'
-   */
   const [instruments, setInstruments] = useState([]);
-
-  /**
-   * market_rules (activas):
-   * - symbol (TEXT)
-   * - active (BOOL)
-   * - type ('percent'|'abs')
-   * - value (NUMERIC)
-   * - start_hour (INT 0..23)
-   * - end_hour   (INT 0..23)
-   */
   const [marketRules, setMarketRules] = useState([]);
 
   // ---------- Precios ----------
-  // Último precio crudo (binance live + seed inicial para otros)
+  // Último precio crudo (ya sea live, simulated o manual)
   const [realQuotes, setRealQuotes] = useState({
     USDT: { price: 1, change: 0 },
     USDC: { price: 1, change: 0 },
@@ -183,6 +98,9 @@ export function DataProvider({ children }) {
 
   // Refs
   const wsRef = useRef(null);
+  const wsAliveRef = useRef(false);
+  const restPollRef = useRef(null);
+  const simIntervalsRef = useRef({});
   const lastTickRef = useRef(0);
 
   // ---------- Fetch + realtime instrumentos/reglas ----------
@@ -229,23 +147,70 @@ export function DataProvider({ children }) {
       if (!enabled || src !== 'binance') return;
       if (i.binance_symbol) map[i.symbol] = i.binance_symbol;
     });
-    return map; // { BTC:'BTCUSDT', BNB:'BNBUSDT', ...}
+    return map;
   }, [instruments]);
 
-  // ---------- Inicializa REST/WS para BINANCE ----------
+  // Helper para arrancar/limpiar REST polling
+  const startRestPolling = (entries) => {
+    clearInterval(restPollRef.current);
+    if (!entries.length) return;
+
+    const poll = async () => {
+      try {
+        const results = await Promise.all(
+          entries.map(async ([sym, pair]) => {
+            const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`;
+            const res = await fetch(url);
+            const j = await res.json();
+            const price  = Number(j.lastPrice ?? j.c ?? 0);
+            const change = Number(j.priceChangePercent ?? j.P ?? 0);
+            return [sym, { price, change }];
+          })
+        );
+        setRealQuotes((prev) => {
+          const next = { ...prev };
+          for (const [sym, val] of results) {
+            if (Number.isFinite(val.price) && val.price > 0) {
+              next[sym] = val;
+            }
+          }
+          return next;
+        });
+      } catch (e) {
+        // silencioso; reintenta en el próximo tick
+      }
+    };
+
+    poll(); // primer seed
+    restPollRef.current = setInterval(poll, 5000);
+  };
+
+  // ---------- Inicializa REST/WS para live + simuladores para simulated/manual ----------
   useEffect(() => {
     let alive = true;
 
     const teardown = () => {
+      // WS
       try { wsRef.current?.close(); } catch (_) {}
       wsRef.current = null;
+      wsAliveRef.current = false;
+
+      // REST poll
+      clearInterval(restPollRef.current);
+      restPollRef.current = null;
+
+      // simuladores
+      const ints = simIntervalsRef.current || {};
+      Object.values(ints).forEach(clearInterval);
+      simIntervalsRef.current = {};
     };
 
     const init = async () => {
       teardown();
 
-      // Seed REST
       const liveEntries = Object.entries(liveBinanceMap);
+
+      // Seed inicial por REST (para que el tablero no arranque en 0/1)
       if (liveEntries.length) {
         try {
           const results = await Promise.all(
@@ -253,16 +218,20 @@ export function DataProvider({ children }) {
               const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`;
               const res = await fetch(url);
               const j = await res.json();
-              const price = Number(j.lastPrice ?? j.c ?? 0) || 0;
-              const change = Number(j.priceChangePercent ?? j.P ?? 0) || 0;
+              const price  = Number(j.lastPrice ?? j.c ?? 0);
+              const change = Number(j.priceChangePercent ?? j.P ?? 0);
               return [sym, { price, change }];
             })
           );
           if (!alive) return;
 
           setRealQuotes((prev) => {
-            const next = { ...prev, USDT: { price: 1, change: 0 }, USDC: { price: 1, change: 0 } };
-            for (const [sym, val] of results) next[sym] = val;
+            const next = { ...prev };
+            for (const [sym, val] of results) {
+              if (Number.isFinite(val.price) && val.price > 0) {
+                next[sym] = val;
+              }
+            }
             return next;
           });
 
@@ -270,7 +239,7 @@ export function DataProvider({ children }) {
           setPriceHistories((prev) => {
             const next = { ...prev };
             for (const [sym, val] of results) {
-              const seed = prev[sym]?.length ? prev[sym] : [{ time: t0, value: val.price || Number(instruments.find(i=>i.symbol===sym)?.base_price ?? 0) || 1 }];
+              const seed = prev[sym]?.length ? prev[sym] : [{ time: t0, value: val.price }];
               next[sym] = seed.slice(-HISTORY_MAX);
             }
             next.USDT = next.USDT ?? [{ time: t0, value: 1 }];
@@ -278,42 +247,105 @@ export function DataProvider({ children }) {
             return next;
           });
         } catch (e) {
-          console.warn('[Binance REST seed] error:', e?.message || e);
+          // si falla, seguimos con polling abajo
         }
       }
 
-      // WS live
+      // WS live (si falla, usamos REST polling)
       if (liveEntries.length) {
-        const streams = liveEntries
-          .map(([, pair]) => `${String(pair).toLowerCase()}@miniTicker`)
-          .join('/');
+        try {
+          const streams = liveEntries
+            .map(([, pair]) => `${String(pair).toLowerCase()}@miniTicker`)
+            .join('/');
 
-        const ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
-        wsRef.current = ws;
+          const ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
+          wsRef.current = ws;
 
-        ws.onmessage = (evt) => {
-          try {
-            const payload = JSON.parse(evt.data);
-            const t = payload?.data;
-            const pair = t?.s;
-            if (!pair) return;
+          ws.onopen = () => {
+            wsAliveRef.current = true;
+            // si el WS abre, no hace falta el polling cada 5s
+            clearInterval(restPollRef.current);
+            restPollRef.current = null;
+          };
 
-            const sym = Object.keys(liveBinanceMap).find((k) => liveBinanceMap[k] === pair);
-            if (!sym) return;
+          ws.onmessage = (evt) => {
+            try {
+              const payload = JSON.parse(evt.data);
+              const t = payload?.data;
+              const pair = t?.s;
+              if (!pair) return;
 
-            const price = Number(t?.c) || 0;
-            const change = Number(t?.P ?? 0) || 0;
-            if (!price) return; // no pisar con 0
-            setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
-          } catch (e) {
-            console.warn('[Binance WS parse] error:', e?.message || e);
-          }
-        };
+              const sym = Object.keys(liveBinanceMap).find((k) => liveBinanceMap[k] === pair);
+              if (!sym) return;
 
-        ws.onerror = () => {
-          try { ws.close(); } catch (_) {}
-        };
+              const price = Number(t?.c);
+              const change = Number(t?.P ?? 0);
+              if (!Number.isFinite(price) || price <= 0) return;
+
+              setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
+            } catch {}
+          };
+
+          ws.onerror = () => {
+            try { ws.close(); } catch (_) {}
+          };
+
+          ws.onclose = () => {
+            wsAliveRef.current = false;
+            // fallback: REST polling
+            startRestPolling(liveEntries);
+          };
+        } catch {
+          // si crear el WS falla, arrancamos polling
+          startRestPolling(liveEntries);
+        }
       }
+
+      // -------- Simuladores para SIMULATED y MANUAL (animación) --------
+      const simLike = instruments.filter(
+        (i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase())
+      );
+
+      simLike.forEach((i) => {
+        const sym = i.symbol;
+        const profile = getProfile(i.difficulty);
+        const volBps = Math.max(1, Number(i.volatility_bps ?? 50)) * profile.volMult;
+        const decimals = Number(i.decimals ?? 2);
+        const base0 = Number(i.base_price ?? 1);
+
+        // ancla para mean reversion
+        let anchor = base0;
+
+        // seeds si hacía falta
+        setRealQuotes((prev) => (prev[sym]?.price ? prev : { ...prev, [sym]: { price: base0 } }));
+        setPriceHistories((prev) => (prev[sym]?.length ? prev : { ...prev, [sym]: [{ time: nowMs(), value: base0 }] }));
+
+        const iv = setInterval(() => {
+          setRealQuotes((prev) => {
+            const last = Number(prev[sym]?.price ?? base0);
+
+            const u = (Math.random() - 0.5) + (Math.random() - 0.5) + (Math.random() - 0.5);
+            const pctRW = (volBps / 10000) * u;
+
+            const mr = profile.meanRevK * ((anchor - last) / Math.max(1e-9, anchor));
+
+            let jump = 0;
+            if (Math.random() < profile.jumpProb) {
+              const dir = Math.random() < 0.5 ? -1 : 1;
+              jump = dir * (profile.jumpBps / 10000);
+            }
+
+            let next = last * (1 + pctRW + mr + jump);
+            next = Number(next.toFixed(Number.isFinite(decimals) ? decimals : 2));
+
+            // actualiza ancla (EMA)
+            anchor = 0.995 * anchor + 0.005 * next;
+
+            return { ...prev, [sym]: { ...(prev[sym] || {}), price: next } };
+          });
+        }, Math.max(800, TICK_MS));
+        simIntervalsRef.current[sym] = iv;
+      });
     };
 
     init();
@@ -321,13 +353,14 @@ export function DataProvider({ children }) {
       alive = false;
       teardown();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instruments, liveBinanceMap]);
 
   // ---------- Consolidación final + histories cada ~1.2s ----------
   useEffect(() => {
     const tick = () => {
       const t = nowMs();
-      if (t - lastTickRef.current < TICK_MS * 0.6) return; // anti-spam
+      if (t - lastTickRef.current < TICK_MS * 0.6) return;
       lastTickRef.current = t;
 
       // Símbolos visibles: enabled + live + estables
@@ -343,39 +376,51 @@ export function DataProvider({ children }) {
       for (const sym of symbolsSet) {
         const inst = instruments.find((i) => i.symbol === sym);
         const src = String(inst?.source || '').toLowerCase();
-        const decimals = Number.isFinite(Number(inst?.decimals)) ? Number(inst.decimals) : 2;
+        const decimals = Number(inst?.decimals ?? 2);
 
-        // 1) Base: binance -> feed; simulated/manual -> precio sintético determinístico
+        // último valor conocido (del history) para no “caer a 1”
+        const lastKnown =
+          ensureArray(nextHist[sym]).length
+            ? ensureArray(nextHist[sym])[ensureArray(nextHist[sym]).length - 1].value
+            : undefined;
+
+        // base:
+        // - binance: SOLO realQuotes; si no hay dato, mantenemos lastKnown (no usamos base_price)
+        // - manual: price animado (realQuotes[sym].price) o base_price si aún no arrancó
+        // - simulated: price animado en realQuotes
         let base = 0;
-
-        if (sym === 'USDT' || sym === 'USDC') {
-          base = 1;
-        } else if (src === 'binance') {
+        if (src === 'binance') {
+          base = Number(realQuotes?.[sym]?.price ?? NaN);
+          if (!Number.isFinite(base) || base <= 0) {
+            base = Number.isFinite(lastKnown) ? Number(lastKnown) : 0;
+          }
+        } else if (src === 'manual') {
+          base = Number(realQuotes?.[sym]?.price ?? inst?.base_price ?? 0);
+        } else {
+          // simulated u otros
           base = Number(realQuotes?.[sym]?.price ?? 0);
-          if (!base) base = Number(inst?.base_price ?? 0) || 0; // fallback a base_price si no hay feed
-        } else if (inst) {
-          // simulated / manual con animación determinística (igual para todos)
-          base = synthPriceAt(sym, inst, t);
+          if (!base && inst) base = Number(inst.base_price ?? 0);
         }
 
-        // 2) Aplicar reglas del admin (percent/abs por hora UTC)
-        let finalPrice = (sym === 'USDT' || sym === 'USDC')
-          ? 1
-          : applyRulesForSymbol(sym, base, marketRules, new Date());
+        // reglas
+        let finalPrice =
+          (sym === 'USDT' || sym === 'USDC')
+            ? 1
+            : applyRulesForSymbol(sym, base, marketRules, new Date());
 
-        // 3) Normaliza y evita 0/NaN
-        if (!Number.isFinite(finalPrice) || finalPrice <= 0) {
-          // fallback a último historial o base_price
-          const prevH = ensureArray(nextHist[sym]);
-          const last = prevH.length ? prevH[prevH.length - 1].value : Number(inst?.base_price ?? 1) || 1;
-          finalPrice = last;
+        // si todavía no tenemos nada, intenta conservar el último
+        if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
+          finalPrice = lastKnown;
         }
-        finalPrice = Number(finalPrice.toFixed(decimals));
 
-        // 4) change %
+        // normaliza
+        finalPrice = Number(
+          (Number.isFinite(finalPrice) ? finalPrice : 0).toFixed(Number.isFinite(decimals) ? decimals : 2)
+        );
+
+        // change %:
         let changePct = 0;
         if (src === 'binance' && realQuotes?.[sym]?.change != null) {
-          // para binance usamos el % del feed (aunque reglas muevan el precio)
           changePct = Number(realQuotes[sym].change || 0);
         } else {
           const h = ensureArray(nextHist[sym]);
@@ -383,18 +428,12 @@ export function DataProvider({ children }) {
           if (ref) changePct = ((finalPrice - ref) / ref) * 100;
         }
 
-        // 5) history
+        // history
         const prevH = ensureArray(nextHist[sym]);
-        const lastPoint = prevH.length ? prevH[prevH.length - 1] : null;
-        // Evitar duplicar puntos idénticos en el mismo ms
-        if (!lastPoint || lastPoint.value !== finalPrice) {
-          const newH = [...prevH, { time: t, value: finalPrice }].slice(-HISTORY_MAX);
-          nextHist[sym] = newH;
-        } else {
-          nextHist[sym] = prevH.slice(-HISTORY_MAX);
-        }
+        const newH = [...prevH, { time: t, value: finalPrice }].slice(-HISTORY_MAX);
+        nextHist[sym] = newH;
 
-        nextPrices[sym] = { price: finalPrice, change: changePct, history: nextHist[sym] };
+        nextPrices[sym] = { price: finalPrice, change: changePct, history: newH };
       }
 
       setPriceHistories(nextHist);
@@ -402,10 +441,10 @@ export function DataProvider({ children }) {
     };
 
     const id = setInterval(tick, TICK_MS);
-    tick(); // primera
+    tick();
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instruments, marketRules, realQuotes, liveBinanceMap, priceHistories]);
+  }, [instruments, marketRules, realQuotes]);
 
   // ---------- Planes (státicos) ----------
   const investmentPlans = useMemo(
@@ -590,9 +629,7 @@ export function DataProvider({ children }) {
   }, [user?.id]);
 
   // ---------- Mutaciones ----------
-  async function addInvestment({
-    planName, amount, dailyReturn, duration, currency = 'USDC',
-  }) {
+  async function addInvestment({ planName, amount, dailyReturn, duration, currency = 'USDC' }) {
     if (!user?.id) return null;
     const payload = {
       user_id: user.id,
@@ -633,13 +670,8 @@ export function DataProvider({ children }) {
   }
 
   async function addTransaction({
-    amount,
-    type,
-    currency = 'USDC',
-    description = '',
-    referenceType = null,
-    referenceId = null,
-    status = 'completed',
+    amount, type, currency = 'USDC', description = '',
+    referenceType = null, referenceId = null, status = 'completed',
   }) {
     if (!user?.id) return null;
 
@@ -685,7 +717,7 @@ export function DataProvider({ children }) {
     };
   }
 
-  // ---------- RPC de Bots ----------
+  // ---------- RPC de Bots (restauradas) ----------
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
@@ -696,75 +728,16 @@ export function DataProvider({ children }) {
         p_strategy: strategy,
         p_amount_usd: Number(amountUsd),
       });
-      if (error) {
-        console.warn('[activateBot] RPC error:', error?.message || error);
-        return { ok: false, code: 'RPC_ERROR', error };
-      }
+      if (error) return { ok: false, code: 'RPC_ERROR', error };
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
       return data ?? { ok: true };
     } catch (e) {
-      console.warn('[activateBot] RPC not available:', e?.message || e);
       return { ok: false, code: 'RPC_NOT_FOUND' };
     }
   }
-
-  async function pauseBot(activationId) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    try {
-      const { data, error } = await supabase.rpc('pause_trading_bot', {
-        p_activation_id: activationId,
-        p_user_id: user.id,
-      });
-      if (error) {
-        console.warn('[pauseBot] RPC error:', error?.message || error);
-        return { ok: false, code: 'RPC_ERROR', error };
-      }
-      await refreshBotActivations();
-      return data ?? { ok: true };
-    } catch (e) {
-      console.warn('[pauseBot] RPC not available:', e?.message || e);
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
-
-  async function resumeBot(activationId) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    try {
-      const { data, error } = await supabase.rpc('resume_trading_bot', {
-        p_activation_id: activationId,
-        p_user_id: user.id,
-      });
-      if (error) {
-        console.warn('[resumeBot] RPC error:', error?.message || error);
-        return { ok: false, code: 'RPC_ERROR', error };
-      }
-      await refreshBotActivations();
-      return data ?? { ok: true };
-    } catch (e) {
-      console.warn('[resumeBot] RPC not available:', e?.message || e);
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
-
-  async function cancelBot(activationId) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    try {
-      const { data, error } = await supabase.rpc('cancel_trading_bot', {
-        p_activation_id: activationId,
-        p_user_id: user.id,
-      });
-      if (error) {
-        console.warn('[cancelBot] RPC error:', error?.message || error);
-        return { ok: false, code: 'RPC_ERROR', error };
-      }
-      await refreshBotActivations();
-      return data ?? { ok: true };
-    } catch (e) {
-      console.warn('[cancelBot] RPC not available:', e?.message || e);
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
-
+  async function pauseBot(activationId)  { /* igual que antes */ return resumeLike('pause_trading_bot', activationId); }
+  async function resumeBot(activationId) { /* igual que antes */ return resumeLike('resume_trading_bot', activationId); }
+  async function cancelBot(activationId) { /* igual que antes */ return resumeLike('cancel_trading_bot', activationId); }
   async function creditBotProfit(activationId, amountUsd, note = null) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
@@ -774,14 +747,23 @@ export function DataProvider({ children }) {
         p_amount_usd: Number(amountUsd),
         p_note: note,
       });
-      if (error) {
-        console.warn('[creditBotProfit] RPC error:', error?.message || error);
-        return { ok: false, code: 'RPC_ERROR', error };
-      }
+      if (error) return { ok: false, code: 'RPC_ERROR', error };
       await refreshTransactions();
       return data ?? { ok: true };
     } catch (e) {
-      console.warn('[creditBotProfit] RPC not available:', e?.message || e);
+      return { ok: false, code: 'RPC_NOT_FOUND' };
+    }
+  }
+  async function resumeLike(fn, activationId) {
+    try {
+      const { data, error } = await supabase.rpc(fn, {
+        p_activation_id: activationId,
+        p_user_id: user?.id,
+      });
+      if (error) return { ok: false, code: 'RPC_ERROR', error };
+      await refreshBotActivations();
+      return data ?? { ok: true };
+    } catch (e) {
       return { ok: false, code: 'RPC_NOT_FOUND' };
     }
   }
@@ -799,11 +781,7 @@ export function DataProvider({ children }) {
   // ---------- API pública ----------
   const value = useMemo(
     () => ({
-      // negocio
-      investments,
-      transactions,
-      referrals,
-      botActivations,
+      investments, transactions, referrals, botActivations,
       getInvestments: () => investments,
       getTransactions: () => transactions,
       getReferrals: () => referrals,
@@ -813,7 +791,6 @@ export function DataProvider({ children }) {
       addInvestment,
       addTransaction,
 
-      // bots (RPC reales)
       refreshBotActivations,
       activateBot,
       pauseBot,
@@ -821,17 +798,15 @@ export function DataProvider({ children }) {
       cancelBot,
       creditBotProfit,
 
-      // mercado
       instruments,
       marketRules,
       refreshMarketInstruments,
       refreshMarketRules,
       forceRefreshMarket,
 
-      // precios/pares para Trading
-      cryptoPrices,            // {SYM: {price, change, history[]}}
-      pairOptions,             // ['BTC/USDT','ETH/USDT','MIKO/USDT', ...]
-      assetToSymbol: liveBinanceMap, // mapa símbolo->par Binance
+      cryptoPrices,            // {SYM: {price, change, history}}
+      pairOptions,             // ['BTC/USDT', ...]
+      assetToSymbol: liveBinanceMap,
 
       investmentPlans,
     }),
