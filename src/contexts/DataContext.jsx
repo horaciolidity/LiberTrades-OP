@@ -79,19 +79,16 @@ export function DataProvider({ children }) {
   const [marketRules, setMarketRules] = useState([]);
 
   // ---------- Precios / Historias ----------
-  // Último precio “crudo” por símbolo (venga de Binance o de servidor)
   const [realQuotes, setRealQuotes] = useState({
     USDT: { price: 1, change: 0 },
     USDC: { price: 1, change: 0 },
   });
 
-  // Historial por símbolo -> para graficar
   const [priceHistories, setPriceHistories] = useState({
     USDT: [{ time: nowMs(), value: 1 }],
     USDC: [{ time: nowMs(), value: 1 }],
   });
 
-  // Consolidado para UI
   const [cryptoPrices, setCryptoPrices] = useState({});
 
   // ---------- Refs / conexiones ----------
@@ -99,6 +96,18 @@ export function DataProvider({ children }) {
   const wsAliveRef = useRef(false);
   const restPollRef = useRef(null);
   const lastTickRef = useRef(0);
+
+  // refs para evitar rehacer intervalos
+  const instrumentsRef = useRef([]);
+  const rulesRef = useRef([]);
+  const quotesRef = useRef({});
+  const histRef = useRef({});
+  const liveMapRef = useRef({});
+
+  useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
+  useEffect(() => { rulesRef.current = marketRules; }, [marketRules]);
+  useEffect(() => { quotesRef.current = realQuotes; }, [realQuotes]);
+  useEffect(() => { histRef.current = priceHistories; }, [priceHistories]);
 
   // ---------- Fetch + realtime instrumentos/reglas ----------
   const refreshMarketInstruments = async () => {
@@ -129,21 +138,20 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'market_instruments' }, () => refreshMarketInstruments())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'market_rules' }, () => refreshMarketRules())
       .subscribe();
-    return () => {
-      try { supabase.removeChannel(ch); } catch (_) {}
-    };
+    return () => { try { supabase.removeChannel(ch); } catch (_) {} };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---------- Mapa dinámico a Binance (solo enabled & source=binance) ----------
   const liveBinanceMap = useMemo(() => {
-    const map = { ...DEFAULT_BINANCE_MAP }; // fallback
+    const map = { ...DEFAULT_BINANCE_MAP };
     instruments.forEach((i) => {
       const enabled = (i.enabled ?? true) === true;
       const src = String(i.source || '').toLowerCase();
       if (!enabled || src !== 'binance') return;
       if (i.binance_symbol) map[i.symbol] = i.binance_symbol;
     });
+    liveMapRef.current = map;
     return map; // { BTC:'BTCUSDT', ... }
   }, [instruments]);
 
@@ -167,9 +175,7 @@ export function DataProvider({ children }) {
         setRealQuotes((prev) => {
           const next = { ...prev };
           for (const [sym, val] of results) {
-            if (Number.isFinite(val.price) && val.price > 0) {
-              next[sym] = val;
-            }
+            if (Number.isFinite(val.price) && val.price > 0) next[sym] = val;
           }
           return next;
         });
@@ -234,7 +240,7 @@ export function DataProvider({ children }) {
             return next;
           });
         } catch {
-          // si falla, el polling de abajo lo corrige
+          // polling de abajo lo corrige
         }
       }
 
@@ -249,7 +255,7 @@ export function DataProvider({ children }) {
 
           ws.onopen = () => {
             wsAliveRef.current = true;
-            clearInterval(restPollRef.current); // si WS abre, no hace falta polling
+            clearInterval(restPollRef.current);
             restPollRef.current = null;
           };
 
@@ -260,7 +266,7 @@ export function DataProvider({ children }) {
               const pair = t?.s;
               if (!pair) return;
 
-              const sym = Object.keys(liveBinanceMap).find((k) => liveBinanceMap[k] === pair);
+              const sym = Object.keys(liveMapRef.current).find((k) => liveMapRef.current[k] === pair);
               if (!sym) return;
 
               const price = Number(t?.c);
@@ -288,7 +294,7 @@ export function DataProvider({ children }) {
 
   // ---------- PRO: Simuladas/Manual desde servidor (Realtime + RPC) ----------
   useEffect(() => {
-    // 1) Suscripción a market_state: cualquier cambio lo reflejamos en memoria y en history
+    // 1) Suscripción a market_state
     const onStateChange = (payload) => {
       const row = payload.new;
       if (!row) return;
@@ -313,15 +319,17 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Driver: avanzamos el reloj del servidor con una RPC por símbolo en round-robin
+    // 2) Driver: avanzamos el reloj del servidor con RPC por símbolo (round-robin)
     const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
       .map((i) => i.symbol);
 
-    // Seed inicial para que existan filas en market_state
-    simSyms.forEach((sym) => {
-      supabase.rpc('next_simulated_tick', { p_symbol: sym }).catch(() => {});
-    });
+    // Seed inicial para asegurar filas en market_state (sin .catch)
+    (async () => {
+      for (const sym of simSyms) {
+        try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
+      }
+    })();
 
     let alive = true;
     let idx = 0;
@@ -329,11 +337,7 @@ export function DataProvider({ children }) {
       if (!alive || simSyms.length === 0) return;
       const sym = simSyms[idx % simSyms.length];
       idx++;
-      try {
-        await supabase.rpc('next_simulated_tick', { p_symbol: sym });
-      } catch {
-        // silencioso; reintenta en el próximo tick
-      }
+      try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
     };
 
     const id = setInterval(drive, TICK_MS);
@@ -352,43 +356,42 @@ export function DataProvider({ children }) {
       if (t - lastTickRef.current < TICK_MS * 0.6) return;
       lastTickRef.current = t;
 
-      const enabledSyms = instruments
-        .filter((i) => (i.enabled ?? true))
-        .map((i) => i.symbol);
-      const liveSyms = Object.keys(liveBinanceMap);
+      const instrumentsCur = instrumentsRef.current;
+      const rulesCur = rulesRef.current;
+      const quotesCur = quotesRef.current;
+      const histCur = histRef.current;
+      const liveMapCur = liveMapRef.current;
+
+      const enabledSyms = instrumentsCur.filter((i) => (i.enabled ?? true)).map((i) => i.symbol);
+      const liveSyms = Object.keys(liveMapCur);
       const symbolsSet = new Set([...enabledSyms, ...liveSyms, 'USDT', 'USDC']);
 
-      const nextHist = { ...priceHistories };
+      const nextHist = { ...histCur };
       const nextPrices = {};
 
       for (const sym of symbolsSet) {
-        const inst = instruments.find((i) => i.symbol === sym);
+        const inst = instrumentsCur.find((i) => i.symbol === sym);
         const src = String(inst?.source || '').toLowerCase();
         const decimals = Number(inst?.decimals ?? 2);
 
-        // último valor conocido para evitar “caer” a 0/1 si hay hueco
         const prevH = ensureArray(nextHist[sym]);
         const lastKnown = prevH.length ? prevH[prevH.length - 1].value : undefined;
 
-        // base:
-        // - binance: solo realQuotes; si no hay valor, usa lastKnown
-        // - manual/simulated: realQuotes (viene del servidor) o base_price si aún no sembró
         let base = 0;
         if (src === 'binance') {
-          base = Number(realQuotes?.[sym]?.price ?? NaN);
+          base = Number(quotesCur?.[sym]?.price ?? NaN);
           if (!Number.isFinite(base) || base <= 0) base = Number.isFinite(lastKnown) ? lastKnown : 0;
         } else if (src === 'manual' || src === 'simulated') {
-          base = Number(realQuotes?.[sym]?.price ?? inst?.base_price ?? 0);
+          base = Number(quotesCur?.[sym]?.price ?? inst?.base_price ?? 0);
         } else {
-          base = Number(realQuotes?.[sym]?.price ?? 0);
+          base = Number(quotesCur?.[sym]?.price ?? 0);
           if (!base && inst) base = Number(inst.base_price ?? 0);
         }
 
-        // reglas (no aplican a USDT/USDC)
         let finalPrice =
           (sym === 'USDT' || sym === 'USDC')
             ? 1
-            : applyRulesForSymbol(sym, base, marketRules, new Date());
+            : applyRulesForSymbol(sym, base, rulesCur, new Date());
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
           finalPrice = lastKnown;
@@ -398,13 +401,11 @@ export function DataProvider({ children }) {
           (Number.isFinite(finalPrice) ? finalPrice : 0).toFixed(Number.isFinite(decimals) ? decimals : 2)
         );
 
-        // change %
         let changePct = 0;
-        if (src === 'binance' && realQuotes?.[sym]?.change != null) {
-          changePct = Number(realQuotes[sym].change || 0);
+        if (src === 'binance' && quotesCur?.[sym]?.change != null) {
+          changePct = Number(quotesCur[sym].change || 0);
         } else {
-          const h = ensureArray(nextHist[sym]);
-          const ref = h?.[0]?.value ?? finalPrice;
+          const ref = prevH?.[0]?.value ?? finalPrice;
           if (ref) changePct = ((finalPrice - ref) / ref) * 100;
         }
 
@@ -420,7 +421,7 @@ export function DataProvider({ children }) {
     const id = setInterval(tick, TICK_MS);
     tick();
     return () => clearInterval(id);
-  }, [instruments, marketRules, realQuotes, priceHistories, liveBinanceMap]);
+  }, []); // usamos refs, así no recreamos el intervalo
 
   // ---------- Planes (estáticos) ----------
   const investmentPlans = useMemo(
