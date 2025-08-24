@@ -32,13 +32,18 @@ const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toFixed(dec)
 const pct = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(2) : '0.00');
 
 const DEFAULT_KEYS = [
+  // PLANES
   'plans.default_daily_return_pct',
   'plans.withdraw_fee_pct',
+  // BOTS
   'bots.profit_share_pct',
+  // REFERIDOS
   'referrals.level1_pct',
   'referrals.level2_pct',
+  // PROYECTOS TOKENIZADOS
   'projects.issuance_fee_pct',
   'projects.secondary_market_fee_pct',
+  // TRADING
   'trading.slippage_pct_max',
 ];
 
@@ -81,24 +86,24 @@ export default function AdminDashboard() {
   const [selectedSymbol, setSelectedSymbol] = useState('');
   const [rules, setRules] = useState([]);
 
-  // forms
+  // forms (UI puede tener más campos que tu DB; sólo enviaremos a la DB los válidos)
   const [instForm, setInstForm] = useState({
     symbol: '',
     name: '',
-    source: 'binance',
-    binance_symbol: '',
-    quote: 'USDT',
-    base_price: '',
+    source: 'binance',               // binance | simulated | manual | real
+    binance_symbol: '',              // usado por otras vistas; no existe en DB
+    quote: 'USDT',                   // idem
+    base_price: '',                  // si manual/simulated
     decimals: 2,
-    volatility_bps: 50,
-    difficulty: 'intermediate',
+    volatility_bps: 50,              // UI en bps; DB guarda decimal
+    difficulty: 'intermediate',      // easy | intermediate | nervous
     enabled: true,
   });
 
   const [ruleForm, setRuleForm] = useState({
     start_hour: 9,
     end_hour: 12,
-    type: 'percent',
+    type: 'percent', // 'percent' | 'abs'
     value: 5,
     label: 'Sube en la mañana',
     active: true,
@@ -121,13 +126,18 @@ export default function AdminDashboard() {
   };
 
   const BOUNDS = {
+    // PLANES
     'plans.default_daily_return_pct': [0, 10],
     'plans.withdraw_fee_pct': [0, 20],
+    // BOTS
     'bots.profit_share_pct': [0, 100],
+    // REFERIDOS
     'referrals.level1_pct': [0, 100],
     'referrals.level2_pct': [0, 100],
+    // PROYECTOS
     'projects.issuance_fee_pct': [0, 10],
     'projects.secondary_market_fee_pct': [0, 10],
+    // TRADING
     'trading.slippage_pct_max': [0, 5],
   };
 
@@ -152,12 +162,13 @@ export default function AdminDashboard() {
       const { data, error } = await supabase.rpc('get_admin_settings', { prefix: null });
       if (error) throw error;
 
+      // partimos de defaults
       const map = { ...DEFAULT_VALUES };
       for (const row of (data || [])) {
         const k = row.setting_key;
         const n = parseNum(row.setting_value);
-        if (n === null) continue;
-        map[k] = n;
+        if (n === null) continue;          // ignoramos nulos/blank
+        map[k] = n;                        // sobreescribe si es válido
       }
       setSettings(map);
       setSettingsOriginal(map);
@@ -334,7 +345,136 @@ export default function AdminDashboard() {
   useEffect(() => { fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {}); }, [users, pendingDeposits, pendingWithdrawals]);
   useEffect(() => { fetchRulesForSymbol(selectedSymbol).catch(() => {}); }, [selectedSymbol]);
 
-  // ---------- métricas / balances ----------
+  // ---------- CRUD instrumentos ----------
+  const addInstrument = async () => {
+    try {
+      const payload = {
+        // SOLO columnas existentes en tu tabla:
+        symbol: (instForm.symbol || '').trim().toUpperCase(),
+        name: (instForm.name || '').trim(),
+        source: instForm.source, // texto libre en tu esquema actual
+        base_price: instForm.source === 'binance'
+          ? 0 // NOT NULL en DB: si es binance, dejamos 0 (se actualizará por feed externo)
+          : (instForm.base_price === '' ? 0 : Number(instForm.base_price)),
+        decimals: Number(instForm.decimals || 2),
+        volatility: Number(instForm.volatility_bps || 50) / 10_000, // 50 bps -> 0.005
+        difficulty: instForm.difficulty,
+        enabled: !!instForm.enabled,
+      };
+
+      if (!payload.symbol || !payload.name) {
+        toast({ title: 'Faltan datos', description: 'Símbolo y nombre son obligatorios.', variant: 'destructive' });
+        return;
+      }
+      // Si querés exigir par de Binance en modo binance (aunque no se guarda en DB)
+      if (instForm.source === 'binance' && !instForm.binance_symbol.trim()) {
+        toast({ title: 'Falta par de Binance', description: 'Ej: BTCUSDT', variant: 'destructive' });
+        return;
+      }
+
+      const { error } = await supabase.from('market_instruments').insert(payload);
+      if (error) throw error;
+
+      toast({ title: 'Cripto agregada', description: `${payload.symbol} creada.` });
+
+      // reset del form (manteniendo opciones por defecto)
+      setInstForm({
+        symbol: '',
+        name: '',
+        source: 'binance',
+        binance_symbol: '',
+        quote: 'USDT',
+        base_price: '',
+        decimals: 2,
+        volatility_bps: 50,
+        difficulty: 'intermediate',
+        enabled: true,
+      });
+
+      await fetchInstruments();
+      setSelectedSymbol(payload.symbol);
+    } catch (e) {
+      toast({ title: 'No se pudo crear', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const updateInstrument = async (symbol, patch) => {
+    try {
+      // patch debe contener SOLO columnas reales (p.ej. { enabled: true })
+      const { error } = await supabase.from('market_instruments').update(patch).eq('symbol', symbol);
+      if (error) throw error;
+      toast({ title: 'Cripto actualizada', description: symbol });
+      await fetchInstruments();
+    } catch (e) {
+      toast({ title: 'No se pudo actualizar', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const removeInstrument = async (symbol) => {
+    try {
+      await supabase.from('market_rules').delete().eq('symbol', symbol);
+      const { error } = await supabase.from('market_instruments').delete().eq('symbol', symbol);
+      if (error) throw error;
+      toast({ title: 'Cripto eliminada', description: symbol });
+      await fetchInstruments();
+      if (selectedSymbol === symbol) { setSelectedSymbol(''); setRules([]); }
+    } catch (e) {
+      toast({ title: 'No se pudo eliminar', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  // ---------- CRUD reglas ----------
+  const addRule = async () => {
+    try {
+      if (!selectedSymbol) {
+        toast({ title: 'Selecciona una cripto', variant: 'destructive' });
+        return;
+      }
+      const payload = {
+        symbol: selectedSymbol,
+        start_hour: Number(ruleForm.start_hour),
+        end_hour: Number(ruleForm.end_hour),
+        type: ruleForm.type, // 'percent' | 'abs'
+        value: Number(ruleForm.value || 0),
+        label: ruleForm.label?.trim() || null,
+        active: !!ruleForm.active,
+      };
+      if (!Number.isFinite(payload.start_hour) || !Number.isFinite(payload.end_hour) || payload.start_hour < 0 || payload.start_hour > 23 || payload.end_hour < 0 || payload.end_hour > 23) {
+        toast({ title: 'Horas inválidas', description: '0..23', variant: 'destructive' });
+        return;
+      }
+      const { error } = await supabase.from('market_rules').insert(payload);
+      if (error) throw error;
+      toast({ title: 'Regla creada', description: payload.label || `${payload.type} ${payload.value}` });
+      await fetchRulesForSymbol(selectedSymbol);
+    } catch (e) {
+      toast({ title: 'No se pudo crear la regla', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const updateRule = async (id, patch) => {
+    try {
+      const { error } = await supabase.from('market_rules').update(patch).eq('id', id);
+      if (error) throw error;
+      toast({ title: 'Regla actualizada' });
+      await fetchRulesForSymbol(selectedSymbol);
+    } catch (e) {
+      toast({ title: 'No se pudo actualizar la regla', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const removeRule = async (id) => {
+    try {
+      const { error } = await supabase.from('market_rules').delete().eq('id', id);
+      if (error) throw error;
+      toast({ title: 'Regla eliminada' });
+      await fetchRulesForSymbol(selectedSymbol);
+    } catch (e) {
+      toast({ title: 'No se pudo eliminar', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  // ---------- métricas ----------
   const maybeRefreshSelf = async (affectedUserId) => {
     if (authUser?.id && authUser.id === affectedUserId && typeof refreshBalances === 'function') {
       await refreshBalances();
@@ -360,13 +500,11 @@ export default function AdminDashboard() {
       const { error: uErr } = await supabase.from('balances').update({ usdc: newUsdc, updated_at: new Date().toISOString() }).eq('user_id', userId);
       if (uErr) throw uErr;
 
-      // Para que el histórico firme el signo correctamente:
-      // - créditos -> admin_credit (suma)
-      // - débitos  -> fee (resta en vistas y gráficos)
+      // TIPOS válidos en tu CHECK: deposit|withdrawal|plan_purchase|admin_credit|refund|fee|transfer|other
       const positive = delta >= 0;
       const insertTx = {
         user_id: userId,
-        type: positive ? 'admin_credit' : 'fee',
+        type: positive ? 'admin_credit' : 'admin_debit',
         amount: Math.abs(delta),
         status: 'completed',
         currency: 'USDC',
@@ -387,17 +525,15 @@ export default function AdminDashboard() {
 
   const approveDeposit = async (tx) => {
     try {
-      // 1) RPC principal: si no hay error, consideramos éxito y NO hacemos fallback
+      // 1) Intento vía RPC segura (si la creamos): approve_deposit_v2(p_tx_id)
       const { data: rpcData, error: rpcErr } = await supabase.rpc('approve_deposit_v2', { p_tx_id: tx.id });
-
-      if (!rpcErr) {
+      if (!rpcErr && rpcData?.ok) {
         toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
         await maybeRefreshSelf(tx.user_id);
         await reloadAll();
         return;
       }
-
-      // 2) Si la RPC no existe o falló, aplicamos fallback controlado
+      // 2) Fallback: método actual (update + balance)
       const { data: balRow, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', tx.user_id).single();
       if (gErr) throw gErr;
       const newUsdc = Number(balRow?.usdc || 0) + Number(tx.amount || 0);
@@ -483,7 +619,7 @@ export default function AdminDashboard() {
       );
       hits.forEach((r) => {
         if (r.type === 'percent') price *= 1 + Number(r.value || 0) / 100;
-        else price += Number(r.value || 0);
+        else price += Number(r.value || 0); // 'abs'
       });
       list.push({ hour: `${String(h).padStart(2, '0')}:00`, price: Number(price.toFixed(dec)) });
     }
@@ -528,7 +664,6 @@ export default function AdminDashboard() {
               label="Planes: Retorno diario (%)"
               k="plans.default_daily_return_pct"
               value={settings['plans.default_daily_return_pct']}
-              original={settingsOriginal['plans.default_daily_return_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'plans.default_daily_return_pct': v }))}
               onSave={() => saveSetting('plans.default_daily_return_pct', settings['plans.default_daily_return_pct'])}
             />
@@ -536,7 +671,6 @@ export default function AdminDashboard() {
               label="Planes: Fee de retiro (%)"
               k="plans.withdraw_fee_pct"
               value={settings['plans.withdraw_fee_pct']}
-              original={settingsOriginal['plans.withdraw_fee_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'plans.withdraw_fee_pct': v }))}
               onSave={() => saveSetting('plans.withdraw_fee_pct', settings['plans.withdraw_fee_pct'])}
             />
@@ -546,7 +680,6 @@ export default function AdminDashboard() {
               label="Bots: Profit share (%)"
               k="bots.profit_share_pct"
               value={settings['bots.profit_share_pct']}
-              original={settingsOriginal['bots.profit_share_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'bots.profit_share_pct': v }))}
               onSave={() => saveSetting('bots.profit_share_pct', settings['bots.profit_share_pct'])}
             />
@@ -556,7 +689,6 @@ export default function AdminDashboard() {
               label="Referrals: Nivel 1 (%)"
               k="referrals.level1_pct"
               value={settings['referrals.level1_pct']}
-              original={settingsOriginal['referrals.level1_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level1_pct': v }))}
               onSave={() => saveSetting('referrals.level1_pct', settings['referrals.level1_pct'])}
             />
@@ -564,7 +696,6 @@ export default function AdminDashboard() {
               label="Referrals: Nivel 2 (%)"
               k="referrals.level2_pct"
               value={settings['referrals.level2_pct']}
-              original={settingsOriginal['referrals.level2_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level2_pct': v }))}
               onSave={() => saveSetting('referrals.level2_pct', settings['referrals.level2_pct'])}
             />
@@ -574,7 +705,6 @@ export default function AdminDashboard() {
               label="Proyectos: Emisión (%)"
               k="projects.issuance_fee_pct"
               value={settings['projects.issuance_fee_pct']}
-              original={settingsOriginal['projects.issuance_fee_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'projects.issuance_fee_pct': v }))}
               onSave={() => saveSetting('projects.issuance_fee_pct', settings['projects.issuance_fee_pct'])}
             />
@@ -582,7 +712,6 @@ export default function AdminDashboard() {
               label="Proyectos: Mercado secundario (%)"
               k="projects.secondary_market_fee_pct"
               value={settings['projects.secondary_market_fee_pct']}
-              original={settingsOriginal['projects.secondary_market_fee_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'projects.secondary_market_fee_pct': v }))}
               onSave={() => saveSetting('projects.secondary_market_fee_pct', settings['projects.secondary_market_fee_pct'])}
             />
@@ -592,7 +721,6 @@ export default function AdminDashboard() {
               label="Trading: Slippage máx. (%)"
               k="trading.slippage_pct_max"
               value={settings['trading.slippage_pct_max']}
-              original={settingsOriginal['trading.slippage_pct_max']}
               onChange={(v) => setSettings((s) => ({ ...s, 'trading.slippage_pct_max': v }))}
               onSave={() => saveSetting('trading.slippage_pct_max', settings['trading.slippage_pct_max'])}
             />
@@ -633,9 +761,6 @@ export default function AdminDashboard() {
             <Settings className="h-5 w-5 mr-2 text-cyan-400" />
             Mercado (Trade): Criptomonedas y Reglas
           </CardTitle>
-          <CardDescription className="text-slate-300">
-            Administra monedas (fuente real/simulada/manual) y reglas horarias (UTC).
-          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -692,7 +817,11 @@ export default function AdminDashboard() {
                           {i.base_price ? `$${fmt(i.base_price, i.decimals)}` : '—'}
                         </td>
                         <td className="py-2 text-right text-slate-300">{i.decimals}</td>
-                        <td className="py-2 text-right text-slate-300">{i.volatility_bps ?? '—'}</td>
+                        <td className="py-2 text-right text-slate-300">
+                          {Number.isFinite(Number(i.volatility))
+                            ? Math.round(Number(i.volatility) * 10000)
+                            : '—'}
+                        </td>
                         <td className="py-2 text-slate-300">{i.difficulty || '—'}</td>
                         <td className="py-2 text-center">
                           <Button
@@ -721,10 +850,18 @@ export default function AdminDashboard() {
             <div>
               <h3 className="text-white font-semibold mb-2">Agregar cripto</h3>
               <div className="space-y-3">
-                <Input placeholder="Símbolo (BTC)" className="bg-slate-800 border-slate-600 text-white"
-                  value={instForm.symbol} onChange={(e) => setInstForm((v) => ({ ...v, symbol: e.target.value }))} />
-                <Input placeholder="Nombre (Bitcoin)" className="bg-slate-800 border-slate-600 text-white"
-                  value={instForm.name} onChange={(e) => setInstForm((v) => ({ ...v, name: e.target.value }))} />
+                <Input
+                  placeholder="Símbolo (BTC)"
+                  className="bg-slate-800 border-slate-600 text-white"
+                  value={instForm.symbol}
+                  onChange={(e) => setInstForm((v) => ({ ...v, symbol: e.target.value }))}
+                />
+                <Input
+                  placeholder="Nombre (Bitcoin)"
+                  className="bg-slate-800 border-slate-600 text-white"
+                  value={instForm.name}
+                  onChange={(e) => setInstForm((v) => ({ ...v, name: e.target.value }))}
+                />
 
                 <Select value={instForm.source} onValueChange={(val) => setInstForm((v) => ({ ...v, source: val }))}>
                   <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
@@ -739,26 +876,47 @@ export default function AdminDashboard() {
                 </Select>
 
                 {instForm.source === 'binance' && (
-                  <Input placeholder="Par Binance (BTCUSDT)" className="bg-slate-800 border-slate-600 text-white"
+                  <Input
+                    placeholder="Par Binance (BTCUSDT)"
+                    className="bg-slate-800 border-slate-600 text-white"
                     value={instForm.binance_symbol}
-                    onChange={(e) => setInstForm((v) => ({ ...v, binance_symbol: e.target.value }))} />
+                    onChange={(e) => setInstForm((v) => ({ ...v, binance_symbol: e.target.value }))}
+                  />
                 )}
 
                 <div className="grid grid-cols-2 gap-2">
-                  <Input placeholder="Quote (USDT/USDC)" className="bg-slate-800 border-slate-600 text-white"
-                    value={instForm.quote} onChange={(e) => setInstForm((v) => ({ ...v, quote: e.target.value }))} />
-                  <Input placeholder="Decimales" type="number" className="bg-slate-800 border-slate-600 text-white"
-                    value={instForm.decimals} onChange={(e) => setInstForm((v) => ({ ...v, decimals: e.target.value }))} />
+                  <Input
+                    placeholder="Quote (USDT/USDC)"
+                    className="bg-slate-800 border-slate-600 text-white"
+                    value={instForm.quote}
+                    onChange={(e) => setInstForm((v) => ({ ...v, quote: e.target.value }))}
+                  />
+                  <Input
+                    placeholder="Decimales"
+                    type="number"
+                    className="bg-slate-800 border-slate-600 text-white"
+                    value={instForm.decimals}
+                    onChange={(e) => setInstForm((v) => ({ ...v, decimals: e.target.value }))}
+                  />
                 </div>
 
                 {instForm.source !== 'binance' && (
                   <>
-                    <Input placeholder="Base price (USD)" type="number" className="bg-slate-800 border-slate-600 text-white"
-                      value={instForm.base_price} onChange={(e) => setInstForm((v) => ({ ...v, base_price: e.target.value }))} />
+                    <Input
+                      placeholder="Base price (USD)"
+                      type="number"
+                      className="bg-slate-800 border-slate-600 text-white"
+                      value={instForm.base_price}
+                      onChange={(e) => setInstForm((v) => ({ ...v, base_price: e.target.value }))}
+                    />
                     <div className="grid grid-cols-2 gap-2">
-                      <Input placeholder="Volatilidad (bps)" type="number" className="bg-slate-800 border-slate-600 text-white"
+                      <Input
+                        placeholder="Volatilidad (bps)"
+                        type="number"
+                        className="bg-slate-800 border-slate-600 text-white"
                         value={instForm.volatility_bps}
-                        onChange={(e) => setInstForm((v) => ({ ...v, volatility_bps: e.target.value }))} />
+                        onChange={(e) => setInstForm((v) => ({ ...v, volatility_bps: e.target.value }))}
+                      />
                       <Select value={instForm.difficulty} onValueChange={(val) => setInstForm((v) => ({ ...v, difficulty: val }))}>
                         <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
                           <SelectValue placeholder="Dificultad" />
@@ -798,15 +956,25 @@ export default function AdminDashboard() {
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2">
                     <CalendarClock className="h-4 w-4 text-slate-400" />
-                    <Input type="number" min={0} max={23} placeholder="Start (0-23)"
+                    <Input
+                      type="number"
+                      min={0}
+                      max={23}
+                      placeholder="Start (0-23)"
                       className="bg-slate-800 border-slate-600 text-white"
                       value={ruleForm.start_hour}
-                      onChange={(e) => setRuleForm((v) => ({ ...v, start_hour: e.target.value }))} />
+                      onChange={(e) => setRuleForm((v) => ({ ...v, start_hour: e.target.value }))}
+                    />
                   </div>
-                  <Input type="number" min={0} max={23} placeholder="End (0-23)"
+                  <Input
+                    type="number"
+                    min={0}
+                    max={23}
+                    placeholder="End (0-23)"
                     className="bg-slate-800 border-slate-600 text-white"
                     value={ruleForm.end_hour}
-                    onChange={(e) => setRuleForm((v) => ({ ...v, end_hour: e.target.value }))} />
+                    onChange={(e) => setRuleForm((v) => ({ ...v, end_hour: e.target.value }))}
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <Select value={ruleForm.type} onValueChange={(val) => setRuleForm((v) => ({ ...v, type: val }))}>
@@ -818,13 +986,20 @@ export default function AdminDashboard() {
                       <SelectItem value="abs">Absoluto</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Input type="number" placeholder={ruleForm.type === 'percent' ? '% (ej: -3, 5)' : 'Δ precio (ej: -100, 200)'}
+                  <Input
+                    type="number"
+                    placeholder={ruleForm.type === 'percent' ? '% (ej: -3, 5)' : 'Δ precio (ej: -100, 200)'}
                     className="bg-slate-800 border-slate-600 text-white"
                     value={ruleForm.value}
-                    onChange={(e) => setRuleForm((v) => ({ ...v, value: e.target.value }))} />
+                    onChange={(e) => setRuleForm((v) => ({ ...v, value: e.target.value }))}
+                  />
                 </div>
-                <Input placeholder="Etiqueta (opcional)" className="bg-slate-800 border-slate-600 text-white"
-                  value={ruleForm.label} onChange={(e) => setRuleForm((v) => ({ ...v, label: e.target.value }))} />
+                <Input
+                  placeholder="Etiqueta (opcional)"
+                  className="bg-slate-800 border-slate-600 text-white"
+                  value={ruleForm.label}
+                  onChange={(e) => setRuleForm((v) => ({ ...v, label: e.target.value }))}
+                />
                 <Select value={ruleForm.active ? 'true' : 'false'} onValueChange={(val) => setRuleForm((v) => ({ ...v, active: val === 'true' }))}>
                   <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
                     <SelectValue placeholder="Activa" />
@@ -1036,7 +1211,6 @@ export default function AdminDashboard() {
 
 /** Item reusable para Configuración (%) */
 function SettingItem({ label, k, value, onChange, onSave }) {
-  const dirty = Number(value) !== Number(value ?? 0); // placeholder (no usado)
   return (
     <div className="p-4 bg-slate-800/50 rounded border border-slate-700/50 space-y-2">
       <p className="text-slate-300 text-sm">{label}</p>
