@@ -1,80 +1,13 @@
-// src/components/trading/TradingChart.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType } from 'lightweight-charts';
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
+  Card, CardContent, CardHeader, CardTitle, CardDescription,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { TrendingUp } from 'lucide-react';
+import { useBinanceKlines } from '@/hooks/useBinanceKlines';
 
-const DEFAULT_LAST_BARS = 120;
-
-const n = (x, f = NaN) => {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : f;
-};
-const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
-
-// Epoch a **segundos**
-const toEpochSec = (t) => {
-  if (!t && t !== 0) return undefined;
-  if (typeof t === 'string') {
-    const ms = Date.parse(t);
-    return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
-  }
-  const num = Number(t);
-  if (!Number.isFinite(num)) return undefined;
-  return num > 2e10 ? Math.floor(num / 1000) : Math.floor(num); // ms → s, si no ya está en s
-};
-
-// ---- agregador: ticks -> velas (OHLC) por timeframe (segundos)
-function aggregateToCandles(points, tfSec) {
-  const tf = Math.max(1, Math.floor(tfSec || 60));
-  const rows = (Array.isArray(points) ? points : [])
-    .map((p) => ({ t: toEpochSec(p.time), v: n(p.value) }))
-    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v) && Math.abs(p.v) < 1e9)
-    .sort((a, b) => a.t - b.t);
-
-  const buckets = new Map();
-  for (const { t, v } of rows) {
-    const bucket = Math.floor(t / tf) * tf; // inicio del bucket
-    const prev = buckets.get(bucket);
-    if (!prev) {
-      buckets.set(bucket, { time: bucket, open: v, high: v, low: v, close: v });
-    } else {
-      prev.high = Math.max(prev.high, v);
-      prev.low = Math.min(prev.low, v);
-      prev.close = v;
-    }
-  }
-  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
-}
-
-// Si el historial viene corto, sembramos velas “constantes” con leve jitter
-function seedIfShort(candles, lastPrice, tfSec, need = DEFAULT_LAST_BARS) {
-  const out = [...(candles || [])];
-  const tf = Math.max(1, tfSec || 60);
-  if (out.length >= need && out[out.length - 1]?.close) return out;
-
-  const now = Math.floor(Date.now() / 1000);
-  const last = out[out.length - 1];
-  let t = last?.time ?? (now - need * tf);
-  let c = Number.isFinite(last?.close) ? last.close : Number(lastPrice || 0) || 1;
-
-  while (out.length < need) {
-    t += tf;
-    const j = (Math.random() - 0.5) * c * 0.0005; // ±5 bps
-    const close = Math.max(0, c + j);
-    out.push({ time: t, open: c, high: Math.max(c, close), low: Math.min(c, close), close });
-    c = close;
-  }
-  return out;
-}
-
+const DEFAULT_LAST_BARS = 200;
 const TIMEFRAMES = [
   { key: '5s',  sec: 5 },
   { key: '15s', sec: 15 },
@@ -83,11 +16,18 @@ const TIMEFRAMES = [
   { key: '15m', sec: 900 },
 ];
 
+const n = (x, f = NaN) => (Number.isFinite(Number(x)) ? Number(x) : f);
+const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
+
+function toBinanceSymbol(pair = 'BTC/USDT') {
+  const [b, q] = String(pair).split('/');
+  return `${(b || 'BTC')}${(q || 'USDT')}`.toUpperCase();
+}
+
 export default function TradingChart({
-  priceHistory = [],            // [{time, value}] (ms/seg/ISO)
-  selectedPair,
-  cryptoPrices = {},            // {SYM: {price, change, history}}
-  openTrades = [],              // [{id,pair,type,amount,price|priceAtExecution,timestamp,stopLoss,takeProfit,status}]
+  selectedPair = 'BTC/USDT',
+  cryptoPrices = {},
+  openTrades = [],
   showGuides = true,
   lastNBars = DEFAULT_LAST_BARS,
 }) {
@@ -95,15 +35,14 @@ export default function TradingChart({
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const entryLinesRef = useRef({});
-  const lastBucketRef = useRef(null); // último bucket dibujado (seg)
 
-  const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
+  const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m
+  const binanceSymbol = toBinanceSymbol(selectedPair);
+  const { candles, price: livePrice, status } = useBinanceKlines(binanceSymbol, tf.key, lastNBars);
 
-  const pair = typeof selectedPair === 'string' && selectedPair ? selectedPair : 'BTC/USDT';
-  const base = (pair.split?.('/')?.[0] || 'BTC').toUpperCase();
+  const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
   const info = cryptoPrices?.[base] || {};
-  const livePrice = n(info.price);
-  const priceStr = Number.isFinite(livePrice) ? livePrice.toFixed(2) : '--';
+  const priceStr = Number.isFinite(livePrice ?? info.price) ? (livePrice ?? info.price).toFixed(2) : '--';
   const chg = n(info.change, NaN);
   const chgStr = Number.isFinite(chg) ? chg.toFixed(2) : '--';
   const chgPos = Number.isFinite(chg) ? chg >= 0 : true;
@@ -111,12 +50,12 @@ export default function TradingChart({
   const openForPair = useMemo(
     () =>
       (Array.isArray(openTrades) ? openTrades : [])
-        .filter((t) => String(t?.pair || '').toUpperCase() === pair.toUpperCase())
+        .filter((t) => String(t?.pair || '').toUpperCase() === selectedPair.toUpperCase())
         .filter((t) => String(t?.status || 'open').toLowerCase() === 'open'),
-    [openTrades, pair]
+    [openTrades, selectedPair]
   );
 
-  // 1) Crear chart una vez
+  // Crear chart
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -177,72 +116,38 @@ export default function TradingChart({
       try { chart.remove(); } catch {}
       chartRef.current = null;
       seriesRef.current = null;
-      lastBucketRef.current = null;
     };
   }, []);
 
-  // 2) Derivado: velas agregadas por timeframe
-  const allCandles = useMemo(() => {
-    const raw = aggregateToCandles(priceHistory, tf.sec);
-    const seeded = seedIfShort(raw, info.price, tf.sec, lastNBars);
-    // recortamos a ventana visible
-    return seeded.slice(-Math.max(lastNBars, 20)).filter(
-      (c) =>
-        Number.isFinite(c.time) &&
-        Number.isFinite(c.open) &&
-        Number.isFinite(c.high) &&
-        Number.isFinite(c.low) &&
-        Number.isFinite(c.close)
-    );
-  }, [priceHistory, tf.sec, lastNBars, info.price]);
-
-  // 3) Seed / cambio de timeframe: setData + setVisibleRange una sola vez
+  // Seed/replace cuando cambian las velas (klines)
   useEffect(() => {
     const series = seriesRef.current;
     const chart = chartRef.current;
     if (!series || !chart) return;
 
-    if (!allCandles.length) {
+    const safe = (candles || [])
+      .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.open) && Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close))
+      .slice(-Math.max(lastNBars, 20));
+
+    if (!safe.length) {
       series.setData([]);
-      lastBucketRef.current = null;
       return;
     }
 
-    series.setData(allCandles);
-    lastBucketRef.current = allCandles[allCandles.length - 1].time;
-
-    const first = allCandles[0].time;
-    const last = allCandles[allCandles.length - 1].time;
+    // setData y ajustar rango visible una vez
+    series.setData(safe);
+    const first = safe[0].time;
+    const last = safe[safe.length - 1].time;
     chart.timeScale().setVisibleRange({ from: first, to: last });
-    setTimeout(() => chart.timeScale().scrollToRealTime(), 0);
-  }, [tf.sec]); // ← solo cuando cambia timeframe
-
-  // 4) Actualización incremental (sin re-fit continuo)
-  useEffect(() => {
-    const series = seriesRef.current;
-    const chart = chartRef.current;
-    if (!series || !chart) return;
-    if (!allCandles.length) return;
-
-    const last = allCandles[allCandles.length - 1];
-    if (!last) return;
-
-    if (lastBucketRef.current == null || last.time > lastBucketRef.current) {
-      series.update(last);             // nueva vela
-      lastBucketRef.current = last.time;
-    } else if (last.time === lastBucketRef.current) {
-      series.update(last);             // misma vela (tick dentro del bucket)
-    }
     chart.timeScale().scrollToRealTime();
-  }, [allCandles]);
+  }, [candles, lastNBars]);
 
-  // ====== Overlays: líneas de precio para operaciones abiertas ======
+  // ====== Overlays por operaciones abiertas ======
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
     if (!series) return;
 
-    // limpia anteriores
     const prev = entryLinesRef.current || {};
     Object.values(prev).forEach((obj) => {
       try { obj?.entry && series.removePriceLine(obj.entry); } catch {}
@@ -251,7 +156,6 @@ export default function TradingChart({
     });
     entryLinesRef.current = {};
 
-    // crea nuevas
     openForPair.forEach((t) => {
       const id = String(t.id ?? `${t.pair}:${t.timestamp ?? Math.random()}`);
       const side = String(t.type || '').toLowerCase();
@@ -297,12 +201,14 @@ export default function TradingChart({
     });
   }, [openForPair, showGuides]);
 
-  // PnL en título de la línea
+  // PnL vivo en la línea
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
     if (!series) return;
-    if (!Number.isFinite(livePrice)) return;
+
+    const live = Number.isFinite(livePrice) ? livePrice : n(info.price);
+    if (!Number.isFinite(live)) return;
 
     const map = entryLinesRef.current || {};
     openForPair.forEach((t) => {
@@ -316,7 +222,7 @@ export default function TradingChart({
       if (!Number.isFinite(entry) || !Number.isFinite(amt)) return;
 
       const qty = amt / Math.max(entry, 1e-9);
-      const upnl = side === 'sell' ? (entry - livePrice) * qty : (livePrice - entry) * qty;
+      const upnl = side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
       const upnlPct = (upnl / Math.max(amt, 1e-9)) * 100;
 
       try {
@@ -325,7 +231,7 @@ export default function TradingChart({
         });
       } catch {}
     });
-  }, [livePrice, openForPair, showGuides]);
+  }, [livePrice, info.price, openForPair, showGuides]);
 
   // Marcadores de entrada
   useEffect(() => {
@@ -334,7 +240,8 @@ export default function TradingChart({
 
     const markers = openForPair
       .map((t) => {
-        const sec = toEpochSec(t.timestamp);
+        const ts = t.timestamp;
+        const sec = Number.isFinite(+ts) ? Math.floor(+ts / 1000) : Math.floor(Date.parse(ts || 0) / 1000);
         const price = n(t.price ?? t.priceAtExecution, NaN);
         if (!sec || !Number.isFinite(price)) return null;
 
@@ -360,14 +267,18 @@ export default function TradingChart({
           <div>
             <CardTitle className="text-white flex items-center text-lg sm:text-xl">
               <TrendingUp className="h-5 w-5 mr-2 text-green-400" />
-              Gráfico de {pair}
+              Gráfico de {selectedPair}
             </CardTitle>
             <CardDescription className="text-slate-300 text-xs sm:text-sm">
-              Precio en tiempo real — {tf.key} • {lastNBars} barras
+              {status === 'live' ? 'Tiempo real (WS)' :
+               status === 'polling' ? 'Actualizando (polling)' :
+               status === 'seeding' ? 'Cargando...' :
+               status === 'error' ? 'Error de feed' : '—'}
+              {' '}• {tf.key} • {lastNBars} barras
             </CardDescription>
           </div>
 
-          {/* Selector de timeframe */}
+          {/* Selector timeframe */}
           <div className="flex flex-wrap gap-2">
             {TIMEFRAMES.map((opt) => (
               <Button
