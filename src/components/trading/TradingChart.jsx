@@ -19,7 +19,7 @@ const n = (x, f = NaN) => {
 };
 const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
 
-// normaliza epoch a **segundos**
+// Epoch a **segundos**
 const toEpochSec = (t) => {
   if (!t && t !== 0) return undefined;
   if (typeof t === 'string') {
@@ -28,11 +28,10 @@ const toEpochSec = (t) => {
   }
   const num = Number(t);
   if (!Number.isFinite(num)) return undefined;
-  // heurística ms/seg
-  return num > 2e10 ? Math.floor(num / 1000) : Math.floor(num);
+  return num > 2e10 ? Math.floor(num / 1000) : Math.floor(num); // ms → s, si no ya está en s
 };
 
-// === agregador: ticks -> velas por timeframe (segundos)
+// ---- agregador: ticks -> velas (OHLC) por timeframe (segundos)
 function aggregateToCandles(points, tfSec) {
   const tf = Math.max(1, Math.floor(tfSec || 60));
   const rows = (Array.isArray(points) ? points : [])
@@ -42,7 +41,7 @@ function aggregateToCandles(points, tfSec) {
 
   const buckets = new Map();
   for (const { t, v } of rows) {
-    const bucket = Math.floor(t / tf) * tf;
+    const bucket = Math.floor(t / tf) * tf; // inicio del bucket
     const prev = buckets.get(bucket);
     if (!prev) {
       buckets.set(bucket, { time: bucket, open: v, high: v, low: v, close: v });
@@ -55,7 +54,7 @@ function aggregateToCandles(points, tfSec) {
   return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
 }
 
-// si el historial viene muy corto, sembramos velas “constantes” con leve jitter
+// Si el historial viene corto, sembramos velas “constantes” con leve jitter
 function seedIfShort(candles, lastPrice, tfSec, need = DEFAULT_LAST_BARS) {
   const out = [...(candles || [])];
   const tf = Math.max(1, tfSec || 60);
@@ -63,12 +62,11 @@ function seedIfShort(candles, lastPrice, tfSec, need = DEFAULT_LAST_BARS) {
 
   const now = Math.floor(Date.now() / 1000);
   const last = out[out.length - 1];
-  let t = last?.time || (now - need * tf);
+  let t = last?.time ?? (now - need * tf);
   let c = Number.isFinite(last?.close) ? last.close : Number(lastPrice || 0) || 1;
 
   while (out.length < need) {
     t += tf;
-    // micro jitter para no dejar líneas completamente planas
     const j = (Math.random() - 0.5) * c * 0.0005; // ±5 bps
     const close = Math.max(0, c + j);
     out.push({ time: t, open: c, high: Math.max(c, close), low: Math.min(c, close), close });
@@ -97,6 +95,7 @@ export default function TradingChart({
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const entryLinesRef = useRef({});
+  const lastBucketRef = useRef(null); // último bucket dibujado (seg)
 
   const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
 
@@ -117,7 +116,7 @@ export default function TradingChart({
     [openTrades, pair]
   );
 
-  // crea chart
+  // 1) Crear chart una vez
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -178,21 +177,16 @@ export default function TradingChart({
       try { chart.remove(); } catch {}
       chartRef.current = null;
       seriesRef.current = null;
+      lastBucketRef.current = null;
     };
   }, []);
 
-  // set/actualiza velas cada vez que cambian el historial o timeframe
-  useEffect(() => {
-    const series = seriesRef.current;
-    const chart = chartRef.current;
-    if (!series || !chart) return;
-
-    const candlesRaw = aggregateToCandles(priceHistory, tf.sec);
-    const seeded = seedIfShort(candlesRaw, info.price, tf.sec, lastNBars);
-    const data = seeded.slice(-Math.max(lastNBars, 20)); // recorta a ventana visible
-
-    // si hay velas inválidas, filtramos
-    const safeData = data.filter(
+  // 2) Derivado: velas agregadas por timeframe
+  const allCandles = useMemo(() => {
+    const raw = aggregateToCandles(priceHistory, tf.sec);
+    const seeded = seedIfShort(raw, info.price, tf.sec, lastNBars);
+    // recortamos a ventana visible
+    return seeded.slice(-Math.max(lastNBars, 20)).filter(
       (c) =>
         Number.isFinite(c.time) &&
         Number.isFinite(c.open) &&
@@ -200,16 +194,49 @@ export default function TradingChart({
         Number.isFinite(c.low) &&
         Number.isFinite(c.close)
     );
-
-    series.setData(safeData);
-    if (safeData.length) {
-      const first = safeData[0].time;
-      const last = safeData[safeData.length - 1].time;
-      chart.timeScale().setVisibleRange({ from: first, to: last });
-    }
   }, [priceHistory, tf.sec, lastNBars, info.price]);
 
-  // ====== Overlays (líneas de precio para trades abiertos) ======
+  // 3) Seed / cambio de timeframe: setData + setVisibleRange una sola vez
+  useEffect(() => {
+    const series = seriesRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart) return;
+
+    if (!allCandles.length) {
+      series.setData([]);
+      lastBucketRef.current = null;
+      return;
+    }
+
+    series.setData(allCandles);
+    lastBucketRef.current = allCandles[allCandles.length - 1].time;
+
+    const first = allCandles[0].time;
+    const last = allCandles[allCandles.length - 1].time;
+    chart.timeScale().setVisibleRange({ from: first, to: last });
+    setTimeout(() => chart.timeScale().scrollToRealTime(), 0);
+  }, [tf.sec]); // ← solo cuando cambia timeframe
+
+  // 4) Actualización incremental (sin re-fit continuo)
+  useEffect(() => {
+    const series = seriesRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart) return;
+    if (!allCandles.length) return;
+
+    const last = allCandles[allCandles.length - 1];
+    if (!last) return;
+
+    if (lastBucketRef.current == null || last.time > lastBucketRef.current) {
+      series.update(last);             // nueva vela
+      lastBucketRef.current = last.time;
+    } else if (last.time === lastBucketRef.current) {
+      series.update(last);             // misma vela (tick dentro del bucket)
+    }
+    chart.timeScale().scrollToRealTime();
+  }, [allCandles]);
+
+  // ====== Overlays: líneas de precio para operaciones abiertas ======
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
@@ -270,7 +297,7 @@ export default function TradingChart({
     });
   }, [openForPair, showGuides]);
 
-  // actualiza títulos con PnL vivo
+  // PnL en título de la línea
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
@@ -300,7 +327,7 @@ export default function TradingChart({
     });
   }, [livePrice, openForPair, showGuides]);
 
-  // marcadores de entrada
+  // Marcadores de entrada
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
@@ -340,7 +367,7 @@ export default function TradingChart({
             </CardDescription>
           </div>
 
-          {/* Toolbar de timeframe */}
+          {/* Selector de timeframe */}
           <div className="flex flex-wrap gap-2">
             {TIMEFRAMES.map((opt) => (
               <Button
