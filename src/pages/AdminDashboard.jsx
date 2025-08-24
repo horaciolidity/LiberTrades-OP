@@ -32,18 +32,13 @@ const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toFixed(dec)
 const pct = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(2) : '0.00');
 
 const DEFAULT_KEYS = [
-  // PLANES
   'plans.default_daily_return_pct',
   'plans.withdraw_fee_pct',
-  // BOTS
   'bots.profit_share_pct',
-  // REFERIDOS
   'referrals.level1_pct',
   'referrals.level2_pct',
-  // PROYECTOS TOKENIZADOS
   'projects.issuance_fee_pct',
   'projects.secondary_market_fee_pct',
-  // TRADING
   'trading.slippage_pct_max',
 ];
 
@@ -86,25 +81,24 @@ export default function AdminDashboard() {
   const [selectedSymbol, setSelectedSymbol] = useState('');
   const [rules, setRules] = useState([]);
 
-  // forms (puente con tu esquema; si tu check de source admite sólo 'real'|'manual',
-  // usa esos valores; si además tenés 'binance'|'simulated', también están listados)
+  // forms
   const [instForm, setInstForm] = useState({
     symbol: '',
     name: '',
-    source: 'binance',               // binance | simulated | manual | real
-    binance_symbol: '',              // si source=binance
+    source: 'binance',
+    binance_symbol: '',
     quote: 'USDT',
-    base_price: '',                  // si manual/simulated
+    base_price: '',
     decimals: 2,
-    volatility_bps: 50,              // simulated
-    difficulty: 'intermediate',      // easy | intermediate | nervous
+    volatility_bps: 50,
+    difficulty: 'intermediate',
     enabled: true,
   });
 
   const [ruleForm, setRuleForm] = useState({
     start_hour: 9,
     end_hour: 12,
-    type: 'percent', // 'percent' | 'abs'
+    type: 'percent',
     value: 5,
     label: 'Sube en la mañana',
     active: true,
@@ -125,106 +119,101 @@ export default function AdminDashboard() {
     });
     return map;
   };
-const BOUNDS = {
-  // PLANES
-  'plans.default_daily_return_pct': [0, 10],
-  'plans.withdraw_fee_pct': [0, 20],
-  // BOTS
-  'bots.profit_share_pct': [0, 100],
-  // REFERIDOS
-  'referrals.level1_pct': [0, 100],
-  'referrals.level2_pct': [0, 100],
-  // PROYECTOS
-  'projects.issuance_fee_pct': [0, 10],
-  'projects.secondary_market_fee_pct': [0, 10],
-  // TRADING
-  'trading.slippage_pct_max': [0, 5],
-};
 
-const parseNum = (v) => {
-  if (v === null || v === undefined) return null;
-  if (typeof v === 'string') {
-    const s = v.trim();
-    if (!s.length) return null;
-  }
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-};
+  const BOUNDS = {
+    'plans.default_daily_return_pct': [0, 10],
+    'plans.withdraw_fee_pct': [0, 20],
+    'bots.profit_share_pct': [0, 100],
+    'referrals.level1_pct': [0, 100],
+    'referrals.level2_pct': [0, 100],
+    'projects.issuance_fee_pct': [0, 10],
+    'projects.secondary_market_fee_pct': [0, 10],
+    'trading.slippage_pct_max': [0, 5],
+  };
 
-const inBounds = (key, n) => {
-  const [min, max] = BOUNDS[key] || [-Infinity, Infinity];
-  return n >= min && n <= max;
-};
+  const parseNum = (v) => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'string') {
+      const s = v.trim();
+      if (!s.length) return null;
+    }
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const inBounds = (key, n) => {
+    const [min, max] = BOUNDS[key] || [-Infinity, Infinity];
+    return n >= min && n <= max;
+  };
 
   // ---------- SETTINGS: fetch / save ----------
-const fetchSettings = async () => {
-  try {
-    const { data, error } = await supabase.rpc('get_admin_settings', { prefix: null });
-    if (error) throw error;
+  const fetchSettings = async () => {
+    try {
+      const { data, error } = await supabase.rpc('get_admin_settings', { prefix: null });
+      if (error) throw error;
 
-    // partimos de defaults
-    const map = { ...DEFAULT_VALUES };
-    for (const row of (data || [])) {
-      const k = row.setting_key;
-      const n = parseNum(row.setting_value);
-      if (n === null) continue;          // ignoramos nulos/blank
-      map[k] = n;                        // sobreescribe si es válido
+      const map = { ...DEFAULT_VALUES };
+      for (const row of (data || [])) {
+        const k = row.setting_key;
+        const n = parseNum(row.setting_value);
+        if (n === null) continue;
+        map[k] = n;
+      }
+      setSettings(map);
+      setSettingsOriginal(map);
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'No se pudieron cargar los ajustes', description: e.message, variant: 'destructive' });
     }
-    setSettings(map);
-    setSettingsOriginal(map);
-  } catch (e) {
-    console.error(e);
-    toast({ title: 'No se pudieron cargar los ajustes', description: e.message, variant: 'destructive' });
-  }
-};
+  };
 
   const saveSetting = async (key, value) => {
-  const n = parseNum(value);
-  if (n === null) {
-    toast({ title: 'Valor inválido', description: 'Debes ingresar un número', variant: 'destructive' });
-    return;
-  }
-  if (!inBounds(key, n)) {
-    const [min, max] = BOUNDS[key] || [];
-    toast({ title: 'Fuera de rango', description: `Permitido: ${min ?? '-∞'} a ${max ?? '+∞'}`, variant: 'destructive' });
-    return;
-  }
-  try {
-    const { error } = await supabase.rpc('set_admin_setting', { p_key: key, p_value: n, p_note: null });
-    if (error) throw error;
-    toast({ title: 'Ajuste guardado', description: `${key}: ${pct(n)}%` });
-    setSettingsOriginal((o) => ({ ...o, [key]: n }));
-  } catch (e) {
-    console.error(e);
-    toast({ title: 'No se pudo guardar', description: e.message, variant: 'destructive' });
-  }
-};
-
-const saveAllSettings = async () => {
-  setSavingAll(true);
-  try {
-    const entries = Object.entries(settings).filter(([k]) => DEFAULT_KEYS.includes(k));
-    for (const [k, v] of entries) {
-      const n = parseNum(v);
-      if (n === null || !inBounds(k, n)) {
-        const [min, max] = BOUNDS[k] || [];
-        throw new Error(`Clave "${k}" inválida. Debe ser número${min !== undefined ? ` entre ${min} y ${max}` : ''}.`);
-      }
+    const n = parseNum(value);
+    if (n === null) {
+      toast({ title: 'Valor inválido', description: 'Debes ingresar un número', variant: 'destructive' });
+      return;
     }
-    for (const [k, v] of entries) {
-      const n = Number(v);
-      const { error } = await supabase.rpc('set_admin_setting', { p_key: k, p_value: n, p_note: 'bulk' });
+    if (!inBounds(key, n)) {
+      const [min, max] = BOUNDS[key] || [];
+      toast({ title: 'Fuera de rango', description: `Permitido: ${min ?? '-∞'} a ${max ?? '+∞'}`, variant: 'destructive' });
+      return;
+    }
+    try {
+      const { error } = await supabase.rpc('set_admin_setting', { p_key: key, p_value: n, p_note: null });
       if (error) throw error;
+      toast({ title: 'Ajuste guardado', description: `${key}: ${pct(n)}%` });
+      setSettingsOriginal((o) => ({ ...o, [key]: n }));
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'No se pudo guardar', description: e.message, variant: 'destructive' });
     }
-    toast({ title: 'Configuración guardada', description: 'Se aplicaron todos los cambios.' });
-    setSettingsOriginal(settings);
-  } catch (e) {
-    console.error(e);
-    toast({ title: 'Fallo guardando', description: e.message, variant: 'destructive' });
-  } finally {
-    setSavingAll(false);
-  }
-};
+  };
+
+  const saveAllSettings = async () => {
+    setSavingAll(true);
+    try {
+      const entries = Object.entries(settings).filter(([k]) => DEFAULT_KEYS.includes(k));
+      for (const [k, v] of entries) {
+        const n = parseNum(v);
+        if (n === null || !inBounds(k, n)) {
+          const [min, max] = BOUNDS[k] || [];
+          throw new Error(`Clave "${k}" inválida. Debe ser número${min !== undefined ? ` entre ${min} y ${max}` : ''}.`);
+        }
+      }
+      for (const [k, v] of entries) {
+        const n = Number(v);
+        const { error } = await supabase.rpc('set_admin_setting', { p_key: k, p_value: n, p_note: 'bulk' });
+        if (error) throw error;
+      }
+      toast({ title: 'Configuración guardada', description: 'Se aplicaron todos los cambios.' });
+      setSettingsOriginal(settings);
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'Fallo guardando', description: e.message, variant: 'destructive' });
+    } finally {
+      setSavingAll(false);
+    }
+  };
 
   const revertSettings = () => {
     setSettings(settingsOriginal);
@@ -345,119 +334,7 @@ const saveAllSettings = async () => {
   useEffect(() => { fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {}); }, [users, pendingDeposits, pendingWithdrawals]);
   useEffect(() => { fetchRulesForSymbol(selectedSymbol).catch(() => {}); }, [selectedSymbol]);
 
-  // ---------- CRUD instrumentos ----------
-  const addInstrument = async () => {
-    try {
-      const payload = {
-        symbol: instForm.symbol.trim().toUpperCase(),
-        name: instForm.name.trim(),
-        source: instForm.source,                    // ver nota sobre constraint en DB
-        binance_symbol: instForm.binance_symbol.trim().toUpperCase() || null,
-        quote: instForm.quote || 'USDT',
-        base_price: instForm.base_price === '' ? null : Number(instForm.base_price),
-        decimals: Number(instForm.decimals || 2),
-        volatility_bps: Number(instForm.volatility_bps || 50),
-        difficulty: instForm.difficulty,
-        enabled: !!instForm.enabled,
-      };
-      if (!payload.symbol || !payload.name) {
-        toast({ title: 'Faltan datos', description: 'Símbolo y nombre son obligatorios.', variant: 'destructive' });
-        return;
-      }
-      if (payload.source === 'binance' && !payload.binance_symbol) {
-        toast({ title: 'Falta par de Binance', description: 'Ej: BTCUSDT', variant: 'destructive' });
-        return;
-      }
-      const { error } = await supabase.from('market_instruments').insert(payload);
-      if (error) throw error;
-      toast({ title: 'Cripto agregada', description: `${payload.symbol} creada.` });
-      setInstForm({
-        symbol: '', name: '', source: 'binance', binance_symbol: '', quote: 'USDT',
-        base_price: '', decimals: 2, volatility_bps: 50, difficulty: 'intermediate', enabled: true,
-      });
-      await fetchInstruments();
-      setSelectedSymbol(payload.symbol);
-    } catch (e) {
-      toast({ title: 'No se pudo crear', description: e.message, variant: 'destructive' });
-    }
-  };
-
-  const updateInstrument = async (symbol, patch) => {
-    try {
-      const { error } = await supabase.from('market_instruments').update(patch).eq('symbol', symbol);
-      if (error) throw error;
-      toast({ title: 'Cripto actualizada', description: symbol });
-      await fetchInstruments();
-    } catch (e) {
-      toast({ title: 'No se pudo actualizar', description: e.message, variant: 'destructive' });
-    }
-  };
-
-  const removeInstrument = async (symbol) => {
-    try {
-      await supabase.from('market_rules').delete().eq('symbol', symbol);
-      const { error } = await supabase.from('market_instruments').delete().eq('symbol', symbol);
-      if (error) throw error;
-      toast({ title: 'Cripto eliminada', description: symbol });
-      await fetchInstruments();
-      if (selectedSymbol === symbol) { setSelectedSymbol(''); setRules([]); }
-    } catch (e) {
-      toast({ title: 'No se pudo eliminar', description: e.message, variant: 'destructive' });
-    }
-  };
-
-  // ---------- CRUD reglas ----------
-  const addRule = async () => {
-    try {
-      if (!selectedSymbol) {
-        toast({ title: 'Selecciona una cripto', variant: 'destructive' });
-        return;
-      }
-      const payload = {
-        symbol: selectedSymbol,
-        start_hour: Number(ruleForm.start_hour),
-        end_hour: Number(ruleForm.end_hour),
-        type: ruleForm.type, // 'percent' | 'abs'
-        value: Number(ruleForm.value || 0),
-        label: ruleForm.label?.trim() || null,
-        active: !!ruleForm.active,
-      };
-      if (!Number.isFinite(payload.start_hour) || !Number.isFinite(payload.end_hour) || payload.start_hour < 0 || payload.start_hour > 23 || payload.end_hour < 0 || payload.end_hour > 23) {
-        toast({ title: 'Horas inválidas', description: '0..23', variant: 'destructive' });
-        return;
-      }
-      const { error } = await supabase.from('market_rules').insert(payload);
-      if (error) throw error;
-      toast({ title: 'Regla creada', description: payload.label || `${payload.type} ${payload.value}` });
-      await fetchRulesForSymbol(selectedSymbol);
-    } catch (e) {
-      toast({ title: 'No se pudo crear la regla', description: e.message, variant: 'destructive' });
-    }
-  };
-
-  const updateRule = async (id, patch) => {
-    try {
-      const { error } = await supabase.from('market_rules').update(patch).eq('id', id);
-      if (error) throw error;
-      toast({ title: 'Regla actualizada' });
-      await fetchRulesForSymbol(selectedSymbol);
-    } catch (e) {
-      toast({ title: 'No se pudo actualizar la regla', description: e.message, variant: 'destructive' });
-    }
-  };
-
-  const removeRule = async (id) => {
-    try {
-      const { error } = await supabase.from('market_rules').delete().eq('id', id);
-      if (error) throw error;
-      toast({ title: 'Regla eliminada' });
-      await fetchRulesForSymbol(selectedSymbol);
-    } catch (e) {
-      toast({ title: 'No se pudo eliminar', description: e.message, variant: 'destructive' });
-    }
-  };
-
-  // ---------- métricas ----------
+  // ---------- métricas / balances ----------
   const maybeRefreshSelf = async (affectedUserId) => {
     if (authUser?.id && authUser.id === affectedUserId && typeof refreshBalances === 'function') {
       await refreshBalances();
@@ -483,11 +360,13 @@ const saveAllSettings = async () => {
       const { error: uErr } = await supabase.from('balances').update({ usdc: newUsdc, updated_at: new Date().toISOString() }).eq('user_id', userId);
       if (uErr) throw uErr;
 
-      // TIPOS válidos en tu CHECK: deposit|withdrawal|plan_purchase|admin_credit|refund|fee|transfer|other
+      // Para que el histórico firme el signo correctamente:
+      // - créditos -> admin_credit (suma)
+      // - débitos  -> fee (resta en vistas y gráficos)
       const positive = delta >= 0;
       const insertTx = {
         user_id: userId,
-        type: positive ? 'admin_credit' : 'admin_debit',
+        type: positive ? 'admin_credit' : 'fee',
         amount: Math.abs(delta),
         status: 'completed',
         currency: 'USDC',
@@ -508,15 +387,17 @@ const saveAllSettings = async () => {
 
   const approveDeposit = async (tx) => {
     try {
-      // 1) Intento vía RPC segura (si la creamos): approve_deposit_v2(p_tx_id)
+      // 1) RPC principal: si no hay error, consideramos éxito y NO hacemos fallback
       const { data: rpcData, error: rpcErr } = await supabase.rpc('approve_deposit_v2', { p_tx_id: tx.id });
-      if (!rpcErr && rpcData?.ok) {
+
+      if (!rpcErr) {
         toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
         await maybeRefreshSelf(tx.user_id);
         await reloadAll();
         return;
       }
-      // 2) Fallback: método actual (update + balance)
+
+      // 2) Si la RPC no existe o falló, aplicamos fallback controlado
       const { data: balRow, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', tx.user_id).single();
       if (gErr) throw gErr;
       const newUsdc = Number(balRow?.usdc || 0) + Number(tx.amount || 0);
@@ -602,7 +483,7 @@ const saveAllSettings = async () => {
       );
       hits.forEach((r) => {
         if (r.type === 'percent') price *= 1 + Number(r.value || 0) / 100;
-        else price += Number(r.value || 0); // 'abs'
+        else price += Number(r.value || 0);
       });
       list.push({ hour: `${String(h).padStart(2, '0')}:00`, price: Number(price.toFixed(dec)) });
     }
@@ -642,81 +523,80 @@ const saveAllSettings = async () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-  {/* PLANES */}
-  <SettingItem
-    label="Planes: Retorno diario (%)"
-    k="plans.default_daily_return_pct"
-    value={settings['plans.default_daily_return_pct']}
-    original={settingsOriginal['plans.default_daily_return_pct']}
-    onChange={(v) => setSettings((s) => ({ ...s, 'plans.default_daily_return_pct': v }))}
-    onSave={() => saveSetting('plans.default_daily_return_pct', settings['plans.default_daily_return_pct'])}
-  />
-  <SettingItem
-    label="Planes: Fee de retiro (%)"
-    k="plans.withdraw_fee_pct"
-    value={settings['plans.withdraw_fee_pct']}
-    original={settingsOriginal['plans.withdraw_fee_pct']}
-    onChange={(v) => setSettings((s) => ({ ...s, 'plans.withdraw_fee_pct': v }))}
-    onSave={() => saveSetting('plans.withdraw_fee_pct', settings['plans.withdraw_fee_pct'])}
-  />
+            {/* PLANES */}
+            <SettingItem
+              label="Planes: Retorno diario (%)"
+              k="plans.default_daily_return_pct"
+              value={settings['plans.default_daily_return_pct']}
+              original={settingsOriginal['plans.default_daily_return_pct']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'plans.default_daily_return_pct': v }))}
+              onSave={() => saveSetting('plans.default_daily_return_pct', settings['plans.default_daily_return_pct'])}
+            />
+            <SettingItem
+              label="Planes: Fee de retiro (%)"
+              k="plans.withdraw_fee_pct"
+              value={settings['plans.withdraw_fee_pct']}
+              original={settingsOriginal['plans.withdraw_fee_pct']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'plans.withdraw_fee_pct': v }))}
+              onSave={() => saveSetting('plans.withdraw_fee_pct', settings['plans.withdraw_fee_pct'])}
+            />
 
-  {/* BOTS */}
-  <SettingItem
-    label="Bots: Profit share (%)"
-    k="bots.profit_share_pct"
-    value={settings['bots.profit_share_pct']}
-    original={settingsOriginal['bots.profit_share_pct']}
-    onChange={(v) => setSettings((s) => ({ ...s, 'bots.profit_share_pct': v }))}
-    onSave={() => saveSetting('bots.profit_share_pct', settings['bots.profit_share_pct'])}
-  />
+            {/* BOTS */}
+            <SettingItem
+              label="Bots: Profit share (%)"
+              k="bots.profit_share_pct"
+              value={settings['bots.profit_share_pct']}
+              original={settingsOriginal['bots.profit_share_pct']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'bots.profit_share_pct': v }))}
+              onSave={() => saveSetting('bots.profit_share_pct', settings['bots.profit_share_pct'])}
+            />
 
-  {/* REFERIDOS */}
-  <SettingItem
-    label="Referrals: Nivel 1 (%)"
-    k="referrals.level1_pct"
-    value={settings['referrals.level1_pct']}
-    original={settingsOriginal['referrals.level1_pct']}
-    onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level1_pct': v }))}
-    onSave={() => saveSetting('referrals.level1_pct', settings['referrals.level1_pct'])}
-  />
-  <SettingItem
-    label="Referrals: Nivel 2 (%)"
-    k="referrals.level2_pct"
-    value={settings['referrals.level2_pct']}
-    original={settingsOriginal['referrals.level2_pct']}
-    onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level2_pct': v }))}
-    onSave={() => saveSetting('referrals.level2_pct', settings['referrals.level2_pct'])}
-  />
+            {/* REFERIDOS */}
+            <SettingItem
+              label="Referrals: Nivel 1 (%)"
+              k="referrals.level1_pct"
+              value={settings['referrals.level1_pct']}
+              original={settingsOriginal['referrals.level1_pct']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level1_pct': v }))}
+              onSave={() => saveSetting('referrals.level1_pct', settings['referrals.level1_pct'])}
+            />
+            <SettingItem
+              label="Referrals: Nivel 2 (%)"
+              k="referrals.level2_pct"
+              value={settings['referrals.level2_pct']}
+              original={settingsOriginal['referrals.level2_pct']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level2_pct': v }))}
+              onSave={() => saveSetting('referrals.level2_pct', settings['referrals.level2_pct'])}
+            />
 
-  {/* PROYECTOS */}
-  <SettingItem
-    label="Proyectos: Emisión (%)"
-    k="projects.issuance_fee_pct"
-    value={settings['projects.issuance_fee_pct']}
-    original={settingsOriginal['projects.issuance_fee_pct']}
-    onChange={(v) => setSettings((s) => ({ ...s, 'projects.issuance_fee_pct': v }))}
-    onSave={() => saveSetting('projects.issuance_fee_pct', settings['projects.issuance_fee_pct'])}
-  />
-  <SettingItem
-    label="Proyectos: Mercado secundario (%)"
-    k="projects.secondary_market_fee_pct"
-    value={settings['projects.secondary_market_fee_pct']}
-    original={settingsOriginal['projects.secondary_market_fee_pct']}
-    onChange={(v) => setSettings((s) => ({ ...s, 'projects.secondary_market_fee_pct': v }))}
-    onSave={() => saveSetting('projects.secondary_market_fee_pct', settings['projects.secondary_market_fee_pct'])}
-  />
+            {/* PROYECTOS */}
+            <SettingItem
+              label="Proyectos: Emisión (%)"
+              k="projects.issuance_fee_pct"
+              value={settings['projects.issuance_fee_pct']}
+              original={settingsOriginal['projects.issuance_fee_pct']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'projects.issuance_fee_pct': v }))}
+              onSave={() => saveSetting('projects.issuance_fee_pct', settings['projects.issuance_fee_pct'])}
+            />
+            <SettingItem
+              label="Proyectos: Mercado secundario (%)"
+              k="projects.secondary_market_fee_pct"
+              value={settings['projects.secondary_market_fee_pct']}
+              original={settingsOriginal['projects.secondary_market_fee_pct']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'projects.secondary_market_fee_pct': v }))}
+              onSave={() => saveSetting('projects.secondary_market_fee_pct', settings['projects.secondary_market_fee_pct'])}
+            />
 
-  {/* TRADING */}
-  <SettingItem
-    label="Trading: Slippage máx. (%)"
-    k="trading.slippage_pct_max"
-    value={settings['trading.slippage_pct_max']}
-    original={settingsOriginal['trading.slippage_pct_max']}
-    onChange={(v) => setSettings((s) => ({ ...s, 'trading.slippage_pct_max': v }))}
-    onSave={() => saveSetting('trading.slippage_pct_max', settings['trading.slippage_pct_max'])}
-  />
-</div>
-
+            {/* TRADING */}
+            <SettingItem
+              label="Trading: Slippage máx. (%)"
+              k="trading.slippage_pct_max"
+              value={settings['trading.slippage_pct_max']}
+              original={settingsOriginal['trading.slippage_pct_max']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'trading.slippage_pct_max': v }))}
+              onSave={() => saveSetting('trading.slippage_pct_max', settings['trading.slippage_pct_max'])}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -1156,7 +1036,7 @@ const saveAllSettings = async () => {
 
 /** Item reusable para Configuración (%) */
 function SettingItem({ label, k, value, onChange, onSave }) {
-  const dirty = Number(value) !== Number(value ?? 0); // placeholder, solo para evitar warning
+  const dirty = Number(value) !== Number(value ?? 0); // placeholder (no usado)
   return (
     <div className="p-4 bg-slate-800/50 rounded border border-slate-700/50 space-y-2">
       <p className="text-slate-300 text-sm">{label}</p>
