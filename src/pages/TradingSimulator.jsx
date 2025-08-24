@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
 import { Send, MessageSquare } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
+import { useLivePrice } from '@/hooks/useLivePrice';
 
 const DEFAULT_PAIR = 'BTC/USDT';
 
@@ -42,8 +43,8 @@ const parseBaseFromPair = (pair) => {
 export default function TradingSimulator() {
   const { user } = useAuth();
   const { playSound } = useSound();
-  const { cryptoPrices: marketPrices = {} } = useData(); // feed real + reglas
-  const tradingLogic = useTradingLogic(); // sólo DEMO
+  const { cryptoPrices: marketPrices = {} } = useData(); // feed global (puede traer history)
+  const tradingLogic = useTradingLogic(); // DEMO
 
   const [mode, setMode] = useState('demo'); // 'demo' | 'real'
 
@@ -85,6 +86,71 @@ export default function TradingSimulator() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ============================================================
+  // === Precio live (para el base del par) usando useLivePrice ==
+  // ============================================================
+  const baseForChart = useMemo(
+    () => parseBaseFromPair(selectedPair),
+    [selectedPair]
+  );
+
+  const [instRow, setInstRow] = useState(null);
+  const [ruleRows, setRuleRows] = useState([]);
+
+  // Traer instrumento + reglas activas del símbolo
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: inst, error: iErr } = await supabase
+          .from('market_instruments')
+          .select('*')
+          .eq('symbol', baseForChart)
+          .maybeSingle();
+        if (iErr) throw iErr;
+        if (!cancelled) setInstRow(inst || null);
+
+        const { data: rules, error: rErr } = await supabase
+          .from('market_rules')
+          .select('*')
+          .eq('symbol', baseForChart)
+          .order('start_hour', { ascending: true });
+        if (rErr) throw rErr;
+        if (!cancelled) setRuleRows(safe(rules));
+      } catch (e) {
+        console.warn('[live instrument/rules]', e);
+        if (!cancelled) { setInstRow(null); setRuleRows([]); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [baseForChart]);
+
+  // Hook de precio vivo (usa WS de Binance si source='real', si no simula con reglas)
+  const livePrice = useLivePrice(instRow, ruleRows);
+
+  // Historial local (para el gráfico si el contexto no trae uno)
+  const [localHistory, setLocalHistory] = useState([]);
+  const histRef = useRef([]);
+  useEffect(() => {
+    if (livePrice == null) return;
+    const pt = { time: Date.now(), price: Number(livePrice) };
+    histRef.current = [...histRef.current, pt].slice(-500);
+    setLocalHistory(histRef.current);
+  }, [livePrice, baseForChart]); // si cambia base, se reinicia arriba por estado de instrumento
+
+  // Mezclo el precio live en el mapa de precios del contexto
+  const mergedPrices = useMemo(() => {
+    const m = { ...marketPrices };
+    if (livePrice != null) {
+      m[baseForChart] = {
+        ...(m[baseForChart] || {}),
+        price: Number(livePrice),
+        history: (m[baseForChart]?.history?.length ? m[baseForChart].history : localHistory),
+      };
+    }
+    return m;
+  }, [marketPrices, baseForChart, livePrice, localHistory]);
 
   // =================== Fetch REAL data ===================
   const fetchRealData = async () => {
@@ -217,7 +283,7 @@ export default function TradingSimulator() {
   // ============== PnL en tiempo real (demo y real) ==============
   const computeLivePnL = (trade) => {
     const base = parseBaseFromPair(trade?.pair || selectedPair);
-    const current = Number(marketPrices?.[base]?.price ?? 0);
+    const current = Number(mergedPrices?.[base]?.price ?? 0);
     const entry = Number(trade?.price ?? trade?.priceAtExecution ?? 0); // soporta real y demo
     const amountUsd = Number(trade?.amount ?? 0);
     if (!current || !entry || !amountUsd) return { upnl: 0, livePrice: current || null };
@@ -235,14 +301,14 @@ export default function TradingSimulator() {
       const { upnl, livePrice } = computeLivePnL(t);
       return { ...t, upnl, livePrice };
     });
-  }, [tradingLogic.trades, marketPrices, selectedPair]);
+  }, [tradingLogic.trades, mergedPrices, selectedPair]);
 
   const realTradesWithLive = useMemo(() => {
     return safe(realTrades).map((t) => {
       const { upnl, livePrice } = computeLivePnL(t);
       return { ...t, upnl, livePrice, priceAtExecution: t.priceAtExecution ?? t.price };
     });
-  }, [realTrades, marketPrices, selectedPair]);
+  }, [realTrades, mergedPrices, selectedPair]);
 
   // =================== Trading actions ===================
   // Abre trade (real)
@@ -266,7 +332,7 @@ export default function TradingSimulator() {
       timestamp: new Date().toISOString(),
     };
 
-    console.log('[onTrade payload]', payload, { priceLive: marketPrices });
+    console.log('[onTrade payload]', payload, { priceLive: mergedPrices });
 
     const { error: tErr } = await supabase.from('trades').insert(payload);
     if (tErr) {
@@ -314,7 +380,7 @@ export default function TradingSimulator() {
 
     // Precio live al momento del cierre y cálculo del profit
     const base = parseBaseFromPair(tr.pair);
-    const liveClose = Number(marketPrices?.[base]?.price ?? tr.price ?? 0);
+    const liveClose = Number(mergedPrices?.[base]?.price ?? tr.price ?? 0);
     const { upnl } = computeLivePnL({ ...tr, priceAtExecution: tr.price });
     const realized = Number(upnl || 0);
 
@@ -415,12 +481,11 @@ export default function TradingSimulator() {
   };
 
   // =================== Gráfico: history “cercano” ===================
-  const baseForChart = parseBaseFromPair(selectedPair);
   const chartHistory = useMemo(() => {
-    const liveHist = safe(marketPrices?.[baseForChart]?.history);
+    const liveHist = safe(mergedPrices?.[baseForChart]?.history);
     const src = liveHist.length ? liveHist : tradingLogic.priceHistory;
     return safe(src).slice(-240);
-  }, [marketPrices, baseForChart, tradingLogic.priceHistory]);
+  }, [mergedPrices, baseForChart, tradingLogic.priceHistory]);
 
   // Operaciones abiertas para overlays del gráfico
   const openTradesForChart = useMemo(() => {
@@ -463,7 +528,7 @@ export default function TradingSimulator() {
             <TradingChart
               priceHistory={chartHistory}
               selectedPair={selectedPair}
-              cryptoPrices={marketPrices}
+              cryptoPrices={mergedPrices}
               openTrades={openTradesForChart}   // 👈 líneas guía + marcadores
               showGuides
             />
@@ -477,7 +542,7 @@ export default function TradingSimulator() {
               onTrade={onTradeFromPanel}                 // << clave
               mode={mode}
               balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
-              cryptoPrices={marketPrices}
+              cryptoPrices={mergedPrices}
               resetBalance={mode === 'demo' ? tradingLogic.resetBalance : undefined}
             />
           </div>
@@ -529,7 +594,7 @@ export default function TradingSimulator() {
 
         <TradesHistory
           trades={mode === 'demo' ? demoTradesWithLive : realTradesWithLive}
-          cryptoPrices={marketPrices}
+          cryptoPrices={mergedPrices}
           closeTrade={handleCloseTrade} // acepta (id, manual?)
         />
       </div>
