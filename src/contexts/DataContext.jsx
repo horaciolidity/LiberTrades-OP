@@ -25,8 +25,8 @@ const DEFAULT_BINANCE_MAP = {
   ADA: 'ADAUSDT',
 };
 
-const HISTORY_MAX = 600; // ~10 min a 1–1.2s por punto
-const TICK_MS = 1200;    // ritmo visual
+const HISTORY_MAX = 600; // ~10 min a 1s por punto
+const TICK_MS = 1000;    // ritmo visual (1 segundo)
 
 // ---------- Reglas por hora UTC ----------
 const inWindowUTC = (hour, start, end) =>
@@ -48,10 +48,10 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
     const eh = Number(r.end_hour ?? 0);
     if (!inWindowUTC(hour, sh, eh)) continue;
 
-    const type = String(r.type || '').toLowerCase(); // 'percent' | 'abs'
+    const type = String(r.type || '').toLowerCase(); // 'percent' | 'abs' | 'absolute'
     const v = Number(r.value ?? 0);
     if (type === 'percent') price *= (1 + v / 100);
-    else price += v;
+    else price += v; // abs/absolute => suma directa
   }
   return price;
 };
@@ -74,7 +74,7 @@ export function DataProvider({ children }) {
   const [instruments, setInstruments] = useState([]);
   /**
    * market_rules (activas):
-   * - symbol, active, type('percent'|'abs'), value, start_hour, end_hour
+   * - symbol, active, type('percent'|'abs'|'absolute'), value, start_hour, end_hour
    */
   const [marketRules, setMarketRules] = useState([]);
 
@@ -218,6 +218,7 @@ export function DataProvider({ children }) {
               return [sym, { price, change }];
             })
           );
+
           if (!alive) return;
 
           setRealQuotes((prev) => {
@@ -305,12 +306,8 @@ export function DataProvider({ children }) {
 
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
 
+      // Actualizamos cotización; el historial lo arma el consolidado cada TICK_MS
       setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
-      setPriceHistories((prev) => {
-        const h = ensureArray(prev[sym]);
-        const next = [...h, { time: nowMs(), value: price }].slice(-HISTORY_MAX);
-        return { ...prev, [sym]: next };
-      });
     };
 
     const ch = supabase
@@ -319,7 +316,7 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Driver: avanzamos el reloj del servidor con RPC por símbolo (round-robin)
+    // 2) Driver: primero intentamos una RPC que avanza TODOS; si no existe, fallback por símbolo
     const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
       .map((i) => i.symbol);
@@ -329,12 +326,20 @@ export function DataProvider({ children }) {
       for (const sym of simSyms) {
         try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
       }
+      // mejor esfuerzo por si existe la v2
+      try { await supabase.rpc('tick_all_simulated_v2'); } catch {}
     })();
 
     let alive = true;
     let idx = 0;
     const drive = async () => {
       if (!alive || simSyms.length === 0) return;
+      // 1) intento masivo (si existe la función)
+      try {
+        await supabase.rpc('tick_all_simulated_v2');
+        return;
+      } catch {}
+      // 2) fallback round-robin por símbolo
       const sym = simSyms[idx % simSyms.length];
       idx++;
       try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
@@ -349,7 +354,7 @@ export function DataProvider({ children }) {
     };
   }, [instruments]);
 
-  // ---------- Consolidación final + histories cada ~1.2s ----------
+  // ---------- Consolidación final + histories cada ~1s ----------
   useEffect(() => {
     const tick = () => {
       const t = nowMs();
@@ -391,7 +396,9 @@ export function DataProvider({ children }) {
         let finalPrice =
           (sym === 'USDT' || sym === 'USDC')
             ? 1
-            : applyRulesForSymbol(sym, base, rulesCur, new Date());
+            : (src === 'manual' || src === 'simulated')
+              ? base // ya viene con reglas aplicadas desde el servidor
+              : applyRulesForSymbol(sym, base, rulesCur, new Date());
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
           finalPrice = lastKnown;
