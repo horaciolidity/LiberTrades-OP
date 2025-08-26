@@ -32,18 +32,13 @@ const fmt = (n, dec = 2) => (Number.isFinite(Number(n)) ? Number(n).toFixed(dec)
 const pct = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(2) : '0.00');
 
 const DEFAULT_KEYS = [
-  // PLANES
   'plans.default_daily_return_pct',
   'plans.withdraw_fee_pct',
-  // BOTS
   'bots.profit_share_pct',
-  // REFERIDOS
   'referrals.level1_pct',
   'referrals.level2_pct',
-  // PROYECTOS TOKENIZADOS
   'projects.issuance_fee_pct',
   'projects.secondary_market_fee_pct',
-  // TRADING
   'trading.slippage_pct_max',
 ];
 
@@ -90,20 +85,20 @@ export default function AdminDashboard() {
   const [instForm, setInstForm] = useState({
     symbol: '',
     name: '',
-    source: 'binance',               // binance | simulated | manual | real
-    binance_symbol: '',              // usado por otras vistas; no existe en DB
-    quote: 'USDT',                   // idem
-    base_price: '',                  // si manual/simulated
-    decimals: 2,
-    volatility_bps: 50,              // UI en bps; DB guarda decimal
-    difficulty: 'intermediate',      // easy | intermediate | nervous
+    source: 'simulated',           // <- ahora por defecto simulada
+    binance_symbol: '',
+    quote: 'USDT',
+    base_price: '',
+    decimals: 4,
+    volatility_bps: 80,            // bps (80 = 0.80%)
+    difficulty: 'intermediate',
     enabled: true,
   });
 
   const [ruleForm, setRuleForm] = useState({
     start_hour: 9,
     end_hour: 12,
-    type: 'percent', // 'percent' | 'abs'
+    type: 'percent', // 'percent' | 'absolute'
     value: 5,
     label: 'Sube en la mañana',
     active: true,
@@ -126,18 +121,13 @@ export default function AdminDashboard() {
   };
 
   const BOUNDS = {
-    // PLANES
     'plans.default_daily_return_pct': [0, 10],
     'plans.withdraw_fee_pct': [0, 20],
-    // BOTS
     'bots.profit_share_pct': [0, 100],
-    // REFERIDOS
     'referrals.level1_pct': [0, 100],
     'referrals.level2_pct': [0, 100],
-    // PROYECTOS
     'projects.issuance_fee_pct': [0, 10],
     'projects.secondary_market_fee_pct': [0, 10],
-    // TRADING
     'trading.slippage_pct_max': [0, 5],
   };
 
@@ -162,13 +152,12 @@ export default function AdminDashboard() {
       const { data, error } = await supabase.rpc('get_admin_settings', { prefix: null });
       if (error) throw error;
 
-      // partimos de defaults
       const map = { ...DEFAULT_VALUES };
       for (const row of (data || [])) {
         const k = row.setting_key;
         const n = parseNum(row.setting_value);
-        if (n === null) continue;          // ignoramos nulos/blank
-        map[k] = n;                        // sobreescribe si es válido
+        if (n === null) continue;
+        map[k] = n;
       }
       setSettings(map);
       setSettingsOriginal(map);
@@ -349,15 +338,14 @@ export default function AdminDashboard() {
   const addInstrument = async () => {
     try {
       const payload = {
-        // SOLO columnas existentes en tu tabla:
         symbol: (instForm.symbol || '').trim().toUpperCase(),
         name: (instForm.name || '').trim(),
-        source: instForm.source, // texto libre en tu esquema actual
+        source: instForm.source,
         base_price: instForm.source === 'binance'
-          ? 0 // NOT NULL en DB: si es binance, dejamos 0 (se actualizará por feed externo)
-          : (instForm.base_price === '' ? 0 : Number(instForm.base_price)),
-        decimals: Number(instForm.decimals || 2),
-        volatility: Number(instForm.volatility_bps || 50) / 10_000, // 50 bps -> 0.005
+          ? 0
+          : Number(instForm.base_price || 1),
+        decimals: Number(instForm.decimals || 4),
+        volatility_bps: Number(instForm.volatility_bps ?? 80), // <- usa la columna correcta
         difficulty: instForm.difficulty,
         enabled: !!instForm.enabled,
       };
@@ -366,7 +354,6 @@ export default function AdminDashboard() {
         toast({ title: 'Faltan datos', description: 'Símbolo y nombre son obligatorios.', variant: 'destructive' });
         return;
       }
-      // Si querés exigir par de Binance en modo binance (aunque no se guarda en DB)
       if (instForm.source === 'binance' && !instForm.binance_symbol.trim()) {
         toast({ title: 'Falta par de Binance', description: 'Ej: BTCUSDT', variant: 'destructive' });
         return;
@@ -375,18 +362,22 @@ export default function AdminDashboard() {
       const { error } = await supabase.from('market_instruments').insert(payload);
       if (error) throw error;
 
+      // Tick inicial opcional para que arranque ya con precio
+      if (['simulated', 'manual'].includes(payload.source)) {
+        await supabase.rpc('next_simulated_tick', { p_symbol: payload.symbol }).catch(() => {});
+      }
+
       toast({ title: 'Cripto agregada', description: `${payload.symbol} creada.` });
 
-      // reset del form (manteniendo opciones por defecto)
       setInstForm({
         symbol: '',
         name: '',
-        source: 'binance',
+        source: 'simulated',
         binance_symbol: '',
         quote: 'USDT',
         base_price: '',
-        decimals: 2,
-        volatility_bps: 50,
+        decimals: 4,
+        volatility_bps: 80,
         difficulty: 'intermediate',
         enabled: true,
       });
@@ -400,7 +391,6 @@ export default function AdminDashboard() {
 
   const updateInstrument = async (symbol, patch) => {
     try {
-      // patch debe contener SOLO columnas reales (p.ej. { enabled: true })
       const { error } = await supabase.from('market_instruments').update(patch).eq('symbol', symbol);
       if (error) throw error;
       toast({ title: 'Cripto actualizada', description: symbol });
@@ -434,12 +424,17 @@ export default function AdminDashboard() {
         symbol: selectedSymbol,
         start_hour: Number(ruleForm.start_hour),
         end_hour: Number(ruleForm.end_hour),
-        type: ruleForm.type, // 'percent' | 'abs'
+        type: ruleForm.type, // 'percent' | 'absolute'
         value: Number(ruleForm.value || 0),
         label: ruleForm.label?.trim() || null,
         active: !!ruleForm.active,
       };
-      if (!Number.isFinite(payload.start_hour) || !Number.isFinite(payload.end_hour) || payload.start_hour < 0 || payload.start_hour > 23 || payload.end_hour < 0 || payload.end_hour > 23) {
+      if (
+        !Number.isFinite(payload.start_hour) ||
+        !Number.isFinite(payload.end_hour) ||
+        payload.start_hour < 0 || payload.start_hour > 23 ||
+        payload.end_hour < 0 || payload.end_hour > 23
+      ) {
         toast({ title: 'Horas inválidas', description: '0..23', variant: 'destructive' });
         return;
       }
@@ -497,14 +492,17 @@ export default function AdminDashboard() {
         return;
       }
 
-      const { error: uErr } = await supabase.from('balances').update({ usdc: newUsdc, updated_at: new Date().toISOString() }).eq('user_id', userId);
+      const { error: uErr } = await supabase
+        .from('balances')
+        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
+        .eq('user_id', userId);
       if (uErr) throw uErr;
 
-      // TIPOS válidos en tu CHECK: deposit|withdrawal|plan_purchase|admin_credit|refund|fee|transfer|other
+      // TIPOS válidos: deposit|withdrawal|plan_purchase|admin_credit|refund|fee|transfer|other
       const positive = delta >= 0;
       const insertTx = {
         user_id: userId,
-        type: positive ? 'admin_credit' : 'admin_debit',
+        type: positive ? 'admin_credit' : 'fee',   // <- 'admin_debit' NO existe en el CHECK
         amount: Math.abs(delta),
         status: 'completed',
         currency: 'USDC',
@@ -525,23 +523,33 @@ export default function AdminDashboard() {
 
   const approveDeposit = async (tx) => {
     try {
-      // 1) Intento vía RPC segura (si la creamos): approve_deposit_v2(p_tx_id)
-      const { data: rpcData, error: rpcErr } = await supabase.rpc('approve_deposit_v2', { p_tx_id: tx.id });
-      if (!rpcErr && rpcData?.ok) {
+      // 1) Intento por RPC existente
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('approve_deposit', { p_tx_id: tx.id });
+      if (!rpcErr && rpcData && rpcData.ok) {
         toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
         await maybeRefreshSelf(tx.user_id);
         await reloadAll();
         return;
       }
-      // 2) Fallback: método actual (update + balance)
-      const { data: balRow, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', tx.user_id).single();
+      // 2) Fallback manual
+      const { data: balRow, error: gErr } = await supabase
+        .from('balances')
+        .select('usdc')
+        .eq('user_id', tx.user_id)
+        .single();
       if (gErr) throw gErr;
       const newUsdc = Number(balRow?.usdc || 0) + Number(tx.amount || 0);
 
-      const { error: bErr } = await supabase.from('balances').update({ usdc: newUsdc, updated_at: new Date().toISOString() }).eq('user_id', tx.user_id);
+      const { error: bErr } = await supabase
+        .from('balances')
+        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
+        .eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
-      const { error: tErr } = await supabase.from(TX_TABLE).update({ status: 'completed', updated_at: new Date().toISOString() }).eq('id', tx.id);
+      const { error: tErr } = await supabase
+        .from(TX_TABLE)
+        .update({ status: 'completed', updated_at: new Date().toISOString() })
+        .eq('id', tx.id);
       if (tErr) throw tErr;
 
       toast({ title: 'Depósito aprobado (fallback)', description: `Acreditado $${fmt(tx.amount)}` });
@@ -563,10 +571,16 @@ export default function AdminDashboard() {
         toast({ title: 'Saldo insuficiente', description: 'No alcanza para aprobar', variant: 'destructive' });
         return;
       }
-      const { error: bErr } = await supabase.from('balances').update({ usdc: current - amt, updated_at: new Date().toISOString() }).eq('user_id', tx.user_id);
+      const { error: bErr } = await supabase
+        .from('balances')
+        .update({ usdc: current - amt, updated_at: new Date().toISOString() })
+        .eq('user_id', tx.user_id);
       if (bErr) throw bErr;
 
-      const { error: tErr } = await supabase.from(TX_TABLE).update({ status: 'completed', updated_at: new Date().toISOString() }).eq('id', tx.id);
+      const { error: tErr } = await supabase
+        .from(TX_TABLE)
+        .update({ status: 'completed', updated_at: new Date().toISOString() })
+        .eq('id', tx.id);
       if (tErr) throw tErr;
 
       toast({ title: 'Retiro aprobado', description: `Debitado $${fmt(tx.amount)}` });
@@ -580,7 +594,10 @@ export default function AdminDashboard() {
 
   const rejectTx = async (tx) => {
     try {
-      const { error } = await supabase.from(TX_TABLE).update({ status: 'rejected', updated_at: new Date().toISOString() }).eq('id', tx.id);
+      const { error } = await supabase
+        .from(TX_TABLE)
+        .update({ status: 'rejected', updated_at: new Date().toISOString() })
+        .eq('id', tx.id);
       if (error) throw error;
       toast({ title: 'Solicitud rechazada' });
       await reloadAll();
@@ -615,11 +632,12 @@ export default function AdminDashboard() {
         (r) =>
           r.active &&
           ((r.start_hour < r.end_hour && h >= r.start_hour && h < r.end_hour) ||
-            (r.start_hour > r.end_hour && (h >= r.start_hour || h < r.end_hour)))
+            (r.start_hour > r.end_hour && (h >= r.start_hour || h < r.end_hour)) ||
+            (r.start_hour === r.end_hour))
       );
       hits.forEach((r) => {
         if (r.type === 'percent') price *= 1 + Number(r.value || 0) / 100;
-        else price += Number(r.value || 0); // 'abs'
+        else price += Number(r.value || 0); // 'absolute'
       });
       list.push({ hour: `${String(h).padStart(2, '0')}:00`, price: Number(price.toFixed(dec)) });
     }
@@ -818,9 +836,9 @@ export default function AdminDashboard() {
                         </td>
                         <td className="py-2 text-right text-slate-300">{i.decimals}</td>
                         <td className="py-2 text-right text-slate-300">
-                          {Number.isFinite(Number(i.volatility))
-                            ? Math.round(Number(i.volatility) * 10000)
-                            : '—'}
+                          {Number.isFinite(Number(i.volatility_bps))
+                            ? Number(i.volatility_bps)
+                            : (Number.isFinite(Number(i.volatility)) ? Math.round(Number(i.volatility) * 10000) : '—')}
                         </td>
                         <td className="py-2 text-slate-300">{i.difficulty || '—'}</td>
                         <td className="py-2 text-center">
@@ -983,7 +1001,7 @@ export default function AdminDashboard() {
                     </SelectTrigger>
                     <SelectContent className="bg-slate-800 text-white border-slate-700">
                       <SelectItem value="percent">Porcentaje</SelectItem>
-                      <SelectItem value="abs">Absoluto</SelectItem>
+                      <SelectItem value="absolute">Absoluto</SelectItem>
                     </SelectContent>
                   </Select>
                   <Input
