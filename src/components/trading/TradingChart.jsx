@@ -10,14 +10,14 @@ import { supabase } from '@/lib/supabaseClient';
 
 const DEFAULT_LAST_BARS = 200;
 const TIMEFRAMES = [
-  { key: '5s',  sec: 5 },
+  { key: '5s', sec: 5 },
   { key: '15s', sec: 15 },
-  { key: '1m',  sec: 60 },
-  { key: '5m',  sec: 300 },
+  { key: '1m', sec: 60 },
+  { key: '5m', sec: 300 },
   { key: '15m', sec: 900 },
 ];
 
-const n   = (x, f = NaN) => (Number.isFinite(Number(x)) ? Number(x) : f);
+const n  = (x, f = NaN) => (Number.isFinite(Number(x)) ? Number(x) : f);
 const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
 
 const toEpochSec = (t) => {
@@ -28,7 +28,7 @@ const toEpochSec = (t) => {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
 };
 
-// Fallback: arma velas OHLC desde ticks (si no hay DB)
+// Fallback para construir velas OHLC a partir de ticks (si no hay DB)
 function aggregate(points = [], tfSec = 60, limit = 200) {
   const tf = Math.max(1, tfSec);
   const rows = (Array.isArray(points) ? points : [])
@@ -42,8 +42,8 @@ function aggregate(points = [], tfSec = 60, limit = 200) {
     const prev = buckets.get(b);
     if (!prev) buckets.set(b, { time: b, open: v, high: v, low: v, close: v });
     else {
-      prev.high  = Math.max(prev.high, v);
-      prev.low   = Math.min(prev.low,  v);
+      prev.high = Math.max(prev.high, v);
+      prev.low  = Math.min(prev.low,  v);
       prev.close = v;
     }
   }
@@ -60,16 +60,16 @@ export default function TradingChart({
 }) {
   const { assetToSymbol, cryptoPrices: ctxPrices = {} } = useData();
 
-  const containerRef  = useRef(null);
-  const chartRef      = useRef(null);
-  const seriesRef     = useRef(null);
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
+  const seriesRef = useRef(null);
   const entryLinesRef = useRef({});
 
   const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
 
-  const base        = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
-  const info        = cryptoPrices?.[base] || ctxPrices?.[base] || {};
-  const change24    = n(info.change, NaN);
+  const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
+  const info = cryptoPrices?.[base] || ctxPrices?.[base] || {};
+  const change24Context = n(info.change, NaN);
   const binanceSymbol = assetToSymbol?.[base] || null;
 
   // ---- Binance (live) ----
@@ -78,70 +78,50 @@ export default function TradingChart({
 
   // ---- Persistente desde DB (cuando NO hay Binance) ----
   const [dbCandles, setDbCandles] = useState([]);
+
   useEffect(() => {
     let cancelled = false;
-
     async function fetchDB() {
       if (binanceSymbol) { setDbCandles([]); return; }
       const { data, error } = await supabase.rpc('get_candles', {
-        p_symbol:  base,
-        p_seconds: tf.sec,      // <— importante: coincide con tu función SQL
-        p_limit:   lastNBars,
+        p_symbol: base,         // símbolo en tu tabla (ej: 'XXL', 'RENO')
+        p_seconds: tf.sec,      // <- FIX: nombre correcto del parámetro
+        p_limit: lastNBars,
       });
       if (!cancelled && !error && Array.isArray(data)) {
         setDbCandles(
           data
             .map(r => ({
-              time:  Number(r['time']), // la función devuelve "time"
-              open:  Number(r.open),
-              high:  Number(r.high),
-              low:   Number(r.low),
-              close: Number(r.close),
+              time: Number(r.time),    // <- FIX: la función devuelve "time"
+              open: Number(r.open),
+              high: Number(r.high),
+              low:  Number(r.low),
+              close:Number(r.close),
             }))
             .sort((a,b) => a.time - b.time)
         );
       }
     }
-
     fetchDB();
+
+    // Realtime: ante cada tick del símbolo, refrescamos velas
+    if (!binanceSymbol) {
+      const ch = supabase
+        .channel(`ticks:${base}`)
+        .on('postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${base}` },
+          fetchDB
+        )
+        .subscribe();
+      return () => { supabase.removeChannel(ch); cancelled = true; };
+    }
     return () => { cancelled = true; };
-  }, [base, tf.sec, lastNBars, binanceSymbol]);
-
-  // Realtime: refrescá al llegar un nuevo tick (tabla market_ticks)
-  useEffect(() => {
-    if (binanceSymbol) return;
-    const channel = supabase
-      .channel(`ticks:${base}`)
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${base}` },
-        () => {
-          supabase.rpc('get_candles', { p_symbol: base, p_seconds: tf.sec, p_limit: lastNBars })
-            .then(({ data }) => {
-              if (Array.isArray(data)) {
-                setDbCandles(
-                  data
-                    .map(r => ({
-                      time:  Number(r['time']),
-                      open:  Number(r.open),
-                      high:  Number(r.high),
-                      low:   Number(r.low),
-                      close: Number(r.close),
-                    }))
-                    .sort((a,b) => a.time - b.time)
-                );
-              }
-            });
-        }
-      )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
   }, [base, tf.sec, lastNBars, binanceSymbol]);
 
   // ---- Fallback local (si no hay DB ni Binance) ----
   const [localTicks, setLocalTicks] = useState([]);
   useEffect(() => {
-    if (binanceSymbol) return; // sólo para manuales/simuladas
+    if (binanceSymbol) return; // sólo para manuales
     const v = n(info.price);
     if (!Number.isFinite(v)) return;
     const t = Math.floor(Date.now() / 1000);
@@ -158,27 +138,40 @@ export default function TradingChart({
   }, [info.history, localTicks, tf.sec, lastNBars]);
 
   // Fuente final de velas y precio
-  const useLive   = !!binanceSymbol;
-  const candles   = useLive ? liveCandles : (dbCandles.length ? dbCandles : manualCandles);
+  const useLive = !!binanceSymbol;
+  const candles = useLive ? liveCandles : (dbCandles.length ? dbCandles : manualCandles);
   const livePrice = useLive
     ? (Number.isFinite(livePriceHook) ? livePriceHook : n(info.price))
     : n(info.price);
+
+  // % 24h: si hay velas de DB, las usamos como referencia
+  const change24 = useMemo(() => {
+    if (useLive) return change24Context;
+    if ((dbCandles?.length || 0) >= 2) {
+      const first = dbCandles[0].close;
+      const last  = dbCandles[dbCandles.length - 1].close;
+      if (Number.isFinite(first) && first > 0 && Number.isFinite(last)) {
+        return ((last - first) / first) * 100;
+      }
+    }
+    return change24Context;
+  }, [useLive, dbCandles, change24Context]);
 
   // ---- montar chart ----
   useEffect(() => {
     if (!containerRef.current) return;
 
     const chart = createChart(containerRef.current, {
-      width:  containerRef.current.clientWidth,
+      width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
       layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#D1D5DB' },
-      grid:   {
+      grid: {
         vertLines: { color: 'rgba(71,85,105,0.35)' },
         horzLines: { color: 'rgba(71,85,105,0.35)' },
       },
       rightPriceScale: { borderColor: '#4B5563', scaleMargins: { top: 0.1, bottom: 0.1 } },
-      timeScale:       { borderColor: '#4B5563', timeVisible: true, secondsVisible: true },
-      crosshair:       { mode: 0 },
+      timeScale: { borderColor: '#4B5563', timeVisible: true, secondsVisible: true },
+      crosshair: { mode: 0 },
     });
 
     const series = chart.addCandlestickSeries({
@@ -191,7 +184,7 @@ export default function TradingChart({
       priceLineVisible: true,
     });
 
-    chartRef.current  = chart;
+    chartRef.current = chart;
     seriesRef.current = series;
 
     const ro = new ResizeObserver((entries) => {
@@ -213,7 +206,7 @@ export default function TradingChart({
         entryLinesRef.current = {};
       } catch {}
       try { chart.remove(); } catch {}
-      chartRef.current  = null;
+      chartRef.current = null;
       seriesRef.current = null;
     };
   }, []);
@@ -221,15 +214,15 @@ export default function TradingChart({
   // ---- pintar velas ----
   useEffect(() => {
     const series = seriesRef.current;
-    const chart  = chartRef.current;
+    const chart = chartRef.current;
     if (!series || !chart) return;
 
     const safe = (candles || [])
       .filter((c) =>
-        Number.isFinite(c.time)  &&
-        Number.isFinite(c.open)  &&
-        Number.isFinite(c.high)  &&
-        Number.isFinite(c.low)   &&
+        Number.isFinite(c.time) &&
+        Number.isFinite(c.open) &&
+        Number.isFinite(c.high) &&
+        Number.isFinite(c.low) &&
         Number.isFinite(c.close)
       )
       .slice(-Math.max(lastNBars, 20));
@@ -253,8 +246,8 @@ export default function TradingChart({
     const prev = entryLinesRef.current || {};
     Object.values(prev).forEach((obj) => {
       try { obj?.entry && series.removePriceLine(obj.entry); } catch {}
-      try { obj?.sl    && series.removePriceLine(obj.sl);    } catch {}
-      try { obj?.tp    && series.removePriceLine(obj.tp);    } catch {}
+      try { obj?.sl && series.removePriceLine(obj.sl); } catch {}
+      try { obj?.tp && series.removePriceLine(obj.tp); } catch {}
     });
     entryLinesRef.current = {};
 
@@ -262,7 +255,7 @@ export default function TradingChart({
       .filter((t) => String(t?.pair || '').toUpperCase() === selectedPair.toUpperCase())
       .filter((t) => String(t?.status || 'open').toLowerCase() === 'open')
       .forEach((t) => {
-        const id    = String(t.id ?? `${t.pair}:${t.timestamp ?? Math.random()}`);
+        const id = String(t.id ?? `${t.pair}:${t.timestamp ?? Math.random()}`);
         const side  = String(t.type || '').toLowerCase();
         const entry = n(t.price ?? t.priceAtExecution, NaN);
         if (!Number.isFinite(entry)) return;
@@ -307,7 +300,7 @@ export default function TradingChart({
       .filter((t) => String(t?.pair || '').toUpperCase() === selectedPair.toUpperCase())
       .filter((t) => String(t?.status || 'open').toLowerCase() === 'open')
       .map((t) => {
-        const sec   = toEpochSec(t.timestamp);
+        const sec = toEpochSec(t.timestamp);
         const price = n(t.price ?? t.priceAtExecution, NaN);
         if (!sec || !Number.isFinite(price)) return null;
         const isBuy = String(t.type || '').toLowerCase() !== 'sell';
