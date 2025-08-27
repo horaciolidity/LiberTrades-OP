@@ -1,5 +1,5 @@
 // src/components/trading/TradingChart.jsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType } from 'lightweight-charts';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -29,7 +29,7 @@ const toEpochSec = (t) => {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
 };
 
-// --- throttle para no spamear el chart ---
+// throttle simple
 function throttle(fn, wait = 150) {
   let last = 0, timer = null, ctx, args;
   return function (...a) {
@@ -47,7 +47,7 @@ function throttle(fn, wait = 150) {
   };
 }
 
-// Construye velas OHLC desde filas RPC (bucket + ohlc)
+// Mapea las filas de get_candles (bucket + OHLC) a lightweight-charts
 const mapRpcCandles = (rows) =>
   (rows || [])
     .map((r) => ({
@@ -60,12 +60,15 @@ const mapRpcCandles = (rows) =>
     .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite))
     .sort((a, b) => a.time - b.time);
 
-// "BTC/USDT" -> { lhs:"BTC", rhs:"USDT", symbol:"BTCUSDT" }
+// "BTC/USDT" -> BTCUSDT ; "XXLUSDT/USDT" -> XXLUSDT (no duplica el quote)
 const parsePair = (pair) => {
-  const [lhsRaw, rhsRaw = 'USDT'] = String(pair || 'BTC/USDT').replace(/\s+/g, '').split('/');
+  const [lhsRaw, rhsRaw = 'USDT'] = String(pair || 'BTC/USDT')
+    .replace(/\s+/g, '')
+    .split('/');
   const lhs = (lhsRaw || 'BTC').toUpperCase();
   const rhs = (rhsRaw || 'USDT').toUpperCase();
-  return { lhs, rhs, symbol: `${lhs}${rhs}` };
+  const symbol = lhs.endsWith(rhs) ? lhs : `${lhs}${rhs}`;
+  return { lhs, rhs, symbol };
 };
 
 export default function TradingChart({
@@ -83,7 +86,7 @@ export default function TradingChart({
   const entryLinesRef = useRef({});
   const channelRef = useRef(null);
 
-  // Mantener velas actuales en un ref para updates incrementales
+  // buffer de velas para updates incrementales
   const candlesRef = useRef([]);
   const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
   const [seedKey, setSeedKey] = useState(0);    // fuerza re-seed al cambiar tf/pair
@@ -166,12 +169,12 @@ export default function TradingChart({
     async function seedFromRPC() {
       if (binanceSymbol) { candlesRef.current = []; return; }
       const { data, error } = await supabase.rpc('get_candles', {
-        p_symbol: dbSymbol,          // <-- usar símbolo completo
+        p_symbol: dbSymbol,
         p_seconds: tf.sec,
         p_limit: lastNBars,
       });
       if (cancelled) return;
-      if (error) return;
+      if (error) { console.debug('[get_candles]', error.message); return; }
 
       const arr = mapRpcCandles(data).slice(-Math.max(lastNBars, 20));
       candlesRef.current = arr;
@@ -181,17 +184,14 @@ export default function TradingChart({
 
       series.setData(arr);
       if (arr.length) {
-        const from = arr[0].time;
-        const to = arr[arr.length - 1].time;
-        chart.timeScale().setVisibleRange({ from, to });
+        chart.timeScale().setVisibleRange({ from: arr[0].time, to: arr[arr.length - 1].time });
         chart.timeScale().scrollToRealTime();
+        series.priceScale().applyOptions({ autoScale: true }); // autoscale suave
       }
     }
 
     seedFromRPC();
-
-    // Resync suave cada ~60s para corregir drift
-    const resyncId = setInterval(seedFromRPC, 60000);
+    const resyncId = setInterval(seedFromRPC, 60000); // resync cada ~60s
 
     return () => { cancelled = true; clearInterval(resyncId); };
   }, [seedKey, dbSymbol, tf.sec, lastNBars, binanceSymbol]);
@@ -207,7 +207,8 @@ export default function TradingChart({
 
     const pushTick = throttle((tick) => {
       const series = seriesRef.current;
-      if (!series) return;
+      const chart  = chartRef.current;
+      if (!series || !chart) return;
 
       const tfSec = Math.max(1, tf.sec);
       const price = n(tick?.price, NaN);
@@ -230,6 +231,8 @@ export default function TradingChart({
         buf[buf.length - 1] = updated;
         candlesRef.current = buf;
         series.update(updated);
+        series.priceScale().applyOptions({ autoScale: true });
+        chart.timeScale().scrollToRealTime();
         return;
       }
 
@@ -240,6 +243,8 @@ export default function TradingChart({
         const next = [...buf, fresh].slice(-Math.max(lastNBars, 20));
         candlesRef.current = next;
         series.update(fresh);
+        series.priceScale().applyOptions({ autoScale: true });
+        chart.timeScale().scrollToRealTime();
         return;
       }
 
@@ -276,6 +281,7 @@ export default function TradingChart({
     if (safe.length) {
       chart.timeScale().setVisibleRange({ from: safe[0].time, to: safe[safe.length - 1].time });
       chart.timeScale().scrollToRealTime();
+      series.priceScale().applyOptions({ autoScale: true });
     }
   }, [binanceSymbol, liveCandles, lastNBars]);
 

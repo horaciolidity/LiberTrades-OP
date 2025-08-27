@@ -104,6 +104,10 @@ export function DataProvider({ children }) {
   const histRef = useRef({});
   const liveMapRef = useRef({});
 
+  // NEW: detección de funciones RPC
+  const supportsBulkRef = useRef(null); // true | false | null
+  const hasNextV2Ref    = useRef(null); // true | false | null
+
   useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
   useEffect(() => { rulesRef.current = marketRules; }, [marketRules]);
   useEffect(() => { quotesRef.current = realQuotes; }, [realQuotes]);
@@ -295,7 +299,7 @@ export function DataProvider({ children }) {
 
   // ---------- PRO: Simuladas/Manual desde servidor (Realtime + RPC) ----------
   useEffect(() => {
-    // 1) Suscripción a market_state
+    // 1) Suscripción a market_state (cotizaciones para la UI)
     const onStateChange = (payload) => {
       const row = payload.new;
       if (!row) return;
@@ -305,8 +309,6 @@ export function DataProvider({ children }) {
       if (!Number.isFinite(price)) return;
 
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
-
-      // Actualizamos cotización; el historial lo arma el consolidado cada TICK_MS
       setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
     };
 
@@ -316,42 +318,78 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Driver: primero intentamos una RPC que avanza TODOS; si no existe, fallback por símbolo
+    // 2) Símbolos simulados/manuales habilitados
     const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
       .map((i) => i.symbol);
 
-    // Seed inicial para asegurar filas en market_state
-    (async () => {
-      for (const sym of simSyms) {
-        try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
-      }
-      // mejor esfuerzo por si existe la v2
-      try { await supabase.rpc('tick_all_simulated_v2'); } catch {}
-    })();
-
     let alive = true;
     let idx = 0;
-    const drive = async () => {
-      if (!alive || simSyms.length === 0) return;
-      // 1) intento masivo (si existe la función)
-      try {
-        await supabase.rpc('tick_all_simulated_v2');
-        return;
-      } catch {}
-      // 2) fallback round-robin por símbolo
-      const sym = simSyms[idx % simSyms.length];
-      idx++;
-      try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
+    let timer;
+
+    // ---- helpers para detectar funciones disponibles (se ejecutan 1 sola vez) ----
+    const probeFns = async () => {
+      // Detecta bulk
+      if (supportsBulkRef.current === null) {
+        const { error } = await supabase.rpc('tick_all_simulated_v2');
+        supportsBulkRef.current = !error; // true si no hubo error
+      }
+      // Detecta next_simulated_tick_v2 (solo si hay símbolos)
+      if (hasNextV2Ref.current === null) {
+        if (simSyms.length > 0) {
+          const { error } = await supabase.rpc('next_simulated_tick_v2', { p_symbol: simSyms[0] });
+          hasNextV2Ref.current = !error;
+        } else {
+          hasNextV2Ref.current = false;
+        }
+      }
     };
 
-    const id = setInterval(drive, TICK_MS);
+    // Seed suave: asegura 1 fila en market_state por símbolo
+    const callNextOnce = async (sym) => {
+      // intenta v2 y cae a v1; memoriza resultado para próximos ciclos
+      if (hasNextV2Ref.current === true) {
+        const { error } = await supabase.rpc('next_simulated_tick_v2', { p_symbol: sym });
+        if (!error) return;
+        hasNextV2Ref.current = false;
+      }
+      await supabase.rpc('next_simulated_tick', { p_symbol: sym });
+    };
+
+    const seedOnce = async () => {
+      for (const sym of simSyms) {
+        await callNextOnce(sym);
+      }
+    };
+
+    const drive = async () => {
+      if (!alive || simSyms.length === 0) return;
+
+      // 1) bulk si está disponible
+      if (supportsBulkRef.current === true) {
+        const { error } = await supabase.rpc('tick_all_simulated_v2');
+        if (!error) return; // listo, avanzó todo
+        supportsBulkRef.current = false; // deja de intentar bulk
+      }
+
+      // 2) fallback round-robin por símbolo (v2 si existe, sino v1)
+      const sym = simSyms[idx % simSyms.length];
+      idx++;
+      await callNextOnce(sym);
+    };
+
+    (async () => {
+      await probeFns();   // detecta RPCs (solo 1 vez por montaje)
+      await seedOnce();   // deja estado inicial
+      timer = setInterval(drive, TICK_MS); // único loop
+    })();
 
     return () => {
       alive = false;
-      clearInterval(id);
+      clearInterval(timer);
       try { supabase.removeChannel(ch); } catch {}
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instruments]);
 
   // ---------- Consolidación final + histories cada ~1s ----------
@@ -435,7 +473,7 @@ export function DataProvider({ children }) {
     () => [
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
       { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
-      { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para inversores avanzados' },
+      { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para grandes inversores' },
       { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
     ],
     []
