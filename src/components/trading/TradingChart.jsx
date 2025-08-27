@@ -1,3 +1,4 @@
+// src/components/trading/TradingChart.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType } from 'lightweight-charts';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -28,7 +29,7 @@ const toEpochSec = (t) => {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
 };
 
-// --- Pequeño throttle para no spamear el chart ---
+// --- throttle para no spamear el chart ---
 function throttle(fn, wait = 150) {
   let last = 0, timer = null, ctx, args;
   return function (...a) {
@@ -59,6 +60,14 @@ const mapRpcCandles = (rows) =>
     .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite))
     .sort((a, b) => a.time - b.time);
 
+// "BTC/USDT" -> { lhs:"BTC", rhs:"USDT", symbol:"BTCUSDT" }
+const parsePair = (pair) => {
+  const [lhsRaw, rhsRaw = 'USDT'] = String(pair || 'BTC/USDT').replace(/\s+/g, '').split('/');
+  const lhs = (lhsRaw || 'BTC').toUpperCase();
+  const rhs = (rhsRaw || 'USDT').toUpperCase();
+  return { lhs, rhs, symbol: `${lhs}${rhs}` };
+};
+
 export default function TradingChart({
   selectedPair = 'BTC/USDT',
   cryptoPrices = {},
@@ -79,10 +88,14 @@ export default function TradingChart({
   const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
   const [seedKey, setSeedKey] = useState(0);    // fuerza re-seed al cambiar tf/pair
 
-  const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
-  const info = cryptoPrices?.[base] || ctxPrices?.[base] || {};
+  const { lhs, rhs, symbol: dbSymbol } = parsePair(selectedPair);
+
+  // info para el precio mostrado (por activo base)
+  const info = cryptoPrices?.[lhs] || ctxPrices?.[lhs] || {};
   const change24 = n(info.change, NaN);
-  const binanceSymbol = assetToSymbol?.[base] || null;
+
+  // si hay mapeo binance por activo base (ej: BTC -> BTCUSDT), usar ese feed
+  const binanceSymbol = assetToSymbol?.[lhs] || null;
 
   // ---- Binance (live) ----
   const { candles: liveCandles, price: livePriceHook, status } =
@@ -153,7 +166,7 @@ export default function TradingChart({
     async function seedFromRPC() {
       if (binanceSymbol) { candlesRef.current = []; return; }
       const { data, error } = await supabase.rpc('get_candles', {
-        p_symbol: base,
+        p_symbol: dbSymbol,          // <-- usar símbolo completo
         p_seconds: tf.sec,
         p_limit: lastNBars,
       });
@@ -181,17 +194,15 @@ export default function TradingChart({
     const resyncId = setInterval(seedFromRPC, 60000);
 
     return () => { cancelled = true; clearInterval(resyncId); };
-  }, [seedKey, base, tf.sec, lastNBars, binanceSymbol]);
+  }, [seedKey, dbSymbol, tf.sec, lastNBars, binanceSymbol]);
 
   // ---- Realtime incremental (INSERT en market_ticks) para simulados ----
   useEffect(() => {
     if (binanceSymbol) {
-      // si pasamos a Binance, quitar cualquier canal anterior
       if (channelRef.current) { try { supabase.removeChannel(channelRef.current); } catch {} }
       return;
     }
 
-    // limpiar canal anterior
     if (channelRef.current) { try { supabase.removeChannel(channelRef.current); } catch {} }
 
     const pushTick = throttle((tick) => {
@@ -232,13 +243,14 @@ export default function TradingChart({
         return;
       }
 
-      // 3) si el tick llegó atrasado (bucket < last.time) ignorar
-    }, 120); // ~8 updates/seg máx
+      // 3) atrasados: ignorar
+    }, 120);
 
     const ch = supabase
-      .channel(`ticks:${base}:${tf.sec}`)
-      .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${base}` },
+      .channel(`ticks:${dbSymbol}:${tf.sec}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${dbSymbol}` },
         (payload) => pushTick(payload?.new)
       )
       .subscribe();
@@ -249,7 +261,7 @@ export default function TradingChart({
       try { supabase.removeChannel(ch); } catch {}
       channelRef.current = null;
     };
-  }, [base, tf.sec, lastNBars, binanceSymbol]);
+  }, [dbSymbol, tf.sec, lastNBars, binanceSymbol]);
 
   // ---- Si es Binance, pintar lo que venga del hook ----
   useEffect(() => {
@@ -270,9 +282,9 @@ export default function TradingChart({
   // ---- Re-seed al cambiar par/timeframe ----
   useEffect(() => {
     setSeedKey((k) => k + 1);
-  }, [base, tf.sec]);
+  }, [dbSymbol, tf.sec]);
 
-  // ---- Overlays PnL (igual que tenías) ----
+  // ---- Overlays PnL ----
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
@@ -326,7 +338,7 @@ export default function TradingChart({
       });
   }, [openTrades, selectedPair, showGuides, livePrice]);
 
-  // ---- Marcadores de entrada (igual) ----
+  // ---- Marcadores de entrada ----
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
