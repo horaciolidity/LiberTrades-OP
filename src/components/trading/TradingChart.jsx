@@ -1,4 +1,3 @@
-// src/components/trading/TradingChart.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType } from 'lightweight-charts';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -10,10 +9,10 @@ import { supabase } from '@/lib/supabaseClient';
 
 const DEFAULT_LAST_BARS = 200;
 const TIMEFRAMES = [
-  { key: '5s', sec: 5 },
+  { key: '5s',  sec: 5 },
   { key: '15s', sec: 15 },
-  { key: '1m', sec: 60 },
-  { key: '5m', sec: 300 },
+  { key: '1m',  sec: 60 },
+  { key: '5m',  sec: 300 },
   { key: '15m', sec: 900 },
 ];
 
@@ -21,35 +20,44 @@ const n = (x, f = NaN) => (Number.isFinite(Number(x)) ? Number(x) : f);
 const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
 
 const toEpochSec = (t) => {
-  if (!t && t !== 0) return undefined;
+  if (t === 0) return 0;
+  if (!t) return undefined;
   const num = Number(t);
   if (Number.isFinite(num)) return num > 2e10 ? Math.floor(num / 1000) : Math.floor(num);
   const ms = Date.parse(t);
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
 };
 
-// Construye velas OHLC a partir de ticks {time, value}
-function aggregate(points = [], tfSec = 60, limit = 200) {
-  const tf = Math.max(1, tfSec);
-  const rows = (Array.isArray(points) ? points : [])
-    .map((p) => ({ t: toEpochSec(p.time), v: n(p.value) }))
-    .filter((r) => Number.isFinite(r.t) && Number.isFinite(r.v))
-    .sort((a, b) => a.t - b.t);
-
-  const buckets = new Map();
-  for (const { t, v } of rows) {
-    const b = Math.floor(t / tf) * tf;
-    const prev = buckets.get(b);
-    if (!prev) buckets.set(b, { time: b, open: v, high: v, low: v, close: v });
-    else {
-      prev.high = Math.max(prev.high, v);
-      prev.low = Math.min(prev.low, v);
-      prev.close = v;
+// --- Pequeño throttle para no spamear el chart ---
+function throttle(fn, wait = 150) {
+  let last = 0, timer = null, ctx, args;
+  return function (...a) {
+    ctx = this; args = a;
+    const now = Date.now();
+    const remaining = wait - (now - last);
+    if (remaining <= 0) {
+      clearTimeout(timer); timer = null;
+      last = now; fn.apply(ctx, args);
+    } else if (!timer) {
+      timer = setTimeout(() => {
+        last = Date.now(); timer = null; fn.apply(ctx, args);
+      }, remaining);
     }
-  }
-  const arr = Array.from(buckets.values()).sort((a, b) => a.time - b.time);
-  return arr.length > limit ? arr.slice(arr.length - limit) : arr;
+  };
 }
+
+// Construye velas OHLC desde filas RPC (bucket + ohlc)
+const mapRpcCandles = (rows) =>
+  (rows || [])
+    .map((r) => ({
+      time: Number(r.bucket),
+      open: Number(r.open),
+      high: Number(r.high),
+      low:  Number(r.low),
+      close:Number(r.close),
+    }))
+    .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite))
+    .sort((a, b) => a.time - b.time);
 
 export default function TradingChart({
   selectedPair = 'BTC/USDT',
@@ -64,123 +72,30 @@ export default function TradingChart({
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const entryLinesRef = useRef({});
-  const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m
+  const channelRef = useRef(null);
+
+  // Mantener velas actuales en un ref para updates incrementales
+  const candlesRef = useRef([]);
+  const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
+  const [seedKey, setSeedKey] = useState(0);    // fuerza re-seed al cambiar tf/pair
 
   const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
   const info = cryptoPrices?.[base] || ctxPrices?.[base] || {};
   const change24 = n(info.change, NaN);
-  const binanceSymbol = assetToSymbol?.[base] || null; // si hay par en Binance → live; si no → DB
+  const binanceSymbol = assetToSymbol?.[base] || null;
 
   // ---- Binance (live) ----
   const { candles: liveCandles, price: livePriceHook, status } =
     useBinanceKlines(binanceSymbol, tf.key, lastNBars, { enabled: !!binanceSymbol });
 
-  // ---- DB candles (simuladas / manuales) ----
-  const [dbCandles, setDbCandles] = useState([]);
-  const [dbUpdatedAt, setDbUpdatedAt] = useState(0);
-
-  // Helper para mapear lo que devuelve tu RPC get_candles
-  const mapRpcCandles = (rows) =>
-    (rows || [])
-      .map((r) => ({
-        time: Number(r.bucket),   // <-- IMPORTANTE: bucket (epoch seconds)
-        open: Number(r.open),
-        high: Number(r.high),
-        low:  Number(r.low),
-        close:Number(r.close),
-      }))
-      .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite))
-      .sort((a, b) => a.time - b.time);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchDB() {
-      if (binanceSymbol) { setDbCandles([]); setDbUpdatedAt(0); return; }
-      const { data, error } = await supabase.rpc('get_candles', {
-        p_symbol: base,
-        p_seconds: tf.sec,
-        p_limit: lastNBars,
-      });
-      if (!cancelled && !error && Array.isArray(data)) {
-        setDbCandles(mapRpcCandles(data));
-        setDbUpdatedAt(Date.now());
-      }
-    }
-    fetchDB();
-    return () => { cancelled = true; };
-  }, [base, tf.sec, lastNBars, binanceSymbol]);
-
-  // Realtime por INSERT en market_ticks (simulador escribe ahí)
-  useEffect(() => {
-    if (binanceSymbol) return;
-    const ch = supabase
-      .channel(`ticks:${base}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${base}` },
-        async () => {
-          const { data, error } = await supabase.rpc('get_candles', {
-            p_symbol: base, p_seconds: tf.sec, p_limit: lastNBars
-          });
-          if (!error && Array.isArray(data)) {
-            setDbCandles(mapRpcCandles(data)); // <-- usa bucket
-            setDbUpdatedAt(Date.now());
-          }
-        }
-      )
-      .subscribe();
-
-    return () => { try { supabase.removeChannel(ch); } catch {} };
-  }, [base, tf.sec, lastNBars, binanceSymbol]);
-
-  // Poll de respaldo (si Realtime no está activo)
-  useEffect(() => {
-    if (binanceSymbol) return;
-    const id = setInterval(async () => {
-      if (Date.now() - dbUpdatedAt > 10000) {
-        const { data, error } = await supabase.rpc('get_candles', {
-          p_symbol: base, p_seconds: tf.sec, p_limit: lastNBars
-        });
-        if (!error && Array.isArray(data)) {
-          setDbCandles(mapRpcCandles(data));
-          setDbUpdatedAt(Date.now());
-        }
-      }
-    }, 5000);
-    return () => clearInterval(id);
-  }, [base, tf.sec, lastNBars, binanceSymbol, dbUpdatedAt]);
-
-  // ---- Fallback local (si no hay DB ni Binance) ----
-  const [localTicks, setLocalTicks] = useState([]);
-  useEffect(() => {
-    if (binanceSymbol) return;
-    const v = n(info.price);
-    if (!Number.isFinite(v)) return;
-    const t = Math.floor(Date.now() / 1000);
-    setLocalTicks((prev) => {
-      const next = [...prev, { time: t, value: v }];
-      const from = t - tf.sec * (lastNBars + 2);
-      return next.filter((p) => toEpochSec(p.time) >= from);
-    });
-  }, [binanceSymbol, info.price, tf.sec, lastNBars]);
-
-  const manualCandles = useMemo(() => {
-    const pts = Array.isArray(info.history) && info.history.length ? info.history : localTicks;
-    return aggregate(pts, tf.sec, lastNBars);
-  }, [info.history, localTicks, tf.sec, lastNBars]);
-
-  // Fuente final
-  const useLive = !!binanceSymbol;
-  const useDB = dbCandles && dbCandles.length >= 1; // con 1 ya muestra algo
-  const candles = useLive ? liveCandles : (useDB ? dbCandles : manualCandles);
-  const livePrice = useLive
+  // ---- Precio a mostrar ----
+  const livePrice = binanceSymbol
     ? (Number.isFinite(livePriceHook) ? livePriceHook : n(info.price))
     : n(info.price);
 
-  // ---- montar chart ----
+  // ---- Crear Chart una sola vez ----
   useEffect(() => {
     if (!containerRef.current) return;
-
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
@@ -231,32 +146,133 @@ export default function TradingChart({
     };
   }, []);
 
-  // ---- pintar velas ----
+  // ---- Seed / Resync (RPC) para símbolos simulados ----
   useEffect(() => {
-    const series = seriesRef.current;
-    const chart = chartRef.current;
-    if (!series || !chart) return;
+    let cancelled = false;
 
-    const safe = (candles || [])
-      .filter((c) =>
-        Number.isFinite(c.time) &&
-        Number.isFinite(c.open) &&
-        Number.isFinite(c.high) &&
-        Number.isFinite(c.low) &&
-        Number.isFinite(c.close),
+    async function seedFromRPC() {
+      if (binanceSymbol) { candlesRef.current = []; return; }
+      const { data, error } = await supabase.rpc('get_candles', {
+        p_symbol: base,
+        p_seconds: tf.sec,
+        p_limit: lastNBars,
+      });
+      if (cancelled) return;
+      if (error) return;
+
+      const arr = mapRpcCandles(data).slice(-Math.max(lastNBars, 20));
+      candlesRef.current = arr;
+
+      const series = seriesRef.current; const chart = chartRef.current;
+      if (!series || !chart) return;
+
+      series.setData(arr);
+      if (arr.length) {
+        const from = arr[0].time;
+        const to = arr[arr.length - 1].time;
+        chart.timeScale().setVisibleRange({ from, to });
+        chart.timeScale().scrollToRealTime();
+      }
+    }
+
+    seedFromRPC();
+
+    // Resync suave cada ~60s para corregir drift
+    const resyncId = setInterval(seedFromRPC, 60000);
+
+    return () => { cancelled = true; clearInterval(resyncId); };
+  }, [seedKey, base, tf.sec, lastNBars, binanceSymbol]);
+
+  // ---- Realtime incremental (INSERT en market_ticks) para simulados ----
+  useEffect(() => {
+    if (binanceSymbol) {
+      // si pasamos a Binance, quitar cualquier canal anterior
+      if (channelRef.current) { try { supabase.removeChannel(channelRef.current); } catch {} }
+      return;
+    }
+
+    // limpiar canal anterior
+    if (channelRef.current) { try { supabase.removeChannel(channelRef.current); } catch {} }
+
+    const pushTick = throttle((tick) => {
+      const series = seriesRef.current;
+      if (!series) return;
+
+      const tfSec = Math.max(1, tf.sec);
+      const price = n(tick?.price, NaN);
+      const tsSec = toEpochSec(tick?.ts);
+      if (!Number.isFinite(price) || !Number.isFinite(tsSec)) return;
+
+      const bucket = Math.floor(tsSec / tfSec) * tfSec;
+
+      const buf = candlesRef.current || [];
+      const last = buf[buf.length - 1];
+
+      // 1) mismo bucket → actualizar O/H/L/C
+      if (last && last.time === bucket) {
+        const updated = {
+          ...last,
+          high: Math.max(last.high, price),
+          low:  Math.min(last.low,  price),
+          close: price,
+        };
+        buf[buf.length - 1] = updated;
+        candlesRef.current = buf;
+        series.update(updated);
+        return;
+      }
+
+      // 2) bucket nuevo → pushear vela
+      if (!last || bucket > last.time) {
+        const open = last ? last.close : price;
+        const fresh = { time: bucket, open, high: price, low: price, close: price };
+        const next = [...buf, fresh].slice(-Math.max(lastNBars, 20));
+        candlesRef.current = next;
+        series.update(fresh);
+        return;
+      }
+
+      // 3) si el tick llegó atrasado (bucket < last.time) ignorar
+    }, 120); // ~8 updates/seg máx
+
+    const ch = supabase
+      .channel(`ticks:${base}:${tf.sec}`)
+      .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${base}` },
+        (payload) => pushTick(payload?.new)
       )
-      .slice(-Math.max(lastNBars, 20));
+      .subscribe();
 
-    if (!safe.length) { series.setData([]); return; }
+    channelRef.current = ch;
 
+    return () => {
+      try { supabase.removeChannel(ch); } catch {}
+      channelRef.current = null;
+    };
+  }, [base, tf.sec, lastNBars, binanceSymbol]);
+
+  // ---- Si es Binance, pintar lo que venga del hook ----
+  useEffect(() => {
+    if (!binanceSymbol) return;
+    const series = seriesRef.current; const chart = chartRef.current;
+    if (!series || !chart) return;
+    const safe = (liveCandles || []).filter(c =>
+      Number.isFinite(c.time) && Number.isFinite(c.open) &&
+      Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close)
+    ).slice(-Math.max(lastNBars, 20));
     series.setData(safe);
-    const from = safe[0].time;
-    const to = safe[safe.length - 1].time;
-    chart.timeScale().setVisibleRange({ from, to });
-    chart.timeScale().scrollToRealTime();
-  }, [candles, lastNBars]);
+    if (safe.length) {
+      chart.timeScale().setVisibleRange({ from: safe[0].time, to: safe[safe.length - 1].time });
+      chart.timeScale().scrollToRealTime();
+    }
+  }, [binanceSymbol, liveCandles, lastNBars]);
 
-  // ---- overlays PnL ----
+  // ---- Re-seed al cambiar par/timeframe ----
+  useEffect(() => {
+    setSeedKey((k) => k + 1);
+  }, [base, tf.sec]);
+
+  // ---- Overlays PnL (igual que tenías) ----
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
@@ -306,12 +322,11 @@ export default function TradingChart({
             price: tp, color: '#22c55e', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `TP ${fmt(tp)}`,
           });
         }
-
         entryLinesRef.current[id] = obj;
       });
   }, [openTrades, selectedPair, showGuides, livePrice]);
 
-  // ---- marcadores de entrada ----
+  // ---- Marcadores de entrada (igual) ----
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
