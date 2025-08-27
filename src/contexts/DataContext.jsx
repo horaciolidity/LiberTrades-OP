@@ -99,15 +99,15 @@ export function DataProvider({ children }) {
 
   // refs para evitar rehacer intervalos
   const instrumentsRef = useRef([]);
-  const rulesRef       = useRef([]);
-  const quotesRef      = useRef({});
-  const histRef        = useRef({});
-  const liveMapRef     = useRef({});
+  const rulesRef = useRef([]);
+  const quotesRef = useRef({});
+  const histRef = useRef({});
+  const liveMapRef = useRef({});
 
   useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
-  useEffect(() => { rulesRef.current       = marketRules; }, [marketRules]);
-  useEffect(() => { quotesRef.current      = realQuotes; }, [realQuotes]);
-  useEffect(() => { histRef.current        = priceHistories; }, [priceHistories]);
+  useEffect(() => { rulesRef.current = marketRules; }, [marketRules]);
+  useEffect(() => { quotesRef.current = realQuotes; }, [realQuotes]);
+  useEffect(() => { histRef.current = priceHistories; }, [priceHistories]);
 
   // ---------- Fetch + realtime instrumentos/reglas ----------
   const refreshMarketInstruments = async () => {
@@ -279,7 +279,7 @@ export function DataProvider({ children }) {
           };
 
           ws.onerror = () => { try { ws.close(); } catch {} };
-          ws.onclose  = () => {
+          ws.onclose = () => {
             wsAliveRef.current = false;
             startRestPolling(liveEntries);
           };
@@ -305,6 +305,8 @@ export function DataProvider({ children }) {
       if (!Number.isFinite(price)) return;
 
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
+
+      // Actualizamos cotización; el historial lo arma el consolidado cada TICK_MS
       setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
     };
 
@@ -314,7 +316,7 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Driver simulación: v2 si existe; si no, round-robin por símbolo
+    // 2) Driver: primero intentamos una RPC que avanza TODOS; si no existe, fallback por símbolo
     const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
       .map((i) => i.symbol);
@@ -324,23 +326,20 @@ export function DataProvider({ children }) {
       for (const sym of simSyms) {
         try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
       }
-      // mejor esfuerzo por si existe la v2 (si 400, lo silenciamos luego)
+      // mejor esfuerzo por si existe la v2
       try { await supabase.rpc('tick_all_simulated_v2'); } catch {}
     })();
-
-    const hasV2Ref = useRef(true); // para no spamear 400 (Bad Request)
 
     let alive = true;
     let idx = 0;
     const drive = async () => {
       if (!alive || simSyms.length === 0) return;
-
-      if (hasV2Ref.current) {
-        const { error } = await supabase.rpc('tick_all_simulated_v2');
-        if (!error) return;
-        hasV2Ref.current = false; // no lo intento más si falla
-      }
-
+      // 1) intento masivo (si existe la función)
+      try {
+        await supabase.rpc('tick_all_simulated_v2');
+        return;
+      } catch {}
+      // 2) fallback round-robin por símbolo
       const sym = simSyms[idx % simSyms.length];
       idx++;
       try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
