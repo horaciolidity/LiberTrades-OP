@@ -71,6 +71,12 @@ export default function TradingChart({
   const change24 = n(info.change, NaN);
   const binanceSymbol = assetToSymbol?.[base] || null;
 
+  // Símbolo para tu DB (sin slash, mayúsculas), p.ej. "XXLUSDT"
+  const simSymbol = useMemo(
+    () => String(selectedPair || '').replace(/[^\w]/g, '').toUpperCase(),
+    [selectedPair]
+  );
+
   // ---- Binance (live) ----
   const { candles: liveCandles, price: livePriceHook, status } =
     useBinanceKlines(binanceSymbol, tf.key, lastNBars, { enabled: !!binanceSymbol });
@@ -84,7 +90,7 @@ export default function TradingChart({
     async function fetchDB() {
       if (binanceSymbol) { setDbCandles([]); setDbUpdatedAt(0); return; }
       const { data, error } = await supabase.rpc('get_candles', {
-        p_symbol: base,
+        p_symbol: simSymbol,
         p_seconds: tf.sec,
         p_limit: lastNBars,
       });
@@ -92,7 +98,7 @@ export default function TradingChart({
         setDbCandles(
           data
             .map((r) => ({
-               time: Number(r.bucket), 
+              time: Number(r.bucket),
               open: Number(r.open),
               high: Number(r.high),
               low: Number(r.low),
@@ -106,22 +112,22 @@ export default function TradingChart({
     }
     fetchDB();
     return () => { cancelled = true; };
-  }, [base, tf.sec, lastNBars, binanceSymbol]);
+  }, [simSymbol, tf.sec, lastNBars, binanceSymbol]);
 
   // Realtime por INSERT en market_ticks (simulador escribe ahí)
   useEffect(() => {
     if (binanceSymbol) return;
     const ch = supabase
-      .channel(`ticks:${base}`)
+      .channel(`ticks:${simSymbol}`)
       .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${base}` },
+        { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${simSymbol}` },
         () => {
-          supabase.rpc('get_candles', { p_symbol: base, p_seconds: tf.sec, p_limit: lastNBars })
+          supabase.rpc('get_candles', { p_symbol: simSymbol, p_seconds: tf.sec, p_limit: lastNBars })
             .then(({ data, error }) => {
               if (!error && Array.isArray(data)) {
                 setDbCandles(
                   data
-                    .map((r) => ({ time: +r.time, open: +r.open, high: +r.high, low: +r.low, close: +r.close }))
+                    .map((r) => ({ time: +r.bucket, open: +r.open, high: +r.high, low: +r.low, close: +r.close }))
                     .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite))
                     .sort((a, b) => a.time - b.time),
                 );
@@ -132,19 +138,19 @@ export default function TradingChart({
       .subscribe();
 
     return () => { try { supabase.removeChannel(ch); } catch {} };
-  }, [base, tf.sec, lastNBars, binanceSymbol]);
+  }, [simSymbol, tf.sec, lastNBars, binanceSymbol]);
 
   // Poll de respaldo (si Realtime no está activo)
   useEffect(() => {
     if (binanceSymbol) return;
     const id = setInterval(() => {
       if (Date.now() - dbUpdatedAt > 10000) {
-        supabase.rpc('get_candles', { p_symbol: base, p_seconds: tf.sec, p_limit: lastNBars })
+        supabase.rpc('get_candles', { p_symbol: simSymbol, p_seconds: tf.sec, p_limit: lastNBars })
           .then(({ data, error }) => {
             if (!error && Array.isArray(data)) {
               setDbCandles(
                 data
-                  .map((r) => ({ time: +r.time, open: +r.open, high: +r.high, low: +r.low, close: +r.close }))
+                  .map((r) => ({ time: +r.bucket, open: +r.open, high: +r.high, low: +r.low, close: +r.close }))
                   .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite))
                   .sort((a, b) => a.time - b.time),
               );
@@ -154,7 +160,7 @@ export default function TradingChart({
       }
     }, 5000);
     return () => clearInterval(id);
-  }, [base, tf.sec, lastNBars, binanceSymbol, dbUpdatedAt]);
+  }, [simSymbol, tf.sec, lastNBars, binanceSymbol, dbUpdatedAt]);
 
   // ---- Fallback local (si no hay DB ni Binance) ----
   const [localTicks, setLocalTicks] = useState([]);
@@ -175,7 +181,7 @@ export default function TradingChart({
     return aggregate(pts, tf.sec, lastNBars);
   }, [info.history, localTicks, tf.sec, lastNBars]);
 
-  // Fuente final (prefiere DB sólo si trae algo útil)
+  // Fuente final (prefiere DB solo si trae algo útil)
   const useLive = !!binanceSymbol;
   const useDB = dbCandles && dbCandles.length >= 5;
   const candles = useLive ? liveCandles : (useDB ? dbCandles : manualCandles);
@@ -392,3 +398,13 @@ export default function TradingChart({
     </Card>
   );
 }
+
+ 
+useEffect(() => {
+  if (binanceSymbol) return;
+  const id = setInterval(() => {
+    supabase.rpc('next_simulated_tick_v2', { p_symbol: simSymbol }).catch(() => {});
+  }, 1000);
+  return () => clearInterval(id);
+}, [binanceSymbol, simSymbol]);
+
