@@ -45,15 +45,13 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
     if (sym !== symbol) continue;
 
     const sh = Number(r.start_hour ?? 0);
-    theEnd: {
-      const eh = Number(r.end_hour ?? 0);
-      if (!inWindowUTC(hour, sh, eh)) break theEnd;
+    const eh = Number(r.end_hour ?? 0);
+    if (!inWindowUTC(hour, sh, eh)) continue;
 
-      const type = String(r.type || '').toLowerCase(); // 'percent' | 'abs' | 'absolute'
-      const v = Number(r.value ?? 0);
-      if (type === 'percent') price *= (1 + v / 100);
-      else price += v; // abs/absolute => suma directa
-    }
+    const type = String(r.type || '').toLowerCase(); // 'percent' | 'abs' | 'absolute'
+    const v = Number(r.value ?? 0);
+    if (type === 'percent') price *= (1 + v / 100);
+    else price += v; // abs/absolute => suma directa
   }
   return price;
 };
@@ -98,6 +96,7 @@ export function DataProvider({ children }) {
   const wsAliveRef = useRef(false);
   const restPollRef = useRef(null);
   const lastTickRef = useRef(0);
+  const simDriverEnabledRef = useRef(true); // se apaga si RPC falla
 
   // refs para evitar rehacer intervalos
   const instrumentsRef = useRef([]);
@@ -295,9 +294,9 @@ export function DataProvider({ children }) {
     return () => { alive = false; teardown(); };
   }, [liveBinanceMap]);
 
-  // ---------- Simuladas/Manual desde servidor (Realtime + driver) ----------
+  // ---------- PRO: Simuladas/Manual desde servidor (Realtime + RPC) ----------
   useEffect(() => {
-    // 1) Realtime de market_state
+    // 1) Suscripción a market_state -> actualiza cotización/24h
     const onStateChange = (payload) => {
       const row = payload.new;
       if (!row) return;
@@ -312,28 +311,43 @@ export function DataProvider({ children }) {
 
     const ch = supabase
       .channel('market_state_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_state' }, onStateChange)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'market_state' }, onStateChange)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Driver round-robin: avanzamos 1 símbolo por tick
-    const simSyms = (instruments || [])
+    // 2) Driver de simulación:
+    const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
-      .map((i) => i.symbol);
+      .map((i) => String(i.symbol).toUpperCase());
 
-    // Seed inicial para asegurar filas en market_state
+    // Seed: asegurar que existan filas en market_state/ticks
     (async () => {
       for (const sym of simSyms) {
         try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
       }
+      // Si existe tick_all_simulated_v2 no pasa nada; si falla, se ignora.
+      try { await supabase.rpc('tick_all_simulated_v2'); } catch {}
     })();
 
     let alive = true;
     let idx = 0;
-    const id = setInterval(async () => {
-      if (!alive || simSyms.length === 0) return;
+    simDriverEnabledRef.current = true;
+
+    const driveOnce = async (sym) => {
+      if (!alive || !simDriverEnabledRef.current) return;
+      const { error } = await supabase.rpc('next_simulated_tick', { p_symbol: sym });
+      if (error) {
+        // desactivar para no spamear 400; el gráfico seguirá con los datos ya guardados
+        simDriverEnabledRef.current = false;
+        console.warn('[sim-driver] deshabilitado por error RPC:', error);
+      }
+    };
+
+    const id = setInterval(() => {
+      if (!alive || !simDriverEnabledRef.current || simSyms.length === 0) return;
       const sym = simSyms[idx % simSyms.length];
       idx++;
-      try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
+      driveOnce(sym);
     }, TICK_MS);
 
     return () => {
@@ -368,7 +382,7 @@ export function DataProvider({ children }) {
         const src = String(inst?.source || '').toLowerCase();
         const decimals = Number(inst?.decimals ?? 2);
 
-        const prevH = Array.isArray(nextHist[sym]) ? nextHist[sym] : [];
+        const prevH = ensureArray(nextHist[sym]);
         const lastKnown = prevH.length ? prevH[prevH.length - 1].value : undefined;
 
         let base = 0;
@@ -425,7 +439,7 @@ export function DataProvider({ children }) {
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
       { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
       { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para inversores avanzados' },
-      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
+      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000, dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
     ],
     []
   );
