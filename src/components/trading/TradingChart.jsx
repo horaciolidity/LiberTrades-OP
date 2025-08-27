@@ -92,7 +92,7 @@ export default function TradingChart({
         setDbCandles(
           data
             .map((r) => ({
-              time: Number(r.time ?? r.bucket),
+               time: Number(r.bucket), 
               open: Number(r.open),
               high: Number(r.high),
               low: Number(r.low),
