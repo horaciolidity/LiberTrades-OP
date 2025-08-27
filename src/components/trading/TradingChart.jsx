@@ -398,13 +398,3 @@ export default function TradingChart({
     </Card>
   );
 }
-
- 
-useEffect(() => {
-  if (binanceSymbol) return;
-  const id = setInterval(() => {
-    supabase.rpc('next_simulated_tick_v2', { p_symbol: simSymbol }).catch(() => {});
-  }, 1000);
-  return () => clearInterval(id);
-}, [binanceSymbol, simSymbol]);
-
