@@ -1,4 +1,4 @@
- // src/contexts/DataContext.jsx
+// src/contexts/DataContext.jsx
 import React, {
   createContext,
   useContext,
@@ -45,13 +45,15 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
     if (sym !== symbol) continue;
 
     const sh = Number(r.start_hour ?? 0);
-    const eh = Number(r.end_hour ?? 0);
-    if (!inWindowUTC(hour, sh, eh)) continue;
+    theEnd: {
+      const eh = Number(r.end_hour ?? 0);
+      if (!inWindowUTC(hour, sh, eh)) break theEnd;
 
-    const type = String(r.type || '').toLowerCase(); // 'percent' | 'abs' | 'absolute'
-    const v = Number(r.value ?? 0);
-    if (type === 'percent') price *= (1 + v / 100);
-    else price += v; // abs/absolute => suma directa
+      const type = String(r.type || '').toLowerCase(); // 'percent' | 'abs' | 'absolute'
+      const v = Number(r.value ?? 0);
+      if (type === 'percent') price *= (1 + v / 100);
+      else price += v; // abs/absolute => suma directa
+    }
   }
   return price;
 };
@@ -293,9 +295,9 @@ export function DataProvider({ children }) {
     return () => { alive = false; teardown(); };
   }, [liveBinanceMap]);
 
-  // ---------- PRO: Simuladas/Manual desde servidor (Realtime + RPC) ----------
+  // ---------- Simuladas/Manual desde servidor (Realtime + driver) ----------
   useEffect(() => {
-    // 1) Suscripción a market_state
+    // 1) Realtime de market_state
     const onStateChange = (payload) => {
       const row = payload.new;
       if (!row) return;
@@ -305,19 +307,16 @@ export function DataProvider({ children }) {
       if (!Number.isFinite(price)) return;
 
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
-
-      // Actualizamos cotización; el historial lo arma el consolidado cada TICK_MS
       setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
     };
 
     const ch = supabase
       .channel('market_state_changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'market_state' }, onStateChange)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Driver: primero intentamos una RPC que avanza TODOS; si no existe, fallback por símbolo
-    const simSyms = instruments
+    // 2) Driver round-robin: avanzamos 1 símbolo por tick
+    const simSyms = (instruments || [])
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
       .map((i) => i.symbol);
 
@@ -326,26 +325,16 @@ export function DataProvider({ children }) {
       for (const sym of simSyms) {
         try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
       }
-      // mejor esfuerzo por si existe la v2
-      try { await supabase.rpc('tick_all_simulated_v2'); } catch {}
     })();
 
     let alive = true;
     let idx = 0;
-    const drive = async () => {
+    const id = setInterval(async () => {
       if (!alive || simSyms.length === 0) return;
-      // 1) intento masivo (si existe la función)
-      try {
-        await supabase.rpc('tick_all_simulated_v2');
-        return;
-      } catch {}
-      // 2) fallback round-robin por símbolo
       const sym = simSyms[idx % simSyms.length];
       idx++;
       try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
-    };
-
-    const id = setInterval(drive, TICK_MS);
+    }, TICK_MS);
 
     return () => {
       alive = false;
@@ -379,7 +368,7 @@ export function DataProvider({ children }) {
         const src = String(inst?.source || '').toLowerCase();
         const decimals = Number(inst?.decimals ?? 2);
 
-        const prevH = ensureArray(nextHist[sym]);
+        const prevH = Array.isArray(nextHist[sym]) ? nextHist[sym] : [];
         const lastKnown = prevH.length ? prevH[prevH.length - 1].value : undefined;
 
         let base = 0;
