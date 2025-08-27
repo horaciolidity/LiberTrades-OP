@@ -17,7 +17,7 @@ const TIMEFRAMES = [
   { key: '15m', sec: 900 },
 ];
 
-const n  = (x, f = NaN) => (Number.isFinite(Number(x)) ? Number(x) : f);
+const n   = (x, f = NaN) => (Number.isFinite(Number(x)) ? Number(x) : f);
 const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
 
 const toEpochSec = (t) => {
@@ -28,7 +28,7 @@ const toEpochSec = (t) => {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
 };
 
-// Fallback para construir velas OHLC a partir de ticks (si no hay DB)
+// Construye velas OHLC a partir de ticks {time, value}
 function aggregate(points = [], tfSec = 60, limit = 200) {
   const tf = Math.max(1, tfSec);
   const rows = (Array.isArray(points) ? points : [])
@@ -60,68 +60,109 @@ export default function TradingChart({
 }) {
   const { assetToSymbol, cryptoPrices: ctxPrices = {} } = useData();
 
-  const containerRef = useRef(null);
-  const chartRef = useRef(null);
-  const seriesRef = useRef(null);
-  const entryLinesRef = useRef({});
+  const containerRef   = useRef(null);
+  const chartRef       = useRef(null);
+  const seriesRef      = useRef(null);
+  const entryLinesRef  = useRef({});
+  const [tf, setTf]    = useState(TIMEFRAMES[2]); // 1m por defecto
 
-  const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
-
-  const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
-  const info = cryptoPrices?.[base] || ctxPrices?.[base] || {};
-  const change24Context = n(info.change, NaN);
+  const base         = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
+  const info         = cryptoPrices?.[base] || ctxPrices?.[base] || {};
+  const change24     = n(info.change, NaN);
   const binanceSymbol = assetToSymbol?.[base] || null;
 
-  // ---- Binance (live) ----
+  // --- Binance (si existe símbolo real) ---
   const { candles: liveCandles, price: livePriceHook, status } =
     useBinanceKlines(binanceSymbol, tf.key, lastNBars, { enabled: !!binanceSymbol });
 
-  // ---- Persistente desde DB (cuando NO hay Binance) ----
+  // --- Velas desde DB (para simuladas/manuales) ---
   const [dbCandles, setDbCandles] = useState([]);
+  const [dbUpdatedAt, setDbUpdatedAt] = useState(0);
 
+  // fetch inicial + cuando cambia TF/símbolo
   useEffect(() => {
     let cancelled = false;
     async function fetchDB() {
-      if (binanceSymbol) { setDbCandles([]); return; }
+      if (binanceSymbol) { setDbCandles([]); setDbUpdatedAt(0); return; }
       const { data, error } = await supabase.rpc('get_candles', {
-        p_symbol: base,         // símbolo en tu tabla (ej: 'XXL', 'RENO')
-        p_seconds: tf.sec,      // <- FIX: nombre correcto del parámetro
+        p_symbol: base,
+        p_seconds: tf.sec,
         p_limit: lastNBars,
       });
       if (!cancelled && !error && Array.isArray(data)) {
         setDbCandles(
           data
             .map(r => ({
-              time: Number(r.time),    // <- FIX: la función devuelve "time"
+              time: Number(r.time),     // <- devuelve 'time'
               open: Number(r.open),
               high: Number(r.high),
               low:  Number(r.low),
               close:Number(r.close),
             }))
+            .filter(c => [c.time,c.open,c.high,c.low,c.close].every(Number.isFinite))
             .sort((a,b) => a.time - b.time)
         );
+        setDbUpdatedAt(Date.now());
       }
     }
     fetchDB();
-
-    // Realtime: ante cada tick del símbolo, refrescamos velas
-    if (!binanceSymbol) {
-      const ch = supabase
-        .channel(`ticks:${base}`)
-        .on('postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${base}` },
-          fetchDB
-        )
-        .subscribe();
-      return () => { supabase.removeChannel(ch); cancelled = true; };
-    }
     return () => { cancelled = true; };
   }, [base, tf.sec, lastNBars, binanceSymbol]);
 
-  // ---- Fallback local (si no hay DB ni Binance) ----
+  // Realtime: escuchamos INSERTs en market_ticks (tu simulador escribe ahí)
+  useEffect(() => {
+    if (binanceSymbol) return;
+    const channel = supabase
+      .channel(`ticks:${base}`)
+      .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${base}` },
+        () => {
+          supabase.rpc('get_candles', { p_symbol: base, p_seconds: tf.sec, p_limit: lastNBars })
+            .then(({ data, error }) => {
+              if (!error && Array.isArray(data)) {
+                setDbCandles(
+                  data
+                    .map(r => ({ time:+r.time, open:+r.open, high:+r.high, low:+r.low, close:+r.close }))
+                    .filter(c => [c.time,c.open,c.high,c.low,c.close].every(Number.isFinite))
+                    .sort((a,b)=>a.time-b.time)
+                );
+                setDbUpdatedAt(Date.now());
+              }
+            });
+        }
+      )
+      .subscribe();
+
+    return () => { try { supabase.removeChannel(channel); } catch {} };
+  }, [base, tf.sec, lastNBars, binanceSymbol]);
+
+  // Poll de respaldo cada 5s (por si Realtime está apagado)
+  useEffect(() => {
+    if (binanceSymbol) return;
+    const id = setInterval(() => {
+      // si hace >10s que no actualizamos desde DB, refetch
+      if (Date.now() - dbUpdatedAt > 10000) {
+        supabase.rpc('get_candles', { p_symbol: base, p_seconds: tf.sec, p_limit: lastNBars })
+          .then(({ data, error }) => {
+            if (!error && Array.isArray(data)) {
+              setDbCandles(
+                data
+                  .map(r => ({ time:+r.time, open:+r.open, high:+r.high, low:+r.low, close:+r.close }))
+                  .filter(c => [c.time,c.open,c.high,c.low,c.close].every(Number.isFinite))
+                  .sort((a,b)=>a.time-b.time)
+              );
+              setDbUpdatedAt(Date.now());
+            }
+          });
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [base, tf.sec, lastNBars, binanceSymbol, dbUpdatedAt]);
+
+  // --- Fallback manual (si no hay DB ni Binance) ---
   const [localTicks, setLocalTicks] = useState([]);
   useEffect(() => {
-    if (binanceSymbol) return; // sólo para manuales
+    if (binanceSymbol) return; // sólo para manuales/simuladas
     const v = n(info.price);
     if (!Number.isFinite(v)) return;
     const t = Math.floor(Date.now() / 1000);
@@ -137,27 +178,14 @@ export default function TradingChart({
     return aggregate(pts, tf.sec, lastNBars);
   }, [info.history, localTicks, tf.sec, lastNBars]);
 
-  // Fuente final de velas y precio
-  const useLive = !!binanceSymbol;
-  const candles = useLive ? liveCandles : (dbCandles.length ? dbCandles : manualCandles);
+  // Fuente final
+  const useLive   = !!binanceSymbol;
+  const candles   = useLive ? liveCandles : (dbCandles.length ? dbCandles : manualCandles);
   const livePrice = useLive
     ? (Number.isFinite(livePriceHook) ? livePriceHook : n(info.price))
     : n(info.price);
 
-  // % 24h: si hay velas de DB, las usamos como referencia
-  const change24 = useMemo(() => {
-    if (useLive) return change24Context;
-    if ((dbCandles?.length || 0) >= 2) {
-      const first = dbCandles[0].close;
-      const last  = dbCandles[dbCandles.length - 1].close;
-      if (Number.isFinite(first) && first > 0 && Number.isFinite(last)) {
-        return ((last - first) / first) * 100;
-      }
-    }
-    return change24Context;
-  }, [useLive, dbCandles, change24Context]);
-
-  // ---- montar chart ----
+  // --- montar chart ---
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -211,7 +239,7 @@ export default function TradingChart({
     };
   }, []);
 
-  // ---- pintar velas ----
+  // --- pintar velas ---
   useEffect(() => {
     const series = seriesRef.current;
     const chart = chartRef.current;
@@ -236,7 +264,7 @@ export default function TradingChart({
     chart.timeScale().scrollToRealTime();
   }, [candles, lastNBars]);
 
-  // ---- overlays PnL ----
+  // --- overlays PnL ---
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
@@ -291,7 +319,7 @@ export default function TradingChart({
       });
   }, [openTrades, selectedPair, showGuides, livePrice]);
 
-  // ---- marcadores de entrada ----
+  // --- marcadores de entrada ---
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
