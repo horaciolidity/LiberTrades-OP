@@ -96,7 +96,6 @@ export function DataProvider({ children }) {
   const wsAliveRef = useRef(false);
   const restPollRef = useRef(null);
   const lastTickRef = useRef(0);
-  const simDriverEnabledRef = useRef(true); // se apaga si RPC falla
 
   // refs para evitar rehacer intervalos
   const instrumentsRef = useRef([]);
@@ -296,7 +295,7 @@ export function DataProvider({ children }) {
 
   // ---------- PRO: Simuladas/Manual desde servidor (Realtime + RPC) ----------
   useEffect(() => {
-    // 1) Suscripción a market_state -> actualiza cotización/24h
+    // 1) Suscripción a market_state
     const onStateChange = (payload) => {
       const row = payload.new;
       if (!row) return;
@@ -306,6 +305,8 @@ export function DataProvider({ children }) {
       if (!Number.isFinite(price)) return;
 
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
+
+      // Actualizamos cotización; el historial lo arma el consolidado cada TICK_MS
       setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
     };
 
@@ -315,40 +316,36 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Driver de simulación:
+    // 2) Driver: primero intentamos una RPC que avanza TODOS; si no existe, fallback por símbolo
     const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
-      .map((i) => String(i.symbol).toUpperCase());
+      .map((i) => i.symbol);
 
-    // Seed: asegurar que existan filas en market_state/ticks
+    // Seed inicial para asegurar filas en market_state
     (async () => {
       for (const sym of simSyms) {
         try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
       }
-      // Si existe tick_all_simulated_v2 no pasa nada; si falla, se ignora.
+      // mejor esfuerzo por si existe la v2
       try { await supabase.rpc('tick_all_simulated_v2'); } catch {}
     })();
 
     let alive = true;
     let idx = 0;
-    simDriverEnabledRef.current = true;
-
-    const driveOnce = async (sym) => {
-      if (!alive || !simDriverEnabledRef.current) return;
-      const { error } = await supabase.rpc('next_simulated_tick', { p_symbol: sym });
-      if (error) {
-        // desactivar para no spamear 400; el gráfico seguirá con los datos ya guardados
-        simDriverEnabledRef.current = false;
-        console.warn('[sim-driver] deshabilitado por error RPC:', error);
-      }
-    };
-
-    const id = setInterval(() => {
-      if (!alive || !simDriverEnabledRef.current || simSyms.length === 0) return;
+    const drive = async () => {
+      if (!alive || simSyms.length === 0) return;
+      // 1) intento masivo (si existe la función)
+      try {
+        await supabase.rpc('tick_all_simulated_v2');
+        return;
+      } catch {}
+      // 2) fallback round-robin por símbolo
       const sym = simSyms[idx % simSyms.length];
       idx++;
-      driveOnce(sym);
-    }, TICK_MS);
+      try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
+    };
+
+    const id = setInterval(drive, TICK_MS);
 
     return () => {
       alive = false;
@@ -439,7 +436,7 @@ export function DataProvider({ children }) {
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
       { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
       { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para inversores avanzados' },
-      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000, dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
+      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
     ],
     []
   );
