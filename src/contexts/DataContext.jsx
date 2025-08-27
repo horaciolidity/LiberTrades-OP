@@ -28,7 +28,7 @@ const DEFAULT_BINANCE_MAP = {
 const HISTORY_MAX = 600; // ~10 min a 1s por punto
 const TICK_MS = 1000;    // ritmo visual (1 segundo)
 
-// ---------- Reglas por hora UTC ----------
+// ---------- Reglas por hora UTC (solo para fallback, no para DB) ----------
 const inWindowUTC = (hour, start, end) =>
   (start < end && hour >= start && hour < end) ||
   (start > end && (hour >= start || hour < end)) ||
@@ -78,7 +78,7 @@ export function DataProvider({ children }) {
    */
   const [marketRules, setMarketRules] = useState([]);
 
-  // ---------- Precios / Historias ----------
+  // ---------- Precios / Historias (en memoria, para UI/fallback) ----------
   const [realQuotes, setRealQuotes] = useState({
     USDT: { price: 1, change: 0 },
     USDC: { price: 1, change: 0 },
@@ -89,7 +89,7 @@ export function DataProvider({ children }) {
     USDC: [{ time: nowMs(), value: 1 }],
   });
 
-  const [cryptoPrices, setCryptoPrices] = useState({});
+  const [cryptoPrices, setCryptoPrices] = useState({}); // {SYM: {price, change, history[]}}
 
   // ---------- Refs / conexiones ----------
   const wsRef = useRef(null);
@@ -103,6 +103,7 @@ export function DataProvider({ children }) {
   const quotesRef = useRef({});
   const histRef = useRef({});
   const liveMapRef = useRef({});
+  const canMassTickRef = useRef(true); // si tick_all_simulated_v2 falla, desactiva intento masivo
 
   useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
   useEffect(() => { rulesRef.current = marketRules; }, [marketRules]);
@@ -293,9 +294,9 @@ export function DataProvider({ children }) {
     return () => { alive = false; teardown(); };
   }, [liveBinanceMap]);
 
-  // ---------- PRO: Simuladas/Manual desde servidor (Realtime + RPC) ----------
+  // ---------- Simuladas/Manual: realtime + driver RPC ----------
   useEffect(() => {
-    // 1) Suscripción a market_state
+    // 1) Suscripción a market_state (precio + ref_24h para %)
     const onStateChange = (payload) => {
       const row = payload.new;
       if (!row) return;
@@ -305,8 +306,6 @@ export function DataProvider({ children }) {
       if (!Number.isFinite(price)) return;
 
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
-
-      // Actualizamos cotización; el historial lo arma el consolidado cada TICK_MS
       setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
     };
 
@@ -316,30 +315,39 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Driver: primero intentamos una RPC que avanza TODOS; si no existe, fallback por símbolo
+    // 2) Driver: intenta tick_all una vez; si 400/NOT FOUND, usa round-robin next_simulated_tick
     const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
       .map((i) => i.symbol);
 
-    // Seed inicial para asegurar filas en market_state
     (async () => {
+      // seed para asegurar filas
       for (const sym of simSyms) {
         try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
       }
-      // mejor esfuerzo por si existe la v2
-      try { await supabase.rpc('tick_all_simulated_v2'); } catch {}
+      // intento masivo 1 sola vez
+      try {
+        const { error } = await supabase.rpc('tick_all_simulated_v2');
+        if (error) canMassTickRef.current = false;
+      } catch {
+        canMassTickRef.current = false;
+      }
     })();
 
     let alive = true;
     let idx = 0;
     const drive = async () => {
       if (!alive || simSyms.length === 0) return;
-      // 1) intento masivo (si existe la función)
-      try {
-        await supabase.rpc('tick_all_simulated_v2');
-        return;
-      } catch {}
-      // 2) fallback round-robin por símbolo
+      if (canMassTickRef.current) {
+        try {
+          const { error } = await supabase.rpc('tick_all_simulated_v2');
+          if (error) canMassTickRef.current = false;
+          return;
+        } catch {
+          canMassTickRef.current = false;
+        }
+      }
+      // fallback round-robin
       const sym = simSyms[idx % simSyms.length];
       idx++;
       try { await supabase.rpc('next_simulated_tick', { p_symbol: sym }); } catch {}
@@ -354,7 +362,7 @@ export function DataProvider({ children }) {
     };
   }, [instruments]);
 
-  // ---------- Consolidación final + histories cada ~1s ----------
+  // ---------- Consolidación final + histories cada ~1s (para UI/fallback) ----------
   useEffect(() => {
     const tick = () => {
       const t = nowMs();
@@ -387,6 +395,7 @@ export function DataProvider({ children }) {
           base = Number(quotesCur?.[sym]?.price ?? NaN);
           if (!Number.isFinite(base) || base <= 0) base = Number.isFinite(lastKnown) ? lastKnown : 0;
         } else if (src === 'manual' || src === 'simulated') {
+          // para simuladas/manuales usamos lo que vino del servidor (ya con reglas aplicadas)
           base = Number(quotesCur?.[sym]?.price ?? inst?.base_price ?? 0);
         } else {
           base = Number(quotesCur?.[sym]?.price ?? 0);
@@ -397,7 +406,7 @@ export function DataProvider({ children }) {
           (sym === 'USDT' || sym === 'USDC')
             ? 1
             : (src === 'manual' || src === 'simulated')
-              ? base // ya viene con reglas aplicadas desde el servidor
+              ? base
               : applyRulesForSymbol(sym, base, rulesCur, new Date());
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
@@ -409,7 +418,7 @@ export function DataProvider({ children }) {
         );
 
         let changePct = 0;
-        if (src === 'binance' && quotesCur?.[sym]?.change != null) {
+        if (quotesCur?.[sym]?.change != null) {
           changePct = Number(quotesCur[sym].change || 0);
         } else {
           const ref = prevH?.[0]?.value ?? finalPrice;
@@ -436,7 +445,7 @@ export function DataProvider({ children }) {
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
       { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
       { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para inversores avanzados' },
-      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
+      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000, dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
     ],
     []
   );
@@ -650,57 +659,6 @@ export function DataProvider({ children }) {
       referenceType: data.reference_type,
       referenceId: data.reference_id,
     };
-  }
-
-  // ---------- RPC Bots ----------
-  async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    try {
-      const { data, error } = await supabase.rpc('rent_trading_bot', {
-        p_user_id: user.id,
-        p_bot_id: botId,
-        p_bot_name: botName,
-        p_strategy: strategy,
-        p_amount_usd: Number(amountUsd),
-      });
-      if (error) return { ok: false, code: 'RPC_ERROR', error };
-      await Promise.all([refreshBotActivations(), refreshTransactions()]);
-      return data ?? { ok: true };
-    } catch {
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
-  async function resumeLike(fn, activationId) {
-    try {
-      const { data, error } = await supabase.rpc(fn, {
-        p_activation_id: activationId,
-        p_user_id: user?.id,
-      });
-      if (error) return { ok: false, code: 'RPC_ERROR', error };
-      await refreshBotActivations();
-      return data ?? { ok: true };
-    } catch {
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
-  async function pauseBot(id)  { return resumeLike('pause_trading_bot',  id); }
-  async function resumeBot(id) { return resumeLike('resume_trading_bot', id); }
-  async function cancelBot(id) { return resumeLike('cancel_trading_bot', id); }
-  async function creditBotProfit(activationId, amountUsd, note = null) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    try {
-      const { data, error } = await supabase.rpc('credit_bot_profit', {
-        p_activation_id: activationId,
-        p_user_id: user.id,
-        p_amount_usd: Number(amountUsd),
-        p_note: note,
-      });
-      if (error) return { ok: false, code: 'RPC_ERROR', error };
-      await refreshTransactions();
-      return data ?? { ok: true };
-    } catch {
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
   }
 
   // ---------- Derivados para UI ----------

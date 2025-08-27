@@ -17,7 +17,7 @@ const TIMEFRAMES = [
   { key: '15m', sec: 900 },
 ];
 
-const n   = (x, f = NaN) => (Number.isFinite(Number(x)) ? Number(x) : f);
+const n = (x, f = NaN) => (Number.isFinite(Number(x)) ? Number(x) : f);
 const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '--');
 
 const toEpochSec = (t) => {
@@ -43,7 +43,7 @@ function aggregate(points = [], tfSec = 60, limit = 200) {
     if (!prev) buckets.set(b, { time: b, open: v, high: v, low: v, close: v });
     else {
       prev.high = Math.max(prev.high, v);
-      prev.low  = Math.min(prev.low,  v);
+      prev.low = Math.min(prev.low, v);
       prev.close = v;
     }
   }
@@ -60,26 +60,25 @@ export default function TradingChart({
 }) {
   const { assetToSymbol, cryptoPrices: ctxPrices = {} } = useData();
 
-  const containerRef   = useRef(null);
-  const chartRef       = useRef(null);
-  const seriesRef      = useRef(null);
-  const entryLinesRef  = useRef({});
-  const [tf, setTf]    = useState(TIMEFRAMES[2]); // 1m por defecto
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
+  const seriesRef = useRef(null);
+  const entryLinesRef = useRef({});
+  const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m
 
-  const base         = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
-  const info         = cryptoPrices?.[base] || ctxPrices?.[base] || {};
-  const change24     = n(info.change, NaN);
+  const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
+  const info = cryptoPrices?.[base] || ctxPrices?.[base] || {};
+  const change24 = n(info.change, NaN);
   const binanceSymbol = assetToSymbol?.[base] || null;
 
-  // --- Binance (si existe símbolo real) ---
+  // ---- Binance (live) ----
   const { candles: liveCandles, price: livePriceHook, status } =
     useBinanceKlines(binanceSymbol, tf.key, lastNBars, { enabled: !!binanceSymbol });
 
-  // --- Velas desde DB (para simuladas/manuales) ---
+  // ---- DB candles (simuladas / manuales) ----
   const [dbCandles, setDbCandles] = useState([]);
   const [dbUpdatedAt, setDbUpdatedAt] = useState(0);
 
-  // fetch inicial + cuando cambia TF/símbolo
   useEffect(() => {
     let cancelled = false;
     async function fetchDB() {
@@ -92,15 +91,15 @@ export default function TradingChart({
       if (!cancelled && !error && Array.isArray(data)) {
         setDbCandles(
           data
-            .map(r => ({
-              time: Number(r.time),     // <- devuelve 'time'
+            .map((r) => ({
+              time: Number(r.time),
               open: Number(r.open),
               high: Number(r.high),
-              low:  Number(r.low),
-              close:Number(r.close),
+              low: Number(r.low),
+              close: Number(r.close),
             }))
-            .filter(c => [c.time,c.open,c.high,c.low,c.close].every(Number.isFinite))
-            .sort((a,b) => a.time - b.time)
+            .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite))
+            .sort((a, b) => a.time - b.time),
         );
         setDbUpdatedAt(Date.now());
       }
@@ -109,10 +108,10 @@ export default function TradingChart({
     return () => { cancelled = true; };
   }, [base, tf.sec, lastNBars, binanceSymbol]);
 
-  // Realtime: escuchamos INSERTs en market_ticks (tu simulador escribe ahí)
+  // Realtime por INSERT en market_ticks (simulador escribe ahí)
   useEffect(() => {
     if (binanceSymbol) return;
-    const channel = supabase
+    const ch = supabase
       .channel(`ticks:${base}`)
       .on('postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${base}` },
@@ -122,34 +121,32 @@ export default function TradingChart({
               if (!error && Array.isArray(data)) {
                 setDbCandles(
                   data
-                    .map(r => ({ time:+r.time, open:+r.open, high:+r.high, low:+r.low, close:+r.close }))
-                    .filter(c => [c.time,c.open,c.high,c.low,c.close].every(Number.isFinite))
-                    .sort((a,b)=>a.time-b.time)
+                    .map((r) => ({ time: +r.time, open: +r.open, high: +r.high, low: +r.low, close: +r.close }))
+                    .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite))
+                    .sort((a, b) => a.time - b.time),
                 );
                 setDbUpdatedAt(Date.now());
               }
             });
-        }
-      )
+        })
       .subscribe();
 
-    return () => { try { supabase.removeChannel(channel); } catch {} };
+    return () => { try { supabase.removeChannel(ch); } catch {} };
   }, [base, tf.sec, lastNBars, binanceSymbol]);
 
-  // Poll de respaldo cada 5s (por si Realtime está apagado)
+  // Poll de respaldo (si Realtime no está activo)
   useEffect(() => {
     if (binanceSymbol) return;
     const id = setInterval(() => {
-      // si hace >10s que no actualizamos desde DB, refetch
       if (Date.now() - dbUpdatedAt > 10000) {
         supabase.rpc('get_candles', { p_symbol: base, p_seconds: tf.sec, p_limit: lastNBars })
           .then(({ data, error }) => {
             if (!error && Array.isArray(data)) {
               setDbCandles(
                 data
-                  .map(r => ({ time:+r.time, open:+r.open, high:+r.high, low:+r.low, close:+r.close }))
-                  .filter(c => [c.time,c.open,c.high,c.low,c.close].every(Number.isFinite))
-                  .sort((a,b)=>a.time-b.time)
+                  .map((r) => ({ time: +r.time, open: +r.open, high: +r.high, low: +r.low, close: +r.close }))
+                  .filter((c) => [c.time, c.open, c.high, c.low, c.close].every(Number.isFinite))
+                  .sort((a, b) => a.time - b.time),
               );
               setDbUpdatedAt(Date.now());
             }
@@ -159,10 +156,10 @@ export default function TradingChart({
     return () => clearInterval(id);
   }, [base, tf.sec, lastNBars, binanceSymbol, dbUpdatedAt]);
 
-  // --- Fallback manual (si no hay DB ni Binance) ---
+  // ---- Fallback local (si no hay DB ni Binance) ----
   const [localTicks, setLocalTicks] = useState([]);
   useEffect(() => {
-    if (binanceSymbol) return; // sólo para manuales/simuladas
+    if (binanceSymbol) return;
     const v = n(info.price);
     if (!Number.isFinite(v)) return;
     const t = Math.floor(Date.now() / 1000);
@@ -178,14 +175,15 @@ export default function TradingChart({
     return aggregate(pts, tf.sec, lastNBars);
   }, [info.history, localTicks, tf.sec, lastNBars]);
 
-  // Fuente final
-  const useLive   = !!binanceSymbol;
-  const candles   = useLive ? liveCandles : (dbCandles.length ? dbCandles : manualCandles);
+  // Fuente final (prefiere DB sólo si trae algo útil)
+  const useLive = !!binanceSymbol;
+  const useDB = dbCandles && dbCandles.length >= 5;
+  const candles = useLive ? liveCandles : (useDB ? dbCandles : manualCandles);
   const livePrice = useLive
     ? (Number.isFinite(livePriceHook) ? livePriceHook : n(info.price))
     : n(info.price);
 
-  // --- montar chart ---
+  // ---- montar chart ----
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -239,7 +237,7 @@ export default function TradingChart({
     };
   }, []);
 
-  // --- pintar velas ---
+  // ---- pintar velas ----
   useEffect(() => {
     const series = seriesRef.current;
     const chart = chartRef.current;
@@ -251,7 +249,7 @@ export default function TradingChart({
         Number.isFinite(c.open) &&
         Number.isFinite(c.high) &&
         Number.isFinite(c.low) &&
-        Number.isFinite(c.close)
+        Number.isFinite(c.close),
       )
       .slice(-Math.max(lastNBars, 20));
 
@@ -259,12 +257,12 @@ export default function TradingChart({
 
     series.setData(safe);
     const from = safe[0].time;
-    const to   = safe[safe.length - 1].time;
+    const to = safe[safe.length - 1].time;
     chart.timeScale().setVisibleRange({ from, to });
     chart.timeScale().scrollToRealTime();
   }, [candles, lastNBars]);
 
-  // --- overlays PnL ---
+  // ---- overlays PnL ----
   useEffect(() => {
     if (!showGuides) return;
     const series = seriesRef.current;
@@ -284,12 +282,12 @@ export default function TradingChart({
       .filter((t) => String(t?.status || 'open').toLowerCase() === 'open')
       .forEach((t) => {
         const id = String(t.id ?? `${t.pair}:${t.timestamp ?? Math.random()}`);
-        const side  = String(t.type || '').toLowerCase();
+        const side = String(t.type || '').toLowerCase();
         const entry = n(t.price ?? t.priceAtExecution, NaN);
         if (!Number.isFinite(entry)) return;
 
-        const qty    = n(t.amount, 0) / Math.max(entry, 1e-9);
-        const upnl   = side === 'sell' ? (entry - livePrice) * qty : (livePrice - entry) * qty;
+        const qty = n(t.amount, 0) / Math.max(entry, 1e-9);
+        const upnl = side === 'sell' ? (entry - livePrice) * qty : (livePrice - entry) * qty;
         const upnlPc = (upnl / Math.max(n(t.amount, 0), 1e-9)) * 100;
 
         const obj = {};
@@ -305,13 +303,13 @@ export default function TradingChart({
         const sl = n(t.stopLoss ?? t.stoploss, NaN);
         if (Number.isFinite(sl)) {
           obj.sl = series.createPriceLine({
-            price: sl, color: '#ef4444', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `SL ${fmt(sl)}`
+            price: sl, color: '#ef4444', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `SL ${fmt(sl)}`,
           });
         }
         const tp = n(t.takeProfit ?? t.takeprofit, NaN);
         if (Number.isFinite(tp)) {
           obj.tp = series.createPriceLine({
-            price: tp, color: '#22c55e', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `TP ${fmt(tp)}`
+            price: tp, color: '#22c55e', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `TP ${fmt(tp)}`,
           });
         }
 
@@ -319,7 +317,7 @@ export default function TradingChart({
       });
   }, [openTrades, selectedPair, showGuides, livePrice]);
 
-  // --- marcadores de entrada ---
+  // ---- marcadores de entrada ----
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
