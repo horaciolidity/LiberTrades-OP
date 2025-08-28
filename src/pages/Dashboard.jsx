@@ -34,7 +34,11 @@ export default function Dashboard() {
   const { user, displayName, balances, loading } = useAuth();
 
   const {
+    // precios + helpers de mercado
     cryptoPrices = {},
+    instruments = [],
+    getPairInfo,               // <— usamos este helper para leer siempre la misma fuente
+    // negocio
     investments: ctxInvestments = [],
     referrals:   ctxReferrals = [],
     transactions: ctxTransactions = [],
@@ -95,7 +99,6 @@ export default function Dashboard() {
   const totalEarnings = useMemo(
     () =>
       (investments || []).reduce((sum, inv) => {
-        // Si viene mapeado desde DataContext, usar earnings/daysElapsed.
         if (typeof inv?.earnings === 'number') return sum + inv.earnings;
         const createdAtMs = inv?.createdAt ? new Date(inv.createdAt).getTime() : Date.now();
         const daysPassed = Math.floor((Date.now() - createdAtMs) / (1000 * 60 * 60 * 24));
@@ -135,22 +138,20 @@ export default function Dashboard() {
   });
   const activeDays = new Set(recentTx.map((t) => sameDayKey(asDate(t)))).size;
 
-  // ===== Overall "Energy Bar" (0..100) con breakdown por categoría =====
-  // metas simples para normalizar (ajustables)
+  // ===== Overall "Energy Bar" =====
   const GOALS = {
-    roiTarget: 10,          // 10% ROI objetivo
-    botsTarget: 1,          // 1 bot activo = 100%
-    referralsTarget: 10,    // 10 referidos = 100%
-    activityTargetDays: 15, // 15 días activos (últimos 30) = 100%
+    roiTarget: 10,
+    botsTarget: 1,
+    referralsTarget: 10,
+    activityTargetDays: 15,
   };
 
-  const pctInvestProg = clamp(avgPlanProgress); // avance promedio de los planes
+  const pctInvestProg = clamp(avgPlanProgress);
   const pctRoi        = clamp((roiPct / GOALS.roiTarget) * 100);
   const pctBots       = clamp((botsRunning / GOALS.botsTarget) * 100);
   const pctReferrals  = clamp(((referrals?.length || 0) / GOALS.referralsTarget) * 100);
   const pctActivity   = clamp((activeDays / GOALS.activityTargetDays) * 100);
 
-  // ponderación igual para 5 categorías
   const segs = [
     { key: 'Inversiones',  pct: pctInvestProg, color: 'from-emerald-500 to-emerald-400' },
     { key: 'ROI',          pct: pctRoi,        color: 'from-sky-500 to-sky-400' },
@@ -158,10 +159,9 @@ export default function Dashboard() {
     { key: 'Referidos',    pct: pctReferrals,  color: 'from-amber-500 to-amber-400' },
     { key: 'Actividad',    pct: pctActivity,   color: 'from-pink-500 to-pink-400' },
   ];
-  // cada categoría aporta hasta 20 puntos
   const overallEnergy = clamp(segs.reduce((acc, s) => acc + (s.pct / 100) * 20, 0));
 
-  // ===== Balances visibles (fallback seguro) =====
+  // ===== Balances visibles =====
   const usdc = Number(balances?.usdc ?? 0);
   const usdt = Number(balances?.usdt ?? 0);
   const btc  = Number(balances?.btc  ?? 0);
@@ -178,6 +178,60 @@ export default function Dashboard() {
     { title: 'Bots activos',    value: String(botsRunning || 0), icon: Bot, color: 'text-violet-300', bgColor: 'bg-violet-500/10' },
     { title: 'Referidos',       value: String(referrals?.length || 0), icon: Users, color: 'text-amber-300', bgColor: 'bg-amber-500/10' },
   ];
+
+  // ===== Lista limpia de precios (sin duplicados) =====
+  const priceRows = useMemo(() => {
+    const rows = [];
+    const seen = new Set();
+
+    // 1) Prioriza instrumentos habilitados
+    (instruments || [])
+      .filter(i => (i.enabled ?? true))
+      .forEach(i => {
+        const sym = String(i.symbol || '').toUpperCase();
+        if (!sym || seen.has(sym)) return;
+        seen.add(sym);
+
+        const quote = String(i.quote || 'USDT').toUpperCase();
+        const pair  = `${sym}/${quote}`;
+        const feed  = typeof getPairInfo === 'function'
+          ? getPairInfo(pair)
+          : (cryptoPrices[pair] || cryptoPrices[sym] || {});
+
+        const decimals = Number.isFinite(Number(i.decimals))
+          ? Number(i.decimals)
+          : (sym === 'USDT' || sym === 'USDC' ? 4 : 2);
+
+        rows.push({
+          key: pair,
+          sym,
+          pair,
+          price: Number(feed?.price),
+          change: Number(feed?.change),
+          decimals,
+        });
+      });
+
+    // 2) Asegurar BTC/ETH aunque no estén en instrumentos
+    for (const sym of ['BTC', 'ETH']) {
+      if (seen.has(sym)) continue;
+      const pair  = `${sym}/USDT`;
+      const feed  = typeof getPairInfo === 'function'
+        ? getPairInfo(pair)
+        : (cryptoPrices[pair] || cryptoPrices[sym] || {});
+      if (!feed || !Number(feed?.price)) continue;
+      rows.push({
+        key: pair,
+        sym,
+        pair,
+        price: Number(feed.price),
+        change: Number(feed.change),
+        decimals: 2,
+      });
+    }
+
+    return rows;
+  }, [instruments, cryptoPrices, getPairInfo]);
 
   return (
     <div className="space-y-8">
@@ -211,11 +265,10 @@ export default function Dashboard() {
               <div className="text-white font-semibold text-lg">{fmt(overallEnergy, 0)}%</div>
             </div>
 
-            {/* Barra compuesta */}
             <div className="w-full h-5 rounded-full bg-slate-800 overflow-hidden border border-slate-700">
               <div className="flex h-full">
                 {segs.map((s) => {
-                  const width = ((s.pct / 100) * 20); // aporta hasta 20% del total
+                  const width = ((s.pct / 100) * 20);
                   return (
                     <div
                       key={s.key}
@@ -228,7 +281,6 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Leyenda detallada */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               {segs.map((s) => (
                 <div key={s.key} className="bg-slate-900/60 border border-slate-800 rounded-xl p-3">
@@ -238,7 +290,6 @@ export default function Dashboard() {
               ))}
             </div>
 
-            {/* KPIs breves */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="text-xs text-slate-400 flex items-center gap-2">
                 <Target className="w-4 h-4 text-sky-300" />
@@ -301,28 +352,35 @@ export default function Dashboard() {
                 <Activity className="h-5 w-5 mr-2 text-green-400" />
                 Precios en Tiempo Real
               </CardTitle>
-              <CardDescription className="text-slate-300">Alimentado por Binance (stream).</CardDescription>
+              <CardDescription className="text-slate-300">
+                Alimentado por Binance/Servidor (stream).
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {Object.entries(cryptoPrices).map(([crypto, data]) => {
-                  const price = Number(data?.price ?? 0);
-                  const change = Number(data?.change ?? 0);
+                {priceRows.map((row) => {
+                  const { key, sym, pair, price, change, decimals } = row;
+                  const safePrice  = Number.isFinite(price) ? price : 0;
+                  const safeChange = Number.isFinite(change) ? change : 0;
+
                   return (
-                    <div key={crypto} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
+                    <div key={key} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
                       <div className="flex items-center">
                         <div className="w-8 h-8 bg-gradient-to-r from-orange-500 to-yellow-500 rounded-full flex items-center justify-center mr-3">
-                          <span className="text-white text-xs font-bold">{crypto}</span>
+                          <span className="text-white text-xs font-bold">{sym}</span>
                         </div>
-                        <span className="text-white font-medium">{crypto}</span>
+                        <div className="flex flex-col">
+                          <span className="text-white font-medium">{sym}</span>
+                          <span className="text-slate-400 text-xs">{pair}</span>
+                        </div>
                       </div>
                       <div className="text-right">
                         <div className="text-white font-semibold">
-                          ${price.toFixed(crypto === 'USDT' ? 4 : 2)}
+                          ${fmt(safePrice, decimals)}
                         </div>
-                        <div className={`text-sm flex items-center ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {change >= 0 ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
-                          {Math.abs(change).toFixed(2)}%
+                        <div className={`text-sm flex items-center justify-end ${safeChange >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {safeChange >= 0 ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
+                          {fmt(Math.abs(safeChange), 2)}%
                         </div>
                       </div>
                     </div>
@@ -341,7 +399,7 @@ export default function Dashboard() {
                 <PieChart className="h-5 w-5 mr-2 text-blue-400" />
                 Inversiones Activas
               </CardTitle>
-              <CardDescription className="text-slate-300">Avance y rendimiento por plan.</CardDescription>
+            <CardDescription className="text-slate-300">Avance y rendimiento por plan.</CardDescription>
             </CardHeader>
             <CardContent>
               {(investments?.length || 0) > 0 ? (
