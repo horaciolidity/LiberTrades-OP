@@ -62,9 +62,7 @@ const mapRpcCandles = (rows) =>
 
 // "BTC/USDT" -> BTCUSDT ; "XXLUSDT/USDT" -> XXLUSDT (no duplica el quote)
 const parsePair = (pair) => {
-  const [lhsRaw, rhsRaw = 'USDT'] = String(pair || 'BTC/USDT')
-    .replace(/\s+/g, '')
-    .split('/');
+  const [lhsRaw, rhsRaw = 'USDT'] = String(pair || 'BTC/USDT').replace(/\s+/g, '').split('/');
   const lhs = (lhsRaw || 'BTC').toUpperCase();
   const rhs = (rhsRaw || 'USDT').toUpperCase();
   const symbol = lhs.endsWith(rhs) ? lhs : `${lhs}${rhs}`;
@@ -90,6 +88,7 @@ export default function TradingChart({
   const candlesRef = useRef([]);
   const [tf, setTf] = useState(TIMEFRAMES[2]); // 1m por defecto
   const [seedKey, setSeedKey] = useState(0);    // fuerza re-seed al cambiar tf/pair
+  const [displayPrice, setDisplayPrice] = useState(NaN);
 
   const { lhs, rhs, symbol: dbSymbol } = parsePair(selectedPair);
 
@@ -104,10 +103,18 @@ export default function TradingChart({
   const { candles: liveCandles, price: livePriceHook, status } =
     useBinanceKlines(binanceSymbol, tf.key, lastNBars, { enabled: !!binanceSymbol });
 
-  // ---- Precio a mostrar ----
-  const livePrice = binanceSymbol
-    ? (Number.isFinite(livePriceHook) ? livePriceHook : n(info.price))
-    : n(info.price);
+  // ---- Precio a mostrar (header) ----
+  // Binance: usa el hook; Simulado: usa último close de la vela (coincide con el gráfico)
+  useEffect(() => {
+    if (binanceSymbol) {
+      const p = Number.isFinite(livePriceHook) ? livePriceHook : n(info.price);
+      setDisplayPrice(p);
+      return;
+    }
+    const last = candlesRef.current[candlesRef.current.length - 1];
+    setDisplayPrice(Number.isFinite(last?.close) ? last.close : n(info.price));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [binanceSymbol, livePriceHook, info.price, seedKey]);
 
   // ---- Crear Chart una sola vez ----
   useEffect(() => {
@@ -187,6 +194,7 @@ export default function TradingChart({
         chart.timeScale().setVisibleRange({ from: arr[0].time, to: arr[arr.length - 1].time });
         chart.timeScale().scrollToRealTime();
         series.priceScale().applyOptions({ autoScale: true }); // autoscale suave
+        setDisplayPrice(arr[arr.length - 1].close);
       }
     }
 
@@ -233,6 +241,7 @@ export default function TradingChart({
         series.update(updated);
         series.priceScale().applyOptions({ autoScale: true });
         chart.timeScale().scrollToRealTime();
+        setDisplayPrice(updated.close);
         return;
       }
 
@@ -245,6 +254,7 @@ export default function TradingChart({
         series.update(fresh);
         series.priceScale().applyOptions({ autoScale: true });
         chart.timeScale().scrollToRealTime();
+        setDisplayPrice(fresh.close);
         return;
       }
 
@@ -282,8 +292,9 @@ export default function TradingChart({
       chart.timeScale().setVisibleRange({ from: safe[0].time, to: safe[safe.length - 1].time });
       chart.timeScale().scrollToRealTime();
       series.priceScale().applyOptions({ autoScale: true });
+      setDisplayPrice(Number.isFinite(livePriceHook) ? livePriceHook : safe[safe.length - 1].close);
     }
-  }, [binanceSymbol, liveCandles, lastNBars]);
+  }, [binanceSymbol, liveCandles, livePriceHook, lastNBars]);
 
   // ---- Re-seed al cambiar par/timeframe ----
   useEffect(() => {
@@ -295,7 +306,7 @@ export default function TradingChart({
     if (!showGuides) return;
     const series = seriesRef.current;
     if (!series) return;
-    if (!Number.isFinite(livePrice)) return;
+    if (!Number.isFinite(displayPrice)) return;
 
     const prev = entryLinesRef.current || {};
     Object.values(prev).forEach((obj) => {
@@ -315,7 +326,7 @@ export default function TradingChart({
         if (!Number.isFinite(entry)) return;
 
         const qty = n(t.amount, 0) / Math.max(entry, 1e-9);
-        const upnl = side === 'sell' ? (entry - livePrice) * qty : (livePrice - entry) * qty;
+        const upnl = side === 'sell' ? (entry - displayPrice) * qty : (displayPrice - entry) * qty;
         const upnlPc = (upnl / Math.max(n(t.amount, 0), 1e-9)) * 100;
 
         const obj = {};
@@ -342,7 +353,7 @@ export default function TradingChart({
         }
         entryLinesRef.current[id] = obj;
       });
-  }, [openTrades, selectedPair, showGuides, livePrice]);
+  }, [openTrades, selectedPair, showGuides, displayPrice]);
 
   // ---- Marcadores de entrada ----
   useEffect(() => {
@@ -404,7 +415,7 @@ export default function TradingChart({
 
           <div className="text-right">
             <p className="text-xl sm:text-2xl font-bold text-white">
-              {Number.isFinite(livePrice) ? `$${fmt(livePrice)}` : '--'}
+              {Number.isFinite(displayPrice) ? `$${fmt(displayPrice)}` : '--'}
             </p>
             <p className={`text-xs sm:text-sm ${Number.isFinite(change24) && change24 >= 0 ? 'text-green-400' : 'text-red-400'}`}>
               {Number.isFinite(change24) ? fmt(change24) : '--'}% (24h)

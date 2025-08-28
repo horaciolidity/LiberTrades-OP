@@ -35,7 +35,7 @@ const inWindowUTC = (hour, start, end) =>
   (start === end); // 24h
 
 const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
-  if (!basePrice) return basePrice;
+  if (!Number.isFinite(basePrice)) return basePrice;
   const hour = now.getUTCHours();
   let price = basePrice;
 
@@ -68,7 +68,7 @@ export function DataProvider({ children }) {
   // ---------- Mercado (admin) ----------
   /**
    * market_instruments:
-   * - symbol, enabled, source('binance'|'simulated'|'manual'), binance_symbol,
+   * - symbol, enabled, source('binance'|'simulated'|'manual'|'real'), binance_symbol,
    *   base_price, decimals, quote, volatility_bps, difficulty
    */
   const [instruments, setInstruments] = useState([]);
@@ -104,7 +104,7 @@ export function DataProvider({ children }) {
   const histRef = useRef({});
   const liveMapRef = useRef({});
 
-  // NEW: detección de funciones RPC
+  // Detección de funciones RPC (memorizada en refs para no re-renderizar)
   const supportsBulkRef = useRef(null); // true | false | null
   const hasNextV2Ref    = useRef(null); // true | false | null
 
@@ -143,7 +143,6 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'market_rules' }, () => refreshMarketRules())
       .subscribe();
     return () => { try { supabase.removeChannel(ch); } catch (_) {} };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---------- Mapa dinámico a Binance (solo enabled & source=binance) ----------
@@ -318,23 +317,21 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Símbolos simulados/manuales habilitados
+    // 2) Símbolos simulados/manuales/real habilitados
     const simSyms = instruments
-      .filter((i) => (i.enabled ?? true) && ['simulated', 'manual'].includes(String(i.source || '').toLowerCase()))
+      .filter((i) => (i.enabled ?? true) && ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase()))
       .map((i) => i.symbol);
 
     let alive = true;
     let idx = 0;
     let timer;
 
-    // ---- helpers para detectar funciones disponibles (se ejecutan 1 sola vez) ----
+    // ---- detectar funciones disponibles (sólo 1 vez por montaje) ----
     const probeFns = async () => {
-      // Detecta bulk
       if (supportsBulkRef.current === null) {
         const { error } = await supabase.rpc('tick_all_simulated_v2');
-        supportsBulkRef.current = !error; // true si no hubo error
+        supportsBulkRef.current = !error; // true si existe
       }
-      // Detecta next_simulated_tick_v2 (solo si hay símbolos)
       if (hasNextV2Ref.current === null) {
         if (simSyms.length > 0) {
           const { error } = await supabase.rpc('next_simulated_tick_v2', { p_symbol: simSyms[0] });
@@ -347,11 +344,10 @@ export function DataProvider({ children }) {
 
     // Seed suave: asegura 1 fila en market_state por símbolo
     const callNextOnce = async (sym) => {
-      // intenta v2 y cae a v1; memoriza resultado para próximos ciclos
       if (hasNextV2Ref.current === true) {
         const { error } = await supabase.rpc('next_simulated_tick_v2', { p_symbol: sym });
         if (!error) return;
-        hasNextV2Ref.current = false;
+        hasNextV2Ref.current = false; // si falló, no insistimos con v2
       }
       await supabase.rpc('next_simulated_tick', { p_symbol: sym });
     };
@@ -368,20 +364,20 @@ export function DataProvider({ children }) {
       // 1) bulk si está disponible
       if (supportsBulkRef.current === true) {
         const { error } = await supabase.rpc('tick_all_simulated_v2');
-        if (!error) return; // listo, avanzó todo
-        supportsBulkRef.current = false; // deja de intentar bulk
+        if (!error) return; // avanzó todo
+        supportsBulkRef.current = false; // si falló, dejar de intentar
       }
 
-      // 2) fallback round-robin por símbolo (v2 si existe, sino v1)
+      // 2) fallback round-robin por símbolo
       const sym = simSyms[idx % simSyms.length];
       idx++;
       await callNextOnce(sym);
     };
 
     (async () => {
-      await probeFns();   // detecta RPCs (solo 1 vez por montaje)
+      await probeFns();   // detecta RPCs una vez
       await seedOnce();   // deja estado inicial
-      timer = setInterval(drive, TICK_MS); // único loop
+      timer = setInterval(drive, TICK_MS);
     })();
 
     return () => {
@@ -389,7 +385,6 @@ export function DataProvider({ children }) {
       clearInterval(timer);
       try { supabase.removeChannel(ch); } catch {}
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instruments]);
 
   // ---------- Consolidación final + histories cada ~1s ----------
@@ -424,7 +419,7 @@ export function DataProvider({ children }) {
         if (src === 'binance') {
           base = Number(quotesCur?.[sym]?.price ?? NaN);
           if (!Number.isFinite(base) || base <= 0) base = Number.isFinite(lastKnown) ? lastKnown : 0;
-        } else if (src === 'manual' || src === 'simulated') {
+        } else if (src === 'manual' || src === 'simulated' || src === 'real') {
           base = Number(quotesCur?.[sym]?.price ?? inst?.base_price ?? 0);
         } else {
           base = Number(quotesCur?.[sym]?.price ?? 0);
@@ -434,7 +429,7 @@ export function DataProvider({ children }) {
         let finalPrice =
           (sym === 'USDT' || sym === 'USDC')
             ? 1
-            : (src === 'manual' || src === 'simulated')
+            : (src === 'manual' || src === 'simulated' || src === 'real')
               ? base // ya viene con reglas aplicadas desde el servidor
               : applyRulesForSymbol(sym, base, rulesCur, new Date());
 
@@ -611,7 +606,6 @@ export function DataProvider({ children }) {
       refreshReferrals();
       refreshBotActivations();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
   // ---------- Mutaciones ----------
