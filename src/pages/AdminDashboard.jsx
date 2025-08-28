@@ -346,6 +346,7 @@ export default function AdminDashboard() {
           : Number(instForm.base_price || 1),
         decimals: Number(instForm.decimals || 4),
         volatility_bps: Number(instForm.volatility_bps ?? 80), // <- usa la columna correcta
+        volatility: volBps / 10000,
         difficulty: instForm.difficulty,
         enabled: !!instForm.enabled,
       };

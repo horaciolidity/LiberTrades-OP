@@ -90,7 +90,9 @@ export default function TradingChart({
   const [seedKey, setSeedKey] = useState(0);    // fuerza re-seed al cambiar tf/pair
   const [displayPrice, setDisplayPrice] = useState(NaN);
 
-  const { lhs, rhs, symbol: dbSymbol } = parsePair(selectedPair);
+const { lhs, rhs } = parsePair(selectedPair);
+// Para Supabase (get_candles / realtime / RPC) usamos SIEMPRE el símbolo base:
+const dbSymbol = lhs;
 
   // info para el precio mostrado (por activo base)
   const info = cryptoPrices?.[lhs] || ctxPrices?.[lhs] || {};
