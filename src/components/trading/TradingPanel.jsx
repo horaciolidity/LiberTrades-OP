@@ -23,23 +23,13 @@ const normalizePair = (pair, fallback = 'BTC/USDT') => {
     const [b, q] = s.split('/');
     return `${(b || 'BTC').toUpperCase()}/${(q || 'USDT').toUpperCase()}`;
   }
-  // sin slash: intentar separar por sufijo común de quote
   if (s.endsWith('USDT')) return `${s.slice(0, -4)}/USDT`;
   if (s.endsWith('USDC')) return `${s.slice(0, -4)}/USDC`;
-  // default a USDT si no podemos inferir claramente
   return `${s}/USDT`;
 };
 
-// Devuelve siempre el BASE para indexar `cryptoPrices[BASE]`
-const baseFromPair = (pair) => {
-  const norm = normalizePair(pair);
-  const [base] = norm.split('/');
-  return base || 'BTC';
-};
-
-// Para intentar leer feeds alternativos si existieran (p.ej. "BTCUSDT" como key)
+const baseFromPair = (pair) => (normalizePair(pair).split('/')[0] || 'BTC');
 const noSlash = (pair) => String(pair || '').replace('/', '');
-
 /** -------------------------------------------------- */
 
 export default function TradingPanel({
@@ -48,19 +38,13 @@ export default function TradingPanel({
   onTrade,                 // (tradeData) => Promise<void>
   mode = 'demo',           // 'demo' | 'real'
   balance = 0,             // USDC
-  cryptoPrices = {},       // opcional: si no llega, usa DataContext
+  cryptoPrices = {},       // opcional (fallback)
   resetBalance,            // opcional (solo demo)
 }) {
   const {
     pairOptions: pairsFromCtx = [],
-    cryptoPrices: pricesFromCtx = {},
+    getPairInfo,           // <<< clave para no desfasar con el gráfico
   } = useData();
-
-  // Fallback a precios del contexto si no vienen por props
-  const prices = useMemo(() => {
-    const hasProp = cryptoPrices && Object.keys(cryptoPrices).length > 0;
-    return hasProp ? cryptoPrices : (pricesFromCtx || {});
-  }, [cryptoPrices, pricesFromCtx]);
 
   // Normalizamos TODAS las opciones de pares del contexto
   const normalizedCtxPairs = useMemo(() => {
@@ -85,16 +69,23 @@ export default function TradingPanel({
   const [tradeDuration, setTradeDuration] = useState(60); // seg (sólo demo)
   const [isTrading, setIsTrading] = useState(false);
 
-  // Precio actual: prioriza cryptoPrices[BASE]; si no, intenta con claves alternativas
-  const currentBase = baseFromPair(effectivePair);
-  const currentPriceData =
-    prices?.[currentBase] ??
-    prices?.[noSlash(effectivePair)] ??
-    prices?.[effectivePair] ??
-    null;
+  // Feed unificado (mismo que usa el gráfico vía DataContext)
+  const fromCtx = getPairInfo?.(effectivePair) || {};
+  // Fallback: si te pasan precios por props, intentamos matchear
+  const baseKey = baseFromPair(effectivePair);
+  const fromProps =
+    cryptoPrices?.[effectivePair] ??
+    cryptoPrices?.[baseKey] ??
+    cryptoPrices?.[noSlash(effectivePair)] ?? null;
+
+  // Elegimos SIEMPRE contexto, y sólo completamos con props si falta algo
+  const currentPriceData = {
+    price: Number.isFinite(Number(fromCtx.price)) ? fromCtx.price : fromProps?.price,
+    change: Number.isFinite(Number(fromCtx.change)) ? fromCtx.change : fromProps?.change,
+    history: fromCtx.history || fromProps?.history || [],
+  };
 
   const currentPrice = Number(currentPriceData?.price ?? 0);
-
   const amountNum = Number(tradeAmount);
   const hasPrice = currentPrice > 0 && Number.isFinite(currentPrice);
   const enoughBalance = mode === 'real' ? amountNum > 0 && amountNum <= Number(balance || 0) : amountNum > 0;
@@ -118,10 +109,8 @@ export default function TradingPanel({
         amount: amountNum,         // USD notional
         price: currentPrice,       // precio spot actual (del feed unificado)
         duration: tradeDuration,   // (demo)
-        ts: Date.now(),            // útil para trazas
+        ts: Date.now(),
       };
-      // Diagnóstico útil si el feed no matchea
-      // console.log('[onTrade payload]', payload, { feedKey: currentBase, feed: prices?.[currentBase] });
       await onTrade(payload);
     } catch (err) {
       console.error('Error ejecutando trade:', err);
@@ -141,11 +130,13 @@ export default function TradingPanel({
     setSelectedPair?.(norm);
   };
 
+  const baseSym = baseFromPair(effectivePair);
+  const changeNum = Number(currentPriceData.change);
+
   return (
     <Card className="crypto-card">
       <CardHeader>
         <CardTitle className="text-white flex items-center">
-          <Play className="h-5 w-5 mr-2 text-green-400" />
           Panel de Trading
         </CardTitle>
         <CardDescription className="text-slate-300">
@@ -218,29 +209,28 @@ export default function TradingPanel({
         </div>
 
         {/* Info de precio */}
-        {currentPriceData ? (
+        {currentPriceData && hasPrice ? (
           <div className="bg-slate-800/50 p-4 rounded-lg">
             <div className="flex justify-between items-center mb-2">
-              <span className="text-slate-400">Precio Actual ({currentBase}):</span>
+              <span className="text-slate-400">Precio Actual ({baseSym}):</span>
               <span className="text-white font-semibold">
-                {hasPrice ? `$${fmt(currentPriceData.price)}` : '—'}
+                ${fmt(currentPriceData.price)}
               </span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-slate-400">Cambio 24h:</span>
               <span
                 className={`font-semibold ${
-                  Number(currentPriceData.change) >= 0 ? 'text-green-400' : 'text-red-400'
+                  changeNum >= 0 ? 'text-green-400' : 'text-red-400'
                 }`}
               >
-                {fmt(currentPriceData.change)}%
+                {fmt(changeNum)}%
               </span>
             </div>
           </div>
         ) : (
           <div className="bg-slate-800/40 p-3 rounded text-xs text-slate-400">
-            No hay feed de precio para <b>{effectivePair}</b>. Verifica que el Admin tenga un instrumento
-            <i> habilitado</i> con BASE <b>{currentBase}</b> y que el DataContext publique <code>cryptoPrices["{currentBase}"]</code>.
+            No hay feed de precio para <b>{effectivePair}</b>.
           </div>
         )}
 
