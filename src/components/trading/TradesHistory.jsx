@@ -130,7 +130,7 @@ const useLivePriceGetter = (externalPrices) => {
     const tries = [
       prices?.[base]?.price,
       prices?.[norm]?.price,
-      prices?.[noSlash(norm)]?.price,        // ej: BTCUSDT
+      prices?.[noSlash(norm)]?.price,
       prices?.[base]?.c ?? prices?.[base]?.last,
     ];
     for (const p of tries) {
@@ -167,12 +167,12 @@ const inferClosePriceIfMissing = (trade, live) => {
     return side === 'sell' ? entry - profit / qty : entry + profit / qty;
   }
 
-  // 3) último live como aproximación (mejor que 0)
+  // 3) último live como aproximación
   return Number.isFinite(live) ? live : null;
 };
 
 /* --------------------------- Row ---------------------------- */
-const TradeRow = ({ t, getLive, onClose, onDetails, closing }) => {
+const TradeRow = ({ t, getLive, onClose, onDetails, closing, pnlDecimals }) => {
   const pair = typeof t.pair === 'string' ? normalizePair(t.pair) : 'BTC/USDT';
   const side = String(t.type || '').toLowerCase(); // buy|sell
   const amount = num(t.amount, 0);
@@ -180,7 +180,7 @@ const TradeRow = ({ t, getLive, onClose, onDetails, closing }) => {
 
   const isOpen = String(t.status || '').toLowerCase() === 'open';
 
-  // abiertos ⇒ calc con precio vivo SIEMPRE (evita upnl=0)
+  // abiertos ⇒ calc con precio vivo SIEMPRE
   const computedOpen = calcUPnL(t, getLive);
 
   // cerrados ⇒ prioridad: closePrice > profit > 0
@@ -231,7 +231,7 @@ const TradeRow = ({ t, getLive, onClose, onDetails, closing }) => {
 
       <div className="text-right">
         <p className={`font-semibold ${pnlPos ? 'text-green-400' : 'text-red-400'}`}>
-          {fmtSigned(pnlShown)}
+          {fmtSigned(pnlShown, pnlDecimals)}
         </p>
         <p className="text-slate-400 text-sm">{fmtTime(t.timestamp)}</p>
       </div>
@@ -277,10 +277,14 @@ const TradeRow = ({ t, getLive, onClose, onDetails, closing }) => {
 };
 
 /* --------------------------- Main --------------------------- */
-const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }) => {
+const TradesHistory = ({
+  trades = [],
+  cryptoPrices = {},
+  closeTrade = () => {},
+  autoCloseDemo = true,      // ⟵ autocerrar trades con duración (modo demo)
+  pnlDecimals = 4,           // ⟵ más decimales en PnL $
+}) => {
   const list = safeArr(trades);
-
-  // getter de precio vivo coherente con DataContext
   const getLive = useLivePriceGetter(cryptoPrices);
 
   const [detailOpen, setDetailOpen] = useState(false);
@@ -328,6 +332,39 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
       setRowClosingId(null);
     }
   };
+
+  /* --------- AUTOCIERRE DEMO: cuando llega a 0s --------- */
+  const autoClosingSet = useRef(new Set());
+  useEffect(() => {
+    if (!autoCloseDemo) return;
+    const id = setInterval(async () => {
+      for (const t of list) {
+        if (!t?.id) continue;
+        const status = String(t.status || '').toLowerCase();
+        if (status !== 'open') continue;
+
+        // solo autocerrar si existe duración o closeAt (típico de DEMO)
+        const hasDur =
+          Number(num(t.durationSeconds ?? t.duration, 0)) > 0 ||
+          Number.isFinite(parseTsMs(t.closeAt ?? t.closeat));
+
+        if (!hasDur) continue;
+
+        const secs = remainingSeconds(t);
+        if (secs === 0 && !autoClosingSet.current.has(t.id)) {
+          autoClosingSet.current.add(t.id);
+          try {
+            await closeTrade?.(t.id, true);
+          } finally {
+            // damos 2s y liberamos por si el backend devuelve error
+            setTimeout(() => autoClosingSet.current.delete(t.id), 2000);
+          }
+        }
+      }
+    }, 500); // chequeo suave cada 0.5s
+
+    return () => clearInterval(id);
+  }, [list, autoCloseDemo, closeTrade]);
 
   // Datos para el modal
   const details = useMemo(() => {
@@ -411,6 +448,7 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
                     onClose={handleRowClose}
                     onDetails={openForDetails}
                     closing={rowClosingId === t.id}
+                    pnlDecimals={pnlDecimals}
                   />
                 ))
               ) : (
@@ -476,7 +514,7 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
                 <div className="p-3 rounded bg-slate-800/60 col-span-2">
                   <p className="text-slate-400 text-xs">PnL</p>
                   <p className={`font-semibold ${details.pnlShown >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {fmtSigned(details.pnlShown)} ({fmtSigned(details.pnlPct)}%)
+                    {fmtSigned(details.pnlShown, pnlDecimals)} ({fmtSigned(details.pnlPct, 3)}%)
                   </p>
                 </div>
 
