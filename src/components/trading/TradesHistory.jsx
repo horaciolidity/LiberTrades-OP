@@ -1,5 +1,5 @@
 // src/components/trading/TradesHistory.jsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Card, CardContent, CardHeader, CardTitle, CardDescription,
@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/dialog';
 import { useData } from '@/contexts/DataContext';
 
-// -------- utilidades base ----------
+/* ------------------------ utils base ------------------------ */
 const safeArr = (a) => (Array.isArray(a) ? a : []);
 const num = (v, fb = 0) => (Number.isFinite(Number(v)) ? Number(v) : fb);
 
@@ -29,16 +29,6 @@ const fmtPriceSafe = (v, d = 2) => {
   return x.toFixed(d);
 };
 
-// "BTC/USDT" -> "BTC", "BTCUSDT" -> "BTC"
-const baseFromPair = (pair) => {
-  if (!pair || typeof pair !== 'string') return 'BTC';
-  const s = pair.trim().toUpperCase();
-  if (s.includes('/')) return s.split('/')[0];
-  if (s.endsWith('USDT')) return s.slice(0, -4);
-  if (s.endsWith('USDC')) return s.slice(0, -4);
-  return s;
-};
-
 const normalizePair = (pair, fb = 'BTC/USDT') => {
   if (!pair) return fb;
   const s = String(pair).trim().toUpperCase();
@@ -51,6 +41,17 @@ const normalizePair = (pair, fb = 'BTC/USDT') => {
   if (s.endsWith('USDC')) return `${s.slice(0, -4)}/USDC`;
   return `${s}/USDT`;
 };
+
+const baseFromPair = (pair) => {
+  if (!pair || typeof pair !== 'string') return 'BTC';
+  const s = pair.trim().toUpperCase();
+  if (s.includes('/')) return s.split('/')[0];
+  if (s.endsWith('USDT')) return s.slice(0, -4);
+  if (s.endsWith('USDC')) return s.slice(0, -4);
+  return s;
+};
+
+const noSlash = (s) => String(s || '').replace('/', '').toUpperCase();
 
 // ts variados a ms
 const parseTsMs = (ts) => {
@@ -87,7 +88,7 @@ const fmtDuration = (seconds) => {
   return h > 0 ? `${h}:${pad(m)}:${pad(r)}` : `${m}:${pad(r)}`;
 };
 
-// ===== helpers de trading =====
+/* --------------------- helpers de trading -------------------- */
 const computeQty = (amountUsd, entry) => {
   const a = num(amountUsd, 0);
   const e = num(entry, 0);
@@ -107,8 +108,7 @@ const remainingSeconds = (trade) => {
   return Math.max(0, Math.floor((closeAtMs - Date.now()) / 1000));
 };
 
-// ===== acceso robusto a precio vivo =====
-// usa getPairInfo si existe; si no, prueba "SYM" y "SYM/QUOTE".
+/* ------------- getter robusto de precio en vivo -------------- */
 const useLivePriceGetter = (externalPrices) => {
   const { cryptoPrices: ctxPrices = {}, getPairInfo } = useData();
   const prices = useMemo(
@@ -119,19 +119,28 @@ const useLivePriceGetter = (externalPrices) => {
   return (pair) => {
     const norm = normalizePair(pair);
     const base = baseFromPair(norm);
+
+    // 1) API del DataContext (pref)
     if (typeof getPairInfo === 'function') {
       const info = getPairInfo(norm);
       if (info && Number.isFinite(Number(info.price))) return Number(info.price);
     }
-    const byBase = prices?.[base]?.price;
-    if (Number.isFinite(Number(byBase))) return Number(byBase);
-    const byPair = prices?.[norm]?.price;
-    if (Number.isFinite(Number(byPair))) return Number(byPair);
+
+    // 2) Fallbacks por claves frecuentes
+    const tries = [
+      prices?.[base]?.price,
+      prices?.[norm]?.price,
+      prices?.[noSlash(norm)]?.price,        // ej: BTCUSDT
+      prices?.[base]?.c ?? prices?.[base]?.last,
+    ];
+    for (const p of tries) {
+      if (Number.isFinite(Number(p))) return Number(p);
+    }
     return NaN;
   };
 };
 
-// ===== Cálculo de PnL con live getter =====
+/* ------------------ PnL (marca y realizado) ------------------ */
 const calcUPnL = (trade, getLive) => {
   const live = Number(getLive(trade?.pair));
   const entry = num(trade?.price ?? trade?.priceAtExecution, NaN);
@@ -142,36 +151,50 @@ const calcUPnL = (trade, getLive) => {
   return side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
 };
 
-const inferClosePriceIfMissing = (trade) => {
+const inferClosePriceIfMissing = (trade, live) => {
+  // 1) explícito
   const explicit = trade.closeprice ?? trade.closePrice;
   if (explicit != null && Number.isFinite(Number(explicit))) return Number(explicit);
 
+  // 2) derivarlo de profit si existe
   const entry = num(trade.price ?? trade.priceAtExecution, NaN);
   const amount = num(trade.amount, NaN);
   const qty = computeQty(amount, entry);
   const profit = num(trade.profit, NaN);
   const side = String(trade.type || '').toLowerCase();
 
-  if (!Number.isFinite(entry) || !Number.isFinite(qty)) return null;
-  if (!Number.isFinite(profit)) return null;
+  if (Number.isFinite(profit) && Number.isFinite(entry) && Number.isFinite(qty) && qty) {
+    return side === 'sell' ? entry - profit / qty : entry + profit / qty;
+  }
 
-  return side === 'sell' ? entry - profit / qty : entry + profit / qty;
+  // 3) último live como aproximación (mejor que 0)
+  return Number.isFinite(live) ? live : null;
 };
 
-// ======= Row =======
+/* --------------------------- Row ---------------------------- */
 const TradeRow = ({ t, getLive, onClose, onDetails, closing }) => {
   const pair = typeof t.pair === 'string' ? normalizePair(t.pair) : 'BTC/USDT';
   const side = String(t.type || '').toLowerCase(); // buy|sell
   const amount = num(t.amount, 0);
   const entry = num(t.price ?? t.priceAtExecution, 0);
 
-  // Para abiertos: calcular SIEMPRE con precio vivo (evita quedarse en 0 si upnl=0)
-  const upnl = num(t.upnl, null);
-  const computed = calcUPnL(t, getLive);
   const isOpen = String(t.status || '').toLowerCase() === 'open';
 
-  // Para cerrados: mostrar profit; si faltara, usar upnl persistido
-  const pnlShown = isOpen ? computed : num(t.profit ?? upnl, 0);
+  // abiertos ⇒ calc con precio vivo SIEMPRE (evita upnl=0)
+  const computedOpen = calcUPnL(t, getLive);
+
+  // cerrados ⇒ si profit no viene, calculo con closeprice o último live
+  let pnlClosed = num(t.profit, NaN);
+  if (!isOpen && !Number.isFinite(pnlClosed)) {
+    const live = Number(getLive(t.pair));
+    const closeP = inferClosePriceIfMissing(t, live);
+    const qty = computeQty(amount, entry);
+    pnlClosed = (Number.isFinite(closeP) && qty)
+      ? (side === 'sell' ? (entry - closeP) * qty : (closeP - entry) * qty)
+      : 0;
+  }
+
+  const pnlShown = isOpen ? computedOpen : num(pnlClosed, 0);
   const pnlPos = pnlShown >= 0;
 
   const secs = remainingSeconds(t);
@@ -250,7 +273,7 @@ const TradeRow = ({ t, getLive, onClose, onDetails, closing }) => {
   );
 };
 
-// ======= Main =======
+/* --------------------------- Main --------------------------- */
 const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }) => {
   const list = safeArr(trades);
 
@@ -260,28 +283,37 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState(null);
 
-  // estados para UX de cierre
+  // para cerrar auto SOLO si el trade estaba abierto al abrir el modal
+  const wasOpenAtOpenRef = useRef(false);
+
+  // estados UX cierre
   const [closingModal, setClosingModal] = useState(false);
   const [rowClosingId, setRowClosingId] = useState(null);
 
   const openForDetails = (t) => {
     setSelected(t);
+    wasOpenAtOpenRef.current = String(t?.status || '').toLowerCase() === 'open';
     setDetailOpen(true);
   };
 
-  // Si cambia el trade seleccionado en la lista (p.ej. se cierra), refrescar modal / cerrarlo
+  // sincronizar cambios del trade seleccionado
   useEffect(() => {
     if (!selected) return;
     const updated = list.find((t) => t.id === selected.id);
-    if (updated) {
-      setSelected(updated);
-      if (detailOpen && String(updated.status || '').toLowerCase() === 'closed') {
-        setDetailOpen(false);
-      }
+    if (!updated) return;
+
+    setSelected(updated);
+
+    // solo autocerrar si originalmente estaba OPEN y pasó a CLOSED
+    if (
+      detailOpen &&
+      wasOpenAtOpenRef.current &&
+      String(updated.status || '').toLowerCase() === 'closed'
+    ) {
+      setDetailOpen(false);
     }
   }, [list, selected?.id, detailOpen]);
 
-  // wrapper que espera al closeTrade y luego cierra modal si corresponde
   const handleRowClose = async (id) => {
     if (!id) return;
     try {
@@ -294,27 +326,34 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
     }
   };
 
-  // Datos calculados para el modal
+  // Datos para el modal
   const details = useMemo(() => {
     if (!selected) return null;
 
     const side = String(selected.type || '').toLowerCase();
     const amount = num(selected.amount, 0);
-    const entry = num(selected.price ?? selected.priceAtExecution, 0); // <- aquí estaba el typo
+    const entry = num(selected.price ?? selected.priceAtExecution, 0);
     const qty = computeQty(amount, entry);
 
     const live = Number(getLive(selected.pair));
     const isOpen = String(selected.status || '').toLowerCase() === 'open';
     const closePrice = isOpen
       ? (Number.isFinite(live) ? live : null)
-      : inferClosePriceIfMissing(selected);
+      : inferClosePriceIfMissing(selected, live);
 
     const upnlLive = (() => {
       if (!isOpen || !Number.isFinite(live) || !entry || !qty) return 0;
       return side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
     })();
 
-    const realized = isOpen ? null : num(selected.profit, 0);
+    // realized preferente: profit; sino, computo con closePrice
+    let realized = isOpen ? null : num(selected.profit, NaN);
+    if (!isOpen && !Number.isFinite(realized)) {
+      realized = (Number.isFinite(closePrice) && qty)
+        ? (side === 'sell' ? (entry - closePrice) * qty : (closePrice - entry) * qty)
+        : 0;
+    }
+
     const pnlShown = isOpen ? upnlLive : (realized ?? 0);
     const pnlPct = amount ? (pnlShown / amount) * 100 : 0;
 
