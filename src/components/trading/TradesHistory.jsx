@@ -1,4 +1,3 @@
-// src/components/trading/TradesHistory.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -23,7 +22,7 @@ const fmtSigned = (v, d = 2) => {
   return `${x >= 0 ? '+' : ''}${x.toFixed(d)}`;
 };
 
-// evita imprimir monstruos astronómicos de trades viejos bugueados
+// evita imprimir monstruos astronómicos heredados de trades viejos bugueados
 const fmtPriceSafe = (v, d = 2) => {
   const x = Number(v);
   if (!Number.isFinite(x) || x <= 0 || x > 1e8) return '—';
@@ -179,8 +178,11 @@ const calcUPnL = (trade, getLive) => {
   return side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
 };
 
-const inferClosePriceIfMissing = (trade, live) => {
-  // 1) explícito
+const inferClosePriceIfMissing = (trade, live, localHint) => {
+  // 0) si capturamos el precio al cerrar, úsalo
+  if (Number.isFinite(localHint)) return localHint;
+
+  // 1) explícito desde backend
   const explicit =
     trade.closeprice ??
     trade.closePrice ??
@@ -205,21 +207,23 @@ const inferClosePriceIfMissing = (trade, live) => {
 };
 
 /* --------------------------- Row ---------------------------- */
-const TradeRow = ({ t, getLive, onClose, onDetails, closing, pnlDecimals, priceDecimals }) => {
+const TradeRow = ({
+  t, getLive, onClose, onDetails, closing,
+  pnlDecimals, priceDecimals, getCloseHint,
+}) => {
   const pair = typeof t.pair === 'string' ? normalizePair(t.pair) : 'BTC/USDT';
   const side = String(t.type || '').toLowerCase(); // buy|sell
   const entry = num(t.price ?? t.priceAtExecution, 0);
-
   const isOpen = String(t.status || '').toLowerCase() === 'open';
 
   // abiertos ⇒ calc con precio vivo SIEMPRE
   const computedOpen = calcUPnL(t, getLive);
 
-  // cerrados ⇒ prioridad: closePrice > profit > 0
+  // cerrados ⇒ prioridad: closeHint > closePrice > profit > 0
   let pnlClosed = 0;
   if (!isOpen) {
     const live = Number(getLive(t.pair));
-    const closeP = inferClosePriceIfMissing(t, live);
+    const closeP = inferClosePriceIfMissing(t, live, getCloseHint?.(t.id));
     const qty = getQty(t);
     if (Number.isFinite(closeP) && qty) {
       pnlClosed = side === 'sell' ? (entry - closeP) * qty : (closeP - entry) * qty;
@@ -334,6 +338,14 @@ const TradesHistory = ({
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState(null);
 
+  // Hints de cierre locales: id -> price capturado al cerrar
+  const closeHintsRef = useRef(new Map());
+  const setCloseHint = (id, price) => {
+    if (!id || !Number.isFinite(price)) return;
+    closeHintsRef.current.set(id, Number(price));
+  };
+  const getCloseHint = (id) => closeHintsRef.current.get(id);
+
   // para cerrar auto SOLO si el trade estaba abierto al abrir el modal
   const wasOpenAtOpenRef = useRef(false);
 
@@ -368,6 +380,11 @@ const TradesHistory = ({
   const handleRowClose = async (id) => {
     if (!id) return;
     try {
+      // Capturamos precio vivo ANTES de cerrar (hint local)
+      const t = list.find(x => x.id === id);
+      const p = Number(getLive(t?.pair));
+      if (Number.isFinite(p)) setCloseHint(id, p);
+
       setRowClosingId(id);
       const result = await closeTrade?.(id, true);
       const ok = (typeof result === 'boolean') ? result : true;
@@ -398,17 +415,18 @@ const TradesHistory = ({
         if (secs === 0 && !autoClosingSet.current.has(t.id)) {
           autoClosingSet.current.add(t.id);
           try {
+            const p = Number(getLive(t.pair));
+            if (Number.isFinite(p)) setCloseHint(t.id, p); // guardamos hint también en autocierre
             await closeTrade?.(t.id, true);
           } finally {
-            // damos 2s y liberamos por si el backend devuelve error
             setTimeout(() => autoClosingSet.current.delete(t.id), 2000);
           }
         }
       }
-    }, 500); // chequeo suave cada 0.5s
+    }, 500);
 
     return () => clearInterval(id);
-  }, [list, autoCloseDemo, closeTrade]);
+  }, [list, autoCloseDemo, closeTrade, getLive]);
 
   // Datos para el modal
   const details = useMemo(() => {
@@ -421,16 +439,17 @@ const TradesHistory = ({
 
     const live = Number(getLive(selected.pair));
     const isOpen = String(selected.status || '').toLowerCase() === 'open';
+
     const closePrice = isOpen
       ? (Number.isFinite(live) ? live : null)
-      : inferClosePriceIfMissing(selected, live);
+      : inferClosePriceIfMissing(selected, live, getCloseHint(selected.id));
 
     const upnlLive = (() => {
       if (!isOpen || !Number.isFinite(live) || !entry || !qty) return 0;
       return side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
     })();
 
-    // realized preferente: closePrice > profit > 0
+    // realized preferente: closeHint/closePrice > profit > 0
     let realized = null;
     if (!isOpen) {
       if (Number.isFinite(closePrice) && qty) {
@@ -491,30 +510,31 @@ const TradesHistory = ({
             </CardDescription>
           </CardHeader>
 
-          <CardContent>
-            <div className="space-y-4 max-h-96 overflow-y-auto scrollbar-hide">
-              {list.length > 0 ? (
-                list.map((t) => (
-                  <TradeRow
-                    key={t.id ?? `${t.pair}-${parseTsMs(t.timestamp) || Math.random()}`}
-                    t={t}
-                    getLive={getLive}
-                    onClose={handleRowClose}
-                    onDetails={openForDetails}
-                    closing={rowClosingId === t.id}
-                    pnlDecimals={pnlDecimals}
-                    priceDecimals={priceDecimals}
-                  />
-                ))
-              ) : (
-                <div className="text-center py-8">
-                  <Activity className="h-12 w-12 text-slate-600 mx-auto mb-4" />
-                  <p className="text-slate-400">No tienes trades aún</p>
-                  <p className="text-slate-500 text-sm">Ejecuta tu primer trade para comenzar</p>
-                </div>
-              )}
-            </div>
-          </CardContent>
+        <CardContent>
+          <div className="space-y-4 max-h-96 overflow-y-auto scrollbar-hide">
+            {list.length > 0 ? (
+              list.map((t) => (
+                <TradeRow
+                  key={t.id ?? `${t.pair}-${parseTsMs(t.timestamp) || Math.random()}`}
+                  t={t}
+                  getLive={getLive}
+                  onClose={handleRowClose}
+                  onDetails={openForDetails}
+                  closing={rowClosingId === t.id}
+                  pnlDecimals={pnlDecimals}
+                  priceDecimals={priceDecimals}
+                  getCloseHint={getCloseHint}
+                />
+              ))
+            ) : (
+              <div className="text-center py-8">
+                <Activity className="h-12 w-12 text-slate-600 mx-auto mb-4" />
+                <p className="text-slate-400">No tienes trades aún</p>
+                <p className="text-slate-500 text-sm">Ejecuta tu primer trade para comenzar</p>
+              </div>
+            )}
+          </div>
+        </CardContent>
         </Card>
       </motion.div>
 
@@ -596,6 +616,10 @@ const TradesHistory = ({
                 <Button
                   onClick={async () => {
                     if (!selected?.id) return;
+                    // capturamos hint antes de cerrar desde el modal
+                    const p = Number(getLive(selected.pair));
+                    if (Number.isFinite(p)) setCloseHint(selected.id, p);
+
                     setClosingModal(true);
                     const result = await closeTrade?.(selected.id, true);
                     setClosingModal(false);
