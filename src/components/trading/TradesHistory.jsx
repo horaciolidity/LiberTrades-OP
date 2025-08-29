@@ -183,18 +183,21 @@ const TradeRow = ({ t, getLive, onClose, onDetails, closing }) => {
   // abiertos ⇒ calc con precio vivo SIEMPRE (evita upnl=0)
   const computedOpen = calcUPnL(t, getLive);
 
-  // cerrados ⇒ si profit no viene, calculo con closeprice o último live
-  let pnlClosed = num(t.profit, NaN);
-  if (!isOpen && !Number.isFinite(pnlClosed)) {
+  // cerrados ⇒ prioridad: closePrice > profit > 0
+  let pnlClosed = 0;
+  if (!isOpen) {
     const live = Number(getLive(t.pair));
     const closeP = inferClosePriceIfMissing(t, live);
     const qty = computeQty(amount, entry);
-    pnlClosed = (Number.isFinite(closeP) && qty)
-      ? (side === 'sell' ? (entry - closeP) * qty : (closeP - entry) * qty)
-      : 0;
+    if (Number.isFinite(closeP) && qty) {
+      pnlClosed = side === 'sell' ? (entry - closeP) * qty : (closeP - entry) * qty;
+    } else {
+      const p = num(t.profit, NaN);
+      pnlClosed = Number.isFinite(p) ? p : 0;
+    }
   }
 
-  const pnlShown = isOpen ? computedOpen : num(pnlClosed, 0);
+  const pnlShown = isOpen ? computedOpen : pnlClosed;
   const pnlPos = pnlShown >= 0;
 
   const secs = remainingSeconds(t);
@@ -346,12 +349,16 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
       return side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
     })();
 
-    // realized preferente: profit; sino, computo con closePrice
-    let realized = isOpen ? null : num(selected.profit, NaN);
-    if (!isOpen && !Number.isFinite(realized)) {
-      realized = (Number.isFinite(closePrice) && qty)
-        ? (side === 'sell' ? (entry - closePrice) * qty : (closePrice - entry) * qty)
-        : 0;
+    // realized preferente: closePrice > profit > 0
+    let realized = null;
+    if (!isOpen) {
+      if (Number.isFinite(closePrice) && qty) {
+        realized = side === 'sell' ? (entry - closePrice) * qty : (closePrice - entry) * qty;
+      } else if (Number.isFinite(num(selected.profit, NaN))) {
+        realized = num(selected.profit, 0);
+      } else {
+        realized = 0;
+      }
     }
 
     const pnlShown = isOpen ? upnlLive : (realized ?? 0);
@@ -433,13 +440,13 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-3 rounded bg-slate-800/60">
                   <p className="text-slate-400 text-xs">Tipo</p>
-                  <p className={`font-semibold ${details.side === 'sell' ? 'text-red-400' : 'text-green-400'}`}>
-                    {details.side === 'sell' ? 'SELL' : 'BUY'}
+                  <p className={`font-semibold ${details.pnlShown >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(selected.type || '').toLowerCase() === 'sell' ? 'SELL' : 'BUY'}
                   </p>
                 </div>
                 <div className="p-3 rounded bg-slate-800/60">
                   <p className="text-slate-400 text-xs">Par</p>
-                  <p className="font-semibold">{normalizePair(selected.pair)}</p>
+                  <p className="font-semibold">{normalizePair(selected?.pair)}</p>
                 </div>
 
                 <div className="p-3 rounded bg-slate-800/60">
@@ -475,14 +482,14 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
 
                 <div className="p-3 rounded bg-slate-800/60">
                   <p className="text-slate-400 text-xs">Abierto</p>
-                  <p className="font-semibold">{fmtDateTime(selected.timestamp)}</p>
+                  <p className="font-semibold">{fmtDateTime(selected?.timestamp)}</p>
                 </div>
                 <div className="p-3 rounded bg-slate-800/60">
                   <p className="text-slate-400 text-xs">{details.isOpen ? 'Duración' : 'Cerrado'}</p>
                   <p className="font-semibold">
                     {details.isOpen
                       ? fmtDuration(details.secondsElapsed ?? NaN)
-                      : fmtDateTime(selected.closeat ?? selected.closeAt)}
+                      : fmtDateTime(selected?.closeat ?? selected?.closeAt)}
                   </p>
                 </div>
               </div>
