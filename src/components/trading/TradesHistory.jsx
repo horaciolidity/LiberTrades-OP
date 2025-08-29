@@ -14,7 +14,6 @@ import { useData } from '@/contexts/DataContext';
 // -------- utilidades base ----------
 const safeArr = (a) => (Array.isArray(a) ? a : []);
 const num = (v, fb = 0) => (Number.isFinite(Number(v)) ? Number(v) : fb);
-const clamp = (v, a = 0, b = 100) => Math.min(b, Math.max(a, v));
 
 const fmt = (v, d = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : (0).toFixed(d));
 const fmtSigned = (v, d = 2) => {
@@ -166,16 +165,18 @@ const TradeRow = ({ t, getLive, onClose, onDetails, closing }) => {
   const amount = num(t.amount, 0);
   const entry = num(t.price ?? t.priceAtExecution, 0);
 
+  // Para abiertos: calcular SIEMPRE con precio vivo (evita quedarse en 0 si upnl=0)
   const upnl = num(t.upnl, null);
-  const computed = Number.isFinite(upnl) ? upnl : calcUPnL(t, getLive);
+  const computed = calcUPnL(t, getLive);
   const isOpen = String(t.status || '').toLowerCase() === 'open';
+
+  // Para cerrados: mostrar profit; si faltara, usar upnl persistido
+  const pnlShown = isOpen ? computed : num(t.profit ?? upnl, 0);
+  const pnlPos = pnlShown >= 0;
 
   const secs = remainingSeconds(t);
   const mm = Number.isFinite(secs) ? Math.floor(secs / 60) : null;
   const ss = Number.isFinite(secs) ? String(secs % 60).padStart(2, '0') : null;
-
-  const pnlShown = isOpen ? computed : num(t.profit, 0);
-  const pnlPos = pnlShown >= 0;
 
   return (
     <motion.div
@@ -299,7 +300,7 @@ const TradesHistory = ({ trades = [], cryptoPrices = {}, closeTrade = () => {} }
 
     const side = String(selected.type || '').toLowerCase();
     const amount = num(selected.amount, 0);
-    const entry = num(selected.price ?? selected.priceAtExecution, 0);
+    const entry = num(selected.price ?? selected.priceAtExecution, 0); // <- aquí estaba el typo
     const qty = computeQty(amount, entry);
 
     const live = Number(getLive(selected.pair));
