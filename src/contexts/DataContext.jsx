@@ -57,7 +57,7 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
 };
 
 export function DataProvider({ children }) {
-  const { user } = useAuth();
+  const { user, refreshBalances: refreshAuthBalances } = useAuth();
 
   // ---------- Estado negocio ----------
   const [investments, setInvestments] = useState([]);
@@ -500,7 +500,7 @@ export function DataProvider({ children }) {
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
       { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
       { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para grandes inversores' },
-      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
+      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,duration: 30, dailyReturn: 3.0, description: 'Para grandes inversores' },
     ],
     []
   );
@@ -786,6 +786,168 @@ export function DataProvider({ children }) {
     })();
   };
 
+  /* ------------------ CLOSE TRADE (REAL) ------------------ */
+  // helpers internos para trades
+  const _num = (v, fb = 0) => (Number.isFinite(Number(v)) ? Number(v) : fb);
+  const _normalizePair = (pair, fb = 'BTC/USDT') => {
+    if (!pair) return fb;
+    const s = String(pair).trim().toUpperCase();
+    if (s.includes('/')) {
+      const [b = 'BTC', q = 'USDT'] = s.split('/');
+      return `${b}/${q}`;
+    }
+    if (s.endsWith('USDT')) return `${s.slice(0, -4)}/USDT`;
+    if (s.endsWith('USDC')) return `${s.slice(0, -4)}/USDC`;
+    return `${s}/USDT`;
+  };
+  const _quoteFromPair = (pair) => _normalizePair(pair).split('/')[1] || 'USDT';
+  const _qtyFromTrade = (t) => {
+    const q = _num(t?.qty ?? t?.quantity ?? t?.units ?? t?.size, NaN);
+    if (Number.isFinite(q) && q > 0) return q;
+    const entry = _num(t?.price ?? t?.priceAtExecution, 0);
+    const amountOpen = _num(t?.amountAtOpen ?? t?.amount_usd ?? t?.amount, 0);
+    if (entry > 0 && amountOpen > 0) return amountOpen / entry;
+    return 0;
+  };
+  const _entryFromTrade = (t) => _num(t?.price ?? t?.priceAtExecution, 0);
+
+  async function _fetchBinanceLastPrice(pairOrSymbol) {
+    try {
+      const norm = _normalizePair(pairOrSymbol);
+      const symbol = norm.replace('/', '');
+      const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
+      const j = await res.json();
+      const p = Number(j?.price);
+      return Number.isFinite(p) ? p : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function _rpcIncWallet(uid, currency, delta) {
+    try {
+      const { error } = await supabase.rpc('inc_wallet', {
+        uid,
+        currency,
+        delta,
+      });
+      return !error;
+    } catch {
+      return false;
+    }
+  }
+  async function _fallbackIncWallet(uid, currency, delta) {
+    const col = String(currency || 'USDT').toLowerCase(); // usdt | usdc | btc | eth
+    const { data, error } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', uid)
+      .single();
+    if (error) return false;
+    const current = Number(data?.[col] ?? 0);
+    const next = current + Number(delta || 0);
+    const { error: upErr } = await supabase
+      .from('wallets')
+      .update({ [col]: next })
+      .eq('user_id', uid);
+    return !upErr;
+  }
+
+  /**
+   * Cierra un trade. En REAL:
+   * - calcula profit (permite pasar closePriceHint, si no usa Binance o entry)
+   * - actualiza el trade (closePrice, profit, status)
+   * - inserta wallet_transaction 'trade_profit'
+   * - acredita PnL al wallet (quote)
+   * - refresca transacciones y balances
+   *
+   * @param {string} tradeId
+   * @param {boolean} byUser
+   * @param {number} [closePriceHint]
+   */
+  async function closeTrade(tradeId, byUser = false, closePriceHint) {
+    try {
+      // 1) Traer trade
+      const { data: t, error: selErr } = await supabase
+        .from('trades')
+        .select('*')
+        .eq('id', tradeId)
+        .single();
+      if (selErr || !t) throw new Error(selErr?.message || 'Trade no encontrado');
+
+      if (String(t.status || '').toLowerCase() === 'closed') return true;
+
+      const isDemo = String(t.mode || t.simulated || '').toLowerCase() === 'demo';
+      const side = String(t.type || '').toLowerCase(); // buy|sell
+      const entry = _entryFromTrade(t);
+      const qty   = _qtyFromTrade(t);
+
+      // 2) Precio de cierre
+      let closePrice =
+        Number.isFinite(Number(closePriceHint)) ? Number(closePriceHint)
+        : _num(t?.closeprice ?? t?.closePrice ?? t?.close_price, NaN);
+
+      if (!Number.isFinite(closePrice)) {
+        const live = await _fetchBinanceLastPrice(t.pair || t.binance_symbol || '');
+        if (Number.isFinite(live)) closePrice = live;
+      }
+      if (!Number.isFinite(closePrice)) closePrice = entry; // evita NaN
+
+      // 3) Profit
+      const profit = qty && entry
+        ? (side === 'sell' ? (entry - closePrice) * qty : (closePrice - entry) * qty)
+        : 0;
+
+      // 4) Actualizar trade
+      const patch = {
+        status: 'closed',
+        closePrice,
+        profit,
+        closeAt: new Date().toISOString(),
+        closed_by: byUser ? 'user' : 'system',
+      };
+      const { error: updErr } = await supabase
+        .from('trades')
+        .update(patch)
+        .eq('id', tradeId);
+      if (updErr) throw new Error(updErr.message);
+
+      // 5) En REAL: transacción + wallet
+      if (!isDemo) {
+        const uid = t.user_id ?? t.userId ?? user?.id;
+        const quote = _quoteFromPair(t.pair || 'BTC/USDT');
+        const pnl = Number(profit || 0);
+
+        // wallet transaction
+        await supabase.from('wallet_transactions').insert({
+          user_id: uid,
+          type: 'trade_profit',
+          amount: pnl,
+          currency: quote,
+          status: 'completed',
+          description: `PnL ${t.pair} ${side.toUpperCase()}`,
+          reference_type: 'trade',
+          reference_id: t.id,
+        });
+
+        // acreditar wallet (RPC atómico si existe; si falla, fallback)
+        const okRpc = await _rpcIncWallet(uid, quote, pnl);
+        if (!okRpc) await _fallbackIncWallet(uid, quote, pnl);
+      }
+
+      // 6) Refrescar vista
+      await refreshTransactions();
+      await refreshInvestments(); // por si tienes KPIs cruzados
+      try { await refreshAuthBalances?.(); } catch {}
+
+      return true;
+    } catch (err) {
+      console.error('[closeTrade] error:', err);
+      return false;
+    }
+  }
+  /* ------------------ FIN CLOSE TRADE ------------------ */
+
   const value = useMemo(() => ({
     // negocio
     investments,
@@ -821,6 +983,9 @@ export function DataProvider({ children }) {
     getPairInfo,             // helper recomendado para paneles
     pairOptions,             // ['BTC/USDT', ...]
     assetToSymbol: liveBinanceMap,
+
+    // trades
+    closeTrade,
 
     investmentPlans,
   }), [
@@ -866,6 +1031,9 @@ export function useData() {
     getPairInfo: () => ({ price: undefined, change: undefined, history: [] }),
     pairOptions: ['BTC/USDT', 'ETH/USDT'],
     assetToSymbol: DEFAULT_BINANCE_MAP,
+
+    closeTrade: async () => true,
+
     investmentPlans: [],
   };
 }
