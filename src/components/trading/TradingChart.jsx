@@ -25,7 +25,10 @@ const toEpochSec = (t) => {
   if (!t) return undefined;
   const num = Number(t);
   if (Number.isFinite(num)) return num > 2e10 ? Math.floor(num / 1000) : Math.floor(num);
-  const ms = Date.parse(t);
+  // robustecer parseo de "YYYY-MM-DD HH:mm:ss.ssssss+00"
+  const raw = String(t);
+  const iso = raw.includes('T') ? raw : raw.replace(' ', 'T').replace('+00', 'Z');
+  const ms = Date.parse(iso);
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
 };
 
@@ -90,9 +93,9 @@ export default function TradingChart({
   const [seedKey, setSeedKey] = useState(0);    // fuerza re-seed al cambiar tf/pair
   const [displayPrice, setDisplayPrice] = useState(NaN);
 
-const { lhs, rhs } = parsePair(selectedPair);
-// Para Supabase (get_candles / realtime / RPC) usamos SIEMPRE el símbolo base:
-const dbSymbol = lhs;
+  const { lhs, rhs } = parsePair(selectedPair);
+  // Para Supabase (get_candles / realtime / RPC) usamos SIEMPRE el símbolo base:
+  const dbSymbol = lhs;
 
   // info para el precio mostrado (por activo base)
   const info = cryptoPrices?.[lhs] || ctxPrices?.[lhs] || {};
@@ -195,7 +198,7 @@ const dbSymbol = lhs;
       if (arr.length) {
         chart.timeScale().setVisibleRange({ from: arr[0].time, to: arr[arr.length - 1].time });
         chart.timeScale().scrollToRealTime();
-        series.priceScale().applyOptions({ autoScale: true }); // autoscale suave
+        series.priceScale().applyOptions({ autoScale: true });
         setDisplayPrice(arr[arr.length - 1].close);
       }
     }
@@ -222,7 +225,15 @@ const dbSymbol = lhs;
 
       const tfSec = Math.max(1, tf.sec);
       const price = n(tick?.price, NaN);
-      const tsSec = toEpochSec(tick?.ts);
+
+      // Usar bucket_ms si está; si no, parsear ts de forma robusta
+      const getTickSecond = (t) => {
+        const bm = Number(t?.bucket_ms);
+        if (Number.isFinite(bm)) return Math.floor(bm / 1000);
+        return toEpochSec(t?.ts);
+      };
+      const tsSec = getTickSecond(tick);
+
       if (!Number.isFinite(price) || !Number.isFinite(tsSec)) return;
 
       const bucket = Math.floor(tsSec / tfSec) * tfSec;
@@ -267,7 +278,7 @@ const dbSymbol = lhs;
       .channel(`ticks:${dbSymbol}:${tf.sec}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${dbSymbol}` },
+        { event: 'INSERT', schema: 'public', table: 'market_ticks', filter: `symbol=eq.${dbSymbol.toUpperCase()}` },
         (payload) => pushTick(payload?.new)
       )
       .subscribe();

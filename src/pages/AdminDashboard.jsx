@@ -85,7 +85,7 @@ export default function AdminDashboard() {
   const [instForm, setInstForm] = useState({
     symbol: '',
     name: '',
-    source: 'simulated',      // 'binance' | 'simulated' | 'manual'
+    source: 'simulated',      // 'binance' | 'simulated' | 'manual' | 'real'
     binance_symbol: '',
     quote: 'USDT',
     base_price: '',
@@ -340,9 +340,7 @@ export default function AdminDashboard() {
     try {
       const symbol = (instForm.symbol || '').trim().toUpperCase();
       const name = (instForm.name || '').trim();
-      let source = String(instForm.source || 'simulated');
-      // Si alguna vez aparece 'real' en el form, lo tratamos como 'binance'
-      if (source === 'real') source = 'binance';
+      const source = String(instForm.source || 'simulated').toLowerCase(); // NO convertir 'real' a 'binance'
 
       const binance_symbol_raw = (instForm.binance_symbol || '').trim().toUpperCase();
       const quote = (instForm.quote || 'USDT').trim().toUpperCase();
@@ -352,10 +350,9 @@ export default function AdminDashboard() {
       const payload = {
         symbol,
         name,
-        source,
+        source, // binance | simulated | manual | real
         binance_symbol: source === 'binance' ? binance_symbol_raw : null,
         quote,
-        // para binance ignoramos base_price; en simulada/manual lo usamos
         base_price: source === 'binance' ? null : Number(instForm.base_price || 1),
         decimals: Number.isFinite(dec) ? dec : 4,
         volatility_bps: Number.isFinite(volBps) ? volBps : 80,
@@ -375,8 +372,8 @@ export default function AdminDashboard() {
       const { error } = await supabase.from('market_instruments').insert(payload);
       if (error) throw error;
 
-      // Tick inicial para simuladas/manual
-      if (['simulated', 'manual'].includes(payload.source)) {
+      // Tick inicial para simuladas/manual/real (servidor)
+      if (['simulated', 'manual', 'real'].includes(payload.source)) {
         await supabase.rpc('next_simulated_tick', { p_symbol: payload.symbol }).catch(() => {});
       }
 
@@ -495,6 +492,35 @@ export default function AdminDashboard() {
     }
   };
 
+  // helper balances: upsert seguro
+  const upsertBalance = async (userId, newUsdc) => {
+    const now = new Date().toISOString();
+    // intenta update; si no existe fila, insert
+    const { data: updated, error: upErr } = await supabase
+      .from('balances')
+      .update({ usdc: newUsdc, updated_at: now })
+      .eq('user_id', userId)
+      .select('user_id')
+      .maybeSingle();
+    if (upErr) throw upErr;
+    if (!updated) {
+      const { error: insErr } = await supabase
+        .from('balances')
+        .insert({ user_id: userId, usdc: newUsdc, demo_balance: 0, updated_at: now });
+      if (insErr) throw insErr;
+    }
+  };
+
+  const getBalanceOrZero = async (userId) => {
+    const { data, error } = await supabase
+      .from('balances')
+      .select('usdc')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) throw error;
+    return Number(data?.usdc || 0);
+  };
+
   const adjustBalance = async (userId, deltaStr) => {
     const delta = Number(deltaStr);
     if (!deltaStr || !Number.isFinite(delta)) {
@@ -502,20 +528,14 @@ export default function AdminDashboard() {
       return;
     }
     try {
-      const { data: row, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', userId).single();
-      if (gErr) throw gErr;
-      const current = Number(row?.usdc || 0);
+      const current = await getBalanceOrZero(userId);
       const newUsdc = current + delta;
       if (newUsdc < 0) {
         toast({ title: 'Saldo insuficiente', description: 'No puedes dejar el saldo negativo', variant: 'destructive' });
         return;
       }
 
-      const { error: uErr } = await supabase
-        .from('balances')
-        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
-        .eq('user_id', userId);
-      if (uErr) throw uErr;
+      await upsertBalance(userId, newUsdc);
 
       // TIPOS válidos: deposit|withdrawal|plan_purchase|admin_credit|refund|fee|transfer|other
       const positive = delta >= 0;
@@ -549,20 +569,10 @@ export default function AdminDashboard() {
         await reloadAll();
         return;
       }
-      // Fallback manual
-      const { data: balRow, error: gErr } = await supabase
-        .from('balances')
-        .select('usdc')
-        .eq('user_id', tx.user_id)
-        .single();
-      if (gErr) throw gErr;
-      const newUsdc = Number(balRow?.usdc || 0) + Number(tx.amount || 0);
-
-      const { error: bErr } = await supabase
-        .from('balances')
-        .update({ usdc: newUsdc, updated_at: new Date().toISOString() })
-        .eq('user_id', tx.user_id);
-      if (bErr) throw bErr;
+      // Fallback manual con upsert
+      const current = await getBalanceOrZero(tx.user_id);
+      const newUsdc = current + Number(tx.amount || 0);
+      await upsertBalance(tx.user_id, newUsdc);
 
       const { error: tErr } = await supabase
         .from(TX_TABLE)
@@ -581,19 +591,13 @@ export default function AdminDashboard() {
 
   const approveWithdrawal = async (tx) => {
     try {
-      const { data: balRow, error: gErr } = await supabase.from('balances').select('usdc').eq('user_id', tx.user_id).single();
-      if (gErr) throw gErr;
-      const current = Number(balRow?.usdc || 0);
+      const current = await getBalanceOrZero(tx.user_id);
       const amt = Number(tx.amount || 0);
       if (current < amt) {
         toast({ title: 'Saldo insuficiente', description: 'No alcanza para aprobar', variant: 'destructive' });
         return;
       }
-      const { error: bErr } = await supabase
-        .from('balances')
-        .update({ usdc: current - amt, updated_at: new Date().toISOString() })
-        .eq('user_id', tx.user_id);
-      if (bErr) throw bErr;
+      await upsertBalance(tx.user_id, current - amt);
 
       const { error: tErr } = await supabase
         .from(TX_TABLE)
@@ -898,6 +902,7 @@ export default function AdminDashboard() {
                     <SelectItem value="binance">Binance (live)</SelectItem>
                     <SelectItem value="simulated">Simulada</SelectItem>
                     <SelectItem value="manual">Manual</SelectItem>
+                    <SelectItem value="real">Real (server)</SelectItem>
                   </SelectContent>
                 </Select>
 

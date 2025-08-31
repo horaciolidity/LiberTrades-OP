@@ -38,11 +38,12 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
   if (!Number.isFinite(basePrice)) return basePrice;
   const hour = now.getUTCHours();
   let price = basePrice;
+  const symU = String(symbol || '').toUpperCase();
 
   for (const r of ensureArray(rules)) {
     if (!r?.active) continue;
-    const sym = r.symbol || r.asset_symbol;
-    if (sym !== symbol) continue;
+    const rSym = String(r.symbol || r.asset_symbol || '').toUpperCase();
+    if (rSym !== symU) continue;
 
     const sh = Number(r.start_hour ?? 0);
     const eh = Number(r.end_hour ?? 0);
@@ -146,11 +147,15 @@ export function DataProvider({ children }) {
   // ---------- Mapa dinámico a Binance ----------
   const liveBinanceMap = useMemo(() => {
     const map = { ...DEFAULT_BINANCE_MAP };
+    // normalizar en MAYÚSCULAS
+    Object.keys(map).forEach((k) => { map[k.toUpperCase()] = String(map[k]).toUpperCase(); if (k !== k.toUpperCase()) delete map[k]; });
     instruments.forEach((i) => {
       const enabled = (i.enabled ?? true) === true;
       const src = String(i.source || '').toLowerCase();
       if (!enabled || src !== 'binance') return;
-      if (i.binance_symbol) map[i.symbol] = i.binance_symbol;
+      const k = String(i.symbol || '').toUpperCase();
+      const v = String(i.binance_symbol || '').toUpperCase();
+      if (k && v) map[k] = v;
     });
     liveMapRef.current = map;
     return map;
@@ -170,13 +175,13 @@ export function DataProvider({ children }) {
             const j = await res.json();
             const price = Number(j.lastPrice ?? j.c ?? 0);
             const change = Number(j.priceChangePercent ?? j.P ?? 0);
-            return [sym, { price, change }];
+            return [String(sym).toUpperCase(), { price, change }];
           })
         );
         setRealQuotes((prev) => {
           const next = { ...prev };
-          for (const [sym, val] of results) {
-            if (Number.isFinite(val.price) && val.price > 0) next[sym] = val;
+          for (const [symU, val] of results) {
+            if (Number.isFinite(val.price) && val.price > 0) next[symU] = val;
           }
           return next;
         });
@@ -200,7 +205,7 @@ export function DataProvider({ children }) {
 
     const init = async () => {
       teardown();
-      const liveEntries = Object.entries(liveBinanceMap);
+      const liveEntries = Object.entries(liveBinanceMap); // [SYM, PAIR] ambos UPPER
 
       // Seed inicial por REST
       if (liveEntries.length) {
@@ -212,7 +217,7 @@ export function DataProvider({ children }) {
               const j = await res.json();
               const price = Number(j.lastPrice ?? j.c ?? 0);
               const change = Number(j.priceChangePercent ?? j.P ?? 0);
-              return [sym, { price, change }];
+              return [String(sym).toUpperCase(), { price, change }];
             })
           );
 
@@ -220,8 +225,8 @@ export function DataProvider({ children }) {
 
           setRealQuotes((prev) => {
             const next = { ...prev };
-            for (const [sym, val] of results) {
-              if (Number.isFinite(val.price) && val.price > 0) next[sym] = val;
+            for (const [symU, val] of results) {
+              if (Number.isFinite(val.price) && val.price > 0) next[symU] = val;
             }
             return next;
           });
@@ -229,9 +234,9 @@ export function DataProvider({ children }) {
           const t0 = nowMs();
           setPriceHistories((prev) => {
             const next = { ...prev };
-            for (const [sym, val] of results) {
-              const seed = prev[sym]?.length ? prev[sym] : [{ time: t0, value: val.price }];
-              next[sym] = seed.slice(-HISTORY_MAX);
+            for (const [symU, val] of results) {
+              const seed = prev[symU]?.length ? prev[symU] : [{ time: t0, value: val.price }];
+              next[symU] = seed.slice(-HISTORY_MAX);
             }
             next.USDT ??= [{ time: t0, value: 1 }];
             next.USDC ??= [{ time: t0, value: 1 }];
@@ -262,15 +267,15 @@ export function DataProvider({ children }) {
               const pair = t?.s;
               if (!pair) return;
 
-              const sym = Object.keys(liveMapRef.current)
+              const symU = Object.keys(liveMapRef.current)
                 .find((k) => liveMapRef.current[k] === pair);
-              if (!sym) return;
+              if (!symU) return;
 
               const price = Number(t?.c);
               const change = Number(t?.P ?? 0);
               if (!Number.isFinite(price) || price <= 0) return;
 
-              setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
+              setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
             } catch {}
           };
 
@@ -295,13 +300,13 @@ export function DataProvider({ children }) {
     const onStateChange = (payload) => {
       const row = payload.new;
       if (!row) return;
-      const sym = String(row.symbol).toUpperCase();
+      const symU = String(row.symbol || '').toUpperCase();
       const price = Number(row.price);
       const ref24 = Number(row.ref_24h ?? price);
       if (!Number.isFinite(price)) return;
 
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
-      setRealQuotes((prev) => ({ ...prev, [sym]: { price, change } }));
+      setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
     };
 
     const ch = supabase
@@ -312,7 +317,7 @@ export function DataProvider({ children }) {
 
     const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase()))
-      .map((i) => i.symbol);
+      .map((i) => String(i.symbol || '').toUpperCase());
 
     let alive = true;
     let idx = 0;
@@ -338,20 +343,20 @@ export function DataProvider({ children }) {
       } catch { hasNextV2Ref.current = false; }
     };
 
-    const callNextOnce = async (sym) => {
+    const callNextOnce = async (symU) => {
       // intenta v2, cae a v1
       if (hasNextV2Ref.current === true) {
-        const { error } = await supabase.rpc('next_simulated_tick_v2', { p_symbol: sym });
+        const { error } = await supabase.rpc('next_simulated_tick_v2', { p_symbol: symU });
         if (!error) return true;
         hasNextV2Ref.current = false;
       }
-      const { error } = await supabase.rpc('next_simulated_tick', { p_symbol: sym });
+      const { error } = await supabase.rpc('next_simulated_tick', { p_symbol: symU });
       if (error) {
         const msg = String(error?.message || '').toLowerCase();
         if (msg.includes('out of range') || msg.includes('bad request') || msg.includes('numeric')) {
-          if (!badSymsRef.current.has(sym)) {
-            console.warn(`[next_simulated_tick] deshabilitado para ${sym}: ${error.message}`);
-            badSymsRef.current.add(sym);
+          if (!badSymsRef.current.has(symU)) {
+            console.warn(`[next_simulated_tick] deshabilitado para ${symU}: ${error.message}`);
+            badSymsRef.current.add(symU);
           }
         }
         return false;
@@ -360,7 +365,7 @@ export function DataProvider({ children }) {
     };
 
     const seedOnce = async () => {
-      for (const sym of simSyms) { await callNextOnce(sym); }
+      for (const symU of simSyms) { await callNextOnce(symU); }
     };
 
     const drive = async () => {
@@ -376,9 +381,9 @@ export function DataProvider({ children }) {
       // round-robin de símbolos sanos
       const healthy = simSyms.filter((s) => !badSymsRef.current.has(s));
       if (!healthy.length) return;
-      const sym = healthy[idx % healthy.length];
+      const symU = healthy[idx % healthy.length];
       idx++;
-      await callNextOnce(sym);
+      await callNextOnce(symU);
     };
 
     (async () => {
@@ -407,39 +412,39 @@ export function DataProvider({ children }) {
       const histCur = histRef.current;
       const liveMapCur = liveMapRef.current;
 
-      const enabledSyms = instrumentsCur.filter((i) => (i.enabled ?? true)).map((i) => i.symbol);
-      const liveSyms = Object.keys(liveMapCur);
+      const enabledSyms = instrumentsCur.filter((i) => (i.enabled ?? true)).map((i) => String(i.symbol || '').toUpperCase());
+      const liveSyms = Object.keys(liveMapCur); // ya UPPER
       const symbolsSet = new Set([...enabledSyms, ...liveSyms, 'USDT', 'USDC']);
 
       const nextHist = { ...histCur };
       const nextPrices = {};
 
-      for (const sym of symbolsSet) {
-        const inst = instrumentsCur.find((i) => i.symbol === sym);
+      for (const symU of symbolsSet) {
+        const inst = instrumentsCur.find((i) => String(i.symbol || '').toUpperCase() === symU);
         const src = String(inst?.source || '').toLowerCase();
         const decimals = Number(inst?.decimals ?? 2);
-        const quote = (inst?.quote || 'USDT').toUpperCase();
+        const quoteU = String(inst?.quote || 'USDT').toUpperCase();
 
-        const prevH = ensureArray(nextHist[sym]);
+        const prevH = ensureArray(nextHist[symU] || nextHist[symU.toLowerCase()]);
         const lastKnown = prevH.length ? prevH[prevH.length - 1].value : undefined;
 
         let base = 0;
         if (src === 'binance') {
-          base = Number(quotesCur?.[sym]?.price ?? NaN);
+          base = Number(quotesCur?.[symU]?.price ?? NaN);
           if (!Number.isFinite(base) || base <= 0) base = Number.isFinite(lastKnown) ? lastKnown : 0;
         } else if (src === 'manual' || src === 'simulated' || src === 'real') {
-          base = Number(quotesCur?.[sym]?.price ?? inst?.base_price ?? 0);
+          base = Number(quotesCur?.[symU]?.price ?? inst?.base_price ?? 0);
         } else {
-          base = Number(quotesCur?.[sym]?.price ?? 0);
+          base = Number(quotesCur?.[symU]?.price ?? 0);
           if (!base && inst) base = Number(inst.base_price ?? 0);
         }
 
         let finalPrice =
-          (sym === 'USDT' || sym === 'USDC')
+          (symU === 'USDT' || symU === 'USDC')
             ? 1
             : (src === 'manual' || src === 'simulated' || src === 'real')
               ? base
-              : applyRulesForSymbol(sym, base, rulesCur, new Date());
+              : applyRulesForSymbol(symU, base, rulesCur, new Date());
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
           finalPrice = lastKnown;
@@ -451,20 +456,21 @@ export function DataProvider({ children }) {
         );
 
         let changePct = 0;
-        if (quotesCur?.[sym]?.change != null) {
-          changePct = Number(quotesCur[sym].change || 0);
+        if (quotesCur?.[symU]?.change != null) {
+          changePct = Number(quotesCur[symU].change || 0);
         } else {
           const ref = prevH?.[0]?.value ?? finalPrice;
           if (ref) changePct = ((finalPrice - ref) / ref) * 100;
         }
 
         const newH = [...prevH, { time: t, value: finalPrice }].slice(-HISTORY_MAX);
-        nextHist[sym] = newH;
+        nextHist[symU] = newH;
 
         const payload = { price: finalPrice, change: changePct, history: newH };
-        nextPrices[sym] = payload;
-        const pairKey = `${sym}/${quote}`;
-        nextPrices[pairKey] = payload;
+        // claves por símbolo (raw y UPPER)
+        nextPrices[symU] = payload;
+        // claves por par (raw y UPPER)
+        nextPrices[`${symU}/${quoteU}`] = payload;
       }
 
       setPriceHistories(nextHist);
@@ -770,7 +776,7 @@ export function DataProvider({ children }) {
   // ---------- Helpers UI ----------
   const pairOptions = useMemo(() => {
     const enabled = instruments.filter((i) => (i.enabled ?? true));
-    const list = enabled.map((i) => `${i.symbol}/${i.quote || 'USDT'}`);
+    const list = enabled.map((i) => `${String(i.symbol || '').toUpperCase()}/${String(i.quote || 'USDT').toUpperCase()}`);
     const s = new Set(list);
     if (!s.has('BTC/USDT')) s.add('BTC/USDT');
     if (!s.has('ETH/USDT')) s.add('ETH/USDT');
