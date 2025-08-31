@@ -95,7 +95,7 @@ export function DataProvider({ children }) {
   const liveMapRef = useRef({});
 
   const supportsBulkRef = useRef(null);
-  const hasNextV2Ref    = useRef(null);
+  const hasNextV2Ref = useRef(null);
   const badSymsRef = useRef(new Set());
 
   useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
@@ -129,8 +129,16 @@ export function DataProvider({ children }) {
     forceRefreshMarket();
     const ch = supabase
       .channel('market_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_instruments' }, () => refreshMarketInstruments())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_rules' }, () => refreshMarketRules())
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'market_instruments' },
+        () => refreshMarketInstruments()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'market_rules' },
+        () => refreshMarketRules()
+      )
       .subscribe();
     return () => { try { supabase.removeChannel(ch); } catch (_) {} };
   }, []);
@@ -152,6 +160,7 @@ export function DataProvider({ children }) {
   const startRestPolling = (entries) => {
     clearInterval(restPollRef.current);
     if (!entries.length) return;
+
     const poll = async () => {
       try {
         const results = await Promise.all(
@@ -159,7 +168,7 @@ export function DataProvider({ children }) {
             const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`;
             const res = await fetch(url);
             const j = await res.json();
-            const price  = Number(j.lastPrice ?? j.c ?? 0);
+            const price = Number(j.lastPrice ?? j.c ?? 0);
             const change = Number(j.priceChangePercent ?? j.P ?? 0);
             return [sym, { price, change }];
           })
@@ -193,6 +202,7 @@ export function DataProvider({ children }) {
       teardown();
       const liveEntries = Object.entries(liveBinanceMap);
 
+      // Seed inicial por REST
       if (liveEntries.length) {
         try {
           const results = await Promise.all(
@@ -200,7 +210,7 @@ export function DataProvider({ children }) {
               const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`;
               const res = await fetch(url);
               const j = await res.json();
-              const price  = Number(j.lastPrice ?? j.c ?? 0);
+              const price = Number(j.lastPrice ?? j.c ?? 0);
               const change = Number(j.priceChangePercent ?? j.P ?? 0);
               return [sym, { price, change }];
             })
@@ -230,6 +240,7 @@ export function DataProvider({ children }) {
         } catch {}
       }
 
+      // WS live + fallback a REST si cae
       if (liveEntries.length) {
         try {
           const streams = liveEntries
@@ -251,7 +262,8 @@ export function DataProvider({ children }) {
               const pair = t?.s;
               if (!pair) return;
 
-              const sym = Object.keys(liveMapRef.current).find((k) => liveMapRef.current[k] === pair);
+              const sym = Object.keys(liveMapRef.current)
+                .find((k) => liveMapRef.current[k] === pair);
               if (!sym) return;
 
               const price = Number(t?.c);
@@ -279,10 +291,11 @@ export function DataProvider({ children }) {
 
   // ---------- PRO: Simuladas/Manual/Real (realtime + RPC) ----------
   useEffect(() => {
+    // market_state -> cotizaciones servidor (simuladas/real/manual)
     const onStateChange = (payload) => {
       const row = payload.new;
       if (!row) return;
-      const sym   = String(row.symbol).toUpperCase();
+      const sym = String(row.symbol).toUpperCase();
       const price = Number(row.price);
       const ref24 = Number(row.ref_24h ?? price);
       if (!Number.isFinite(price)) return;
@@ -326,6 +339,7 @@ export function DataProvider({ children }) {
     };
 
     const callNextOnce = async (sym) => {
+      // intenta v2, cae a v1
       if (hasNextV2Ref.current === true) {
         const { error } = await supabase.rpc('next_simulated_tick_v2', { p_symbol: sym });
         if (!error) return true;
@@ -346,20 +360,20 @@ export function DataProvider({ children }) {
     };
 
     const seedOnce = async () => {
-      for (const sym of simSyms) {
-        await callNextOnce(sym);
-      }
+      for (const sym of simSyms) { await callNextOnce(sym); }
     };
 
     const drive = async () => {
       if (!alive || simSyms.length === 0) return;
 
+      // bulk si existe
       if (supportsBulkRef.current === true) {
         const { error } = await supabase.rpc('tick_all_simulated_v2');
         if (!error) return;
         supportsBulkRef.current = false;
       }
 
+      // round-robin de símbolos sanos
       const healthy = simSyms.filter((s) => !badSymsRef.current.has(s));
       if (!healthy.length) return;
       const sym = healthy[idx % healthy.length];
@@ -432,7 +446,8 @@ export function DataProvider({ children }) {
         }
 
         finalPrice = Number(
-          (Number.isFinite(finalPrice) ? finalPrice : 0).toFixed(Number.isFinite(decimals) ? decimals : 2)
+          (Number.isFinite(finalPrice) ? finalPrice : 0)
+            .toFixed(Number.isFinite(decimals) ? decimals : 2)
         );
 
         let changePct = 0;
@@ -467,7 +482,7 @@ export function DataProvider({ children }) {
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
       { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
       { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para grandes inversores' },
-      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000,dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
+      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000, dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
     ],
     []
   );
@@ -590,7 +605,7 @@ export function DataProvider({ children }) {
       botName: b.bot_name,
       strategy: b.strategy,
       amountUsd: Number(b.amount_usd || 0),
-      status: b.status,
+      status: b.status, // active | paused | cancelled
       createdAt: b.created_at,
     }));
     setBotActivations(mapped);
@@ -745,8 +760,6 @@ export function DataProvider({ children }) {
         console.error('[close_trade]', error);
         return false;
       }
-      // si querés refrescar transacciones después de cerrar un real:
-      // await refreshTransactions();
       return !!data?.ok;
     } catch (e) {
       console.error('[close_trade] exception', e);

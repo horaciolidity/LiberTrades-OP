@@ -1,3 +1,4 @@
+// src/components/trading/TradesHistory.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -22,7 +23,6 @@ const fmtSigned = (v, d = 2) => {
   return `${x >= 0 ? '+' : ''}${x.toFixed(d)}`;
 };
 
-// evita imprimir monstruos astronómicos heredados de trades viejos bugueados
 const fmtPriceSafe = (v, d = 2) => {
   const x = Number(v);
   if (!Number.isFinite(x) || x <= 0 || x > 1e8) return '—';
@@ -41,7 +41,6 @@ const normalizePair = (pair, fb = 'BTC/USDT') => {
   if (s.endsWith('USDC')) return `${s.slice(0, -4)}/USDC`;
   return `${s}/USDT`;
 };
-
 const baseFromPair = (pair) => {
   if (!pair || typeof pair !== 'string') return 'BTC';
   const s = pair.trim().toUpperCase();
@@ -50,10 +49,8 @@ const baseFromPair = (pair) => {
   if (s.endsWith('USDC')) return s.slice(0, -4);
   return s;
 };
-
 const noSlash = (s) => String(s || '').replace('/', '').toUpperCase();
 
-// ts variados a ms
 const parseTsMs = (ts) => {
   if (ts == null) return NaN;
   if (typeof ts === 'number') return ts < 2e10 ? ts * 1000 : ts;
@@ -89,7 +86,6 @@ const fmtDuration = (seconds) => {
 };
 
 /* --------------------- helpers de trading -------------------- */
-// qty robusto: usa qty persistido si existe; si no, amount/entry
 const getQty = (t) => {
   const q =
     num(t?.qty, NaN) ??
@@ -100,12 +96,11 @@ const getQty = (t) => {
 
   const entry = num(t?.price ?? t?.priceAtExecution, 0);
   const amount =
-    num(t?.amountAtOpen ?? t?.amount_usd ?? t?.amount, 0); // priorizamos amount de apertura
+    num(t?.amountAtOpen ?? t?.amount_usd ?? t?.amount, 0);
   if (entry > 0 && amount > 0) return amount / entry;
   return 0;
 };
 
-// notional de apertura para %: amountAtOpen > amount > entry*qty
 const getOpenNotional = (t) => {
   const entry = num(t?.price ?? t?.priceAtExecution, 0);
   const amountOpen =
@@ -148,17 +143,14 @@ const useLivePriceGetter = (externalPrices) => {
     const norm = normalizePair(pair);
     const base = baseFromPair(norm);
 
-    // 1) API del DataContext (pref)
     if (typeof getPairInfo === 'function') {
       const info = getPairInfo(norm);
       if (info && Number.isFinite(Number(info.price))) return Number(info.price);
     }
-
-    // 2) Fallbacks por claves frecuentes
     const tries = [
       prices?.[base]?.price,
       prices?.[norm]?.price,
-      prices?.[noSlash(norm)]?.price,        // ej: BTCUSDT
+      prices?.[noSlash(norm)]?.price,
       prices?.[base]?.c ?? prices?.[base]?.last,
     ];
     for (const p of tries) {
@@ -179,17 +171,14 @@ const calcUPnL = (trade, getLive) => {
 };
 
 const inferClosePriceIfMissing = (trade, live, localHint) => {
-  // 0) si capturamos el precio al cerrar, úsalo
   if (Number.isFinite(localHint)) return localHint;
 
-  // 1) explícito desde backend
   const explicit =
     trade.closeprice ??
     trade.closePrice ??
     trade.close_price;
   if (explicit != null && Number.isFinite(Number(explicit))) return Number(explicit);
 
-  // 2) derivarlo de profit si existe
   const entry = num(trade.price ?? trade.priceAtExecution, NaN);
   const qty = getQty(trade);
   const profit =
@@ -201,8 +190,6 @@ const inferClosePriceIfMissing = (trade, live, localHint) => {
   if (Number.isFinite(profit) && Number.isFinite(entry) && qty) {
     return side === 'sell' ? entry - profit / qty : entry + profit / qty;
   }
-
-  // 3) último live como aproximación
   return Number.isFinite(live) ? live : null;
 };
 
@@ -212,14 +199,12 @@ const TradeRow = ({
   pnlDecimals, priceDecimals, getCloseHint,
 }) => {
   const pair = typeof t.pair === 'string' ? normalizePair(t.pair) : 'BTC/USDT';
-  const side = String(t.type || '').toLowerCase(); // buy|sell
+  const side = String(t.type || '').toLowerCase();
   const entry = num(t.price ?? t.priceAtExecution, 0);
   const isOpen = String(t.status || '').toLowerCase() === 'open';
 
-  // abiertos ⇒ calc con precio vivo SIEMPRE
   const computedOpen = calcUPnL(t, getLive);
 
-  // cerrados ⇒ prioridad: closeHint > closePrice > profit > 0
   let pnlClosed = 0;
   if (!isOpen) {
     const live = Number(getLive(t.pair));
@@ -243,7 +228,6 @@ const TradeRow = ({
   const mm = Number.isFinite(secs) ? Math.floor(secs / 60) : null;
   const ss = Number.isFinite(secs) ? String(secs % 60).padStart(2, '0') : null;
 
-  // notional para mostrar en la fila (opcional)
   const amountForRow =
     num(t.amountAtOpen ?? t.amount_usd ?? t.amount, NaN);
   const amountText = Number.isFinite(amountForRow)
@@ -328,10 +312,10 @@ const TradesHistory = ({
   cryptoPrices = {},
   // closeTrade debe aceptar: (tradeId: string, closePrice?: number, force?: boolean) => Promise<boolean|void>
   closeTrade = async () => {},
-  autoCloseDemo = true,      // autocerrar trades con duración (modo demo)
-  pnlDecimals = 4,           // decimales PnL $
-  pnlPctDecimals = 4,        // decimales PnL %
-  priceDecimals = 4,         // decimales de precios
+  autoCloseDemo = true,
+  pnlDecimals = 4,
+  pnlPctDecimals = 4,
+  priceDecimals = 4,
 }) => {
   const list = safeArr(trades);
   const getLive = useLivePriceGetter(cryptoPrices);
@@ -339,7 +323,6 @@ const TradesHistory = ({
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState(null);
 
-  // Hints de cierre locales: id -> price capturado al cerrar
   const closeHintsRef = useRef(new Map());
   const setCloseHint = (id, price) => {
     if (!id || !Number.isFinite(price)) return;
@@ -347,10 +330,8 @@ const TradesHistory = ({
   };
   const getCloseHint = (id) => closeHintsRef.current.get(id);
 
-  // para cerrar auto SOLO si el trade estaba abierto al abrir el modal
   const wasOpenAtOpenRef = useRef(false);
 
-  // estados UX cierre
   const [closingModal, setClosingModal] = useState(false);
   const [rowClosingId, setRowClosingId] = useState(null);
 
@@ -360,7 +341,6 @@ const TradesHistory = ({
     setDetailOpen(true);
   };
 
-  // sincronizar cambios del trade seleccionado
   useEffect(() => {
     if (!selected) return;
     const updated = list.find((t) => t.id === selected.id);
@@ -368,7 +348,6 @@ const TradesHistory = ({
 
     setSelected(updated);
 
-    // solo autocerrar si originalmente estaba OPEN y pasó a CLOSED
     if (
       detailOpen &&
       wasOpenAtOpenRef.current &&
@@ -381,13 +360,12 @@ const TradesHistory = ({
   const handleRowClose = async (id) => {
     if (!id) return;
     try {
-      // Capturamos precio vivo ANTES de cerrar (hint local y envío al backend)
       const t = list.find(x => x.id === id);
       const p = Number(getLive(t?.pair));
       if (Number.isFinite(p)) setCloseHint(id, p);
 
       setRowClosingId(id);
-      const result = await closeTrade?.(id, Number.isFinite(p) ? p : undefined, true);
+      const result = await closeTrade?.(id, Number.isFinite(p) ? p : null, true);
       const ok = (typeof result === 'boolean') ? result : true;
       if (ok && detailOpen && selected?.id === id) setDetailOpen(false);
     } finally {
@@ -395,17 +373,14 @@ const TradesHistory = ({
     }
   };
 
-  /* --------- AUTOCIERRE DEMO: cuando llega a 0s --------- */
   const autoClosingSet = useRef(new Set());
   useEffect(() => {
     if (!autoCloseDemo) return;
     const id = setInterval(async () => {
       for (const t of list) {
         if (!t?.id) continue;
-        const status = String(t.status || '').toLowerCase();
-        if (status !== 'open') continue;
+        if (String(t.status || '').toLowerCase() !== 'open') continue;
 
-        // solo autocerrar si existe duración o closeAt (típico DEMO)
         const hasDur =
           Number(num(t.durationSeconds ?? t.duration, 0)) > 0 ||
           Number.isFinite(parseTsMs(t.closeAt ?? t.closeat));
@@ -418,7 +393,7 @@ const TradesHistory = ({
           try {
             const p = Number(getLive(t.pair));
             if (Number.isFinite(p)) setCloseHint(t.id, p);
-            await closeTrade?.(t.id, Number.isFinite(p) ? p : undefined, true);
+            await closeTrade?.(t.id, Number.isFinite(p) ? p : null, true);
           } finally {
             setTimeout(() => autoClosingSet.current.delete(t.id), 2000);
           }
@@ -429,7 +404,6 @@ const TradesHistory = ({
     return () => clearInterval(id);
   }, [list, autoCloseDemo, closeTrade, getLive]);
 
-  // Datos para el modal
   const details = useMemo(() => {
     if (!selected) return null;
 
@@ -450,7 +424,6 @@ const TradesHistory = ({
       return side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
     })();
 
-    // realized preferente: closeHint/closePrice > profit > 0
     let realized = null;
     if (!isOpen) {
       if (Number.isFinite(closePrice) && qty) {
@@ -539,7 +512,6 @@ const TradesHistory = ({
         </Card>
       </motion.div>
 
-      {/* Modal de Detalle */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="sm:max-w-lg bg-slate-900 border-slate-700 text-slate-200">
           <DialogHeader>
@@ -617,12 +589,11 @@ const TradesHistory = ({
                 <Button
                   onClick={async () => {
                     if (!selected?.id) return;
-                    // capturamos hint y ENVIAMOS precio al backend
                     const p = Number(getLive(selected.pair));
                     if (Number.isFinite(p)) setCloseHint(selected.id, p);
 
                     setClosingModal(true);
-                    const result = await closeTrade?.(selected.id, Number.isFinite(p) ? p : undefined, true);
+                    const result = await closeTrade?.(selected.id, Number.isFinite(p) ? p : null, true);
                     setClosingModal(false);
                     const ok = (typeof result === 'boolean') ? result : true;
                     if (ok) setDetailOpen(false);
