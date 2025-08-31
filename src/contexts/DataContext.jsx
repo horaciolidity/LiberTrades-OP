@@ -17,7 +17,7 @@ const DataContext = createContext(null);
 const ensureArray = (v) => (Array.isArray(v) ? v : []);
 const nowMs = () => Date.now();
 
-// Pares Binance por defecto (por si Admin aún no carga instrumentos)
+// Pares Binance por defecto
 const DEFAULT_BINANCE_MAP = {
   BTC: 'BTCUSDT',
   ETH: 'ETHUSDT',
@@ -25,14 +25,14 @@ const DEFAULT_BINANCE_MAP = {
   ADA: 'ADAUSDT',
 };
 
-const HISTORY_MAX = 600; // ~10 min a 1s por punto
-const TICK_MS = 1000;    // ritmo visual (1 segundo)
+const HISTORY_MAX = 600;
+const TICK_MS = 1000;
 
 // ---------- Reglas por hora UTC ----------
 const inWindowUTC = (hour, start, end) =>
   (start < end && hour >= start && hour < end) ||
   (start > end && (hour >= start || hour < end)) ||
-  (start === end); // 24h
+  (start === end);
 
 const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
   if (!Number.isFinite(basePrice)) return basePrice;
@@ -48,10 +48,10 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
     const eh = Number(r.end_hour ?? 0);
     if (!inWindowUTC(hour, sh, eh)) continue;
 
-    const type = String(r.type || '').toLowerCase(); // 'percent' | 'abs' | 'absolute'
+    const type = String(r.type || '').toLowerCase();
     const v = Number(r.value ?? 0);
     if (type === 'percent') price *= (1 + v / 100);
-    else price += v; // abs/absolute => suma directa
+    else price += v;
   }
   return price;
 };
@@ -66,16 +66,7 @@ export function DataProvider({ children }) {
   const [botActivations, setBotActivations] = useState([]);
 
   // ---------- Mercado (admin) ----------
-  /**
-   * market_instruments:
-   * - symbol, enabled, source('binance'|'simulated'|'manual'|'real'), binance_symbol,
-   *   base_price, decimals, quote, volatility_bps, difficulty
-   */
   const [instruments, setInstruments] = useState([]);
-  /**
-   * market_rules (activas):
-   * - symbol, active, type('percent'|'abs'|'absolute'), value, start_hour, end_hour
-   */
   const [marketRules, setMarketRules] = useState([]);
 
   // ---------- Precios / Historias ----------
@@ -97,18 +88,14 @@ export function DataProvider({ children }) {
   const restPollRef = useRef(null);
   const lastTickRef = useRef(0);
 
-  // refs para evitar rehacer intervalos
   const instrumentsRef = useRef([]);
   const rulesRef = useRef([]);
   const quotesRef = useRef({});
   const histRef = useRef({});
   const liveMapRef = useRef({});
 
-  // Detección de funciones RPC (memorizada en refs para no re-renderizar)
-  const supportsBulkRef = useRef(null); // true | false | null
-  const hasNextV2Ref    = useRef(null); // true | false | null
-
-  // Símbolos con RPC v1 roto ⇒ no insistir (evita flood 400)
+  const supportsBulkRef = useRef(null);
+  const hasNextV2Ref    = useRef(null);
   const badSymsRef = useRef(new Set());
 
   useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
@@ -148,7 +135,7 @@ export function DataProvider({ children }) {
     return () => { try { supabase.removeChannel(ch); } catch (_) {} };
   }, []);
 
-  // ---------- Mapa dinámico a Binance (solo enabled & source=binance) ----------
+  // ---------- Mapa dinámico a Binance ----------
   const liveBinanceMap = useMemo(() => {
     const map = { ...DEFAULT_BINANCE_MAP };
     instruments.forEach((i) => {
@@ -158,14 +145,13 @@ export function DataProvider({ children }) {
       if (i.binance_symbol) map[i.symbol] = i.binance_symbol;
     });
     liveMapRef.current = map;
-    return map; // { BTC:'BTCUSDT', ... }
+    return map;
   }, [instruments]);
 
-  // ---------- Polling REST (fallback a WS) ----------
+  // ---------- Polling REST ----------
   const startRestPolling = (entries) => {
     clearInterval(restPollRef.current);
     if (!entries.length) return;
-
     const poll = async () => {
       try {
         const results = await Promise.all(
@@ -185,16 +171,13 @@ export function DataProvider({ children }) {
           }
           return next;
         });
-      } catch {
-        // silencioso
-      }
+      } catch {}
     };
-
-    poll(); // seed inmediato
+    poll();
     restPollRef.current = setInterval(poll, 5000);
   };
 
-  // ---------- Binance WS + fallback REST ----------
+  // ---------- Binance WS + fallback ----------
   useEffect(() => {
     let alive = true;
 
@@ -208,10 +191,8 @@ export function DataProvider({ children }) {
 
     const init = async () => {
       teardown();
-
       const liveEntries = Object.entries(liveBinanceMap);
 
-      // Seed inicial por REST
       if (liveEntries.length) {
         try {
           const results = await Promise.all(
@@ -246,12 +227,9 @@ export function DataProvider({ children }) {
             next.USDC ??= [{ time: t0, value: 1 }];
             return next;
           });
-        } catch {
-          // polling de abajo lo corrige
-        }
+        } catch {}
       }
 
-      // WS live (si cae, fallback a REST polling)
       if (liveEntries.length) {
         try {
           const streams = liveEntries
@@ -299,9 +277,8 @@ export function DataProvider({ children }) {
     return () => { alive = false; teardown(); };
   }, [liveBinanceMap]);
 
-  // ---------- PRO: Simuladas/Manual/Real desde servidor (Realtime + RPC) ----------
+  // ---------- PRO: Simuladas/Manual/Real (realtime + RPC) ----------
   useEffect(() => {
-    // 1) Suscripción a market_state (cotizaciones para la UI)
     const onStateChange = (payload) => {
       const row = payload.new;
       if (!row) return;
@@ -320,7 +297,6 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // 2) Símbolos simulados/manuales/real habilitados
     const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase()))
       .map((i) => i.symbol);
@@ -329,12 +305,11 @@ export function DataProvider({ children }) {
     let idx = 0;
     let timer;
 
-    // ---- detectar funciones disponibles (sólo 1 vez por montaje) ----
     const probeFns = async () => {
       try {
         if (supportsBulkRef.current === null) {
           const { error } = await supabase.rpc('tick_all_simulated_v2');
-          supportsBulkRef.current = !error; // true si existe
+          supportsBulkRef.current = !error;
         }
       } catch { supportsBulkRef.current = false; }
 
@@ -350,17 +325,14 @@ export function DataProvider({ children }) {
       } catch { hasNextV2Ref.current = false; }
     };
 
-    // Seed suave: asegura 1 fila en market_state por símbolo
     const callNextOnce = async (sym) => {
-      // intenta v2 y cae a v1
       if (hasNextV2Ref.current === true) {
         const { error } = await supabase.rpc('next_simulated_tick_v2', { p_symbol: sym });
         if (!error) return true;
-        hasNextV2Ref.current = false; // deja de intentar v2
+        hasNextV2Ref.current = false;
       }
       const { error } = await supabase.rpc('next_simulated_tick', { p_symbol: sym });
       if (error) {
-        // si la función v1 está rota (400 / out of range), dejar de insistir con este símbolo
         const msg = String(error?.message || '').toLowerCase();
         if (msg.includes('out of range') || msg.includes('bad request') || msg.includes('numeric')) {
           if (!badSymsRef.current.has(sym)) {
@@ -382,14 +354,12 @@ export function DataProvider({ children }) {
     const drive = async () => {
       if (!alive || simSyms.length === 0) return;
 
-      // 1) bulk si está disponible
       if (supportsBulkRef.current === true) {
         const { error } = await supabase.rpc('tick_all_simulated_v2');
-        if (!error) return; // avanzó todo
-        supportsBulkRef.current = false; // si falló, dejar de intentar
+        if (!error) return;
+        supportsBulkRef.current = false;
       }
 
-      // 2) fallback round-robin por símbolo (omitiendo “malos”)
       const healthy = simSyms.filter((s) => !badSymsRef.current.has(s));
       if (!healthy.length) return;
       const sym = healthy[idx % healthy.length];
@@ -398,8 +368,8 @@ export function DataProvider({ children }) {
     };
 
     (async () => {
-      await probeFns();   // detecta RPCs una vez
-      await seedOnce();   // deja estado inicial
+      await probeFns();
+      await seedOnce();
       timer = setInterval(drive, TICK_MS);
     })();
 
@@ -410,7 +380,7 @@ export function DataProvider({ children }) {
     };
   }, [instruments]);
 
-  // ---------- Consolidación final + histories cada ~1s ----------
+  // ---------- Consolidación + histories ----------
   useEffect(() => {
     const tick = () => {
       const t = nowMs();
@@ -454,7 +424,7 @@ export function DataProvider({ children }) {
           (sym === 'USDT' || sym === 'USDC')
             ? 1
             : (src === 'manual' || src === 'simulated' || src === 'real')
-              ? base // ya viene con reglas aplicadas desde el servidor
+              ? base
               : applyRulesForSymbol(sym, base, rulesCur, new Date());
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
@@ -465,7 +435,6 @@ export function DataProvider({ children }) {
           (Number.isFinite(finalPrice) ? finalPrice : 0).toFixed(Number.isFinite(decimals) ? decimals : 2)
         );
 
-        // Cambio 24h: si viene de realtime (quotesCur) úsalo SIEMPRE; de lo contrario, fallback al primer punto del history en memoria.
         let changePct = 0;
         if (quotesCur?.[sym]?.change != null) {
           changePct = Number(quotesCur[sym].change || 0);
@@ -478,8 +447,6 @@ export function DataProvider({ children }) {
         nextHist[sym] = newH;
 
         const payload = { price: finalPrice, change: changePct, history: newH };
-
-        // Guardamos con dos claves para evitar descuadres entre panel y gráfico
         nextPrices[sym] = payload;
         const pairKey = `${sym}/${quote}`;
         nextPrices[pairKey] = payload;
@@ -492,7 +459,7 @@ export function DataProvider({ children }) {
     const id = setInterval(tick, TICK_MS);
     tick();
     return () => clearInterval(id);
-  }, []); // usamos refs, así no recreamos el intervalo
+  }, []);
 
   // ---------- Planes (estáticos) ----------
   const investmentPlans = useMemo(
@@ -623,7 +590,7 @@ export function DataProvider({ children }) {
       botName: b.bot_name,
       strategy: b.strategy,
       amountUsd: Number(b.amount_usd || 0),
-      status: b.status, // active | paused | cancelled
+      status: b.status,
       createdAt: b.created_at,
     }));
     setBotActivations(mapped);
@@ -766,6 +733,27 @@ export function DataProvider({ children }) {
     }
   }
 
+  // ---------- Trades: cierre ----------
+  async function closeTrade(tradeId, closePrice = null, force = true) {
+    try {
+      const { data, error } = await supabase.rpc('close_trade', {
+        p_trade_id: tradeId,
+        p_close_price: (Number.isFinite(Number(closePrice)) ? Number(closePrice) : null),
+        p_force: !!force,
+      });
+      if (error) {
+        console.error('[close_trade]', error);
+        return false;
+      }
+      // si querés refrescar transacciones después de cerrar un real:
+      // await refreshTransactions();
+      return !!data?.ok;
+    } catch (e) {
+      console.error('[close_trade] exception', e);
+      return false;
+    }
+  }
+
   // ---------- Helpers UI ----------
   const pairOptions = useMemo(() => {
     const enabled = instruments.filter((i) => (i.enabled ?? true));
@@ -778,9 +766,7 @@ export function DataProvider({ children }) {
 
   const getPairInfo = (pair) => {
     const key = String(pair || '').toUpperCase().replace(/\s+/g, '');
-    // cryptoPrices ahora tiene tanto "SYM" como "SYM/QUOTE"
     return cryptoPrices[key] || (() => {
-      // último intento: extraer lado izquierdo
       const [lhs] = key.split('/');
       return cryptoPrices[lhs] || { price: undefined, change: undefined, history: [] };
     })();
@@ -817,10 +803,13 @@ export function DataProvider({ children }) {
     forceRefreshMarket,
 
     // precios
-    cryptoPrices,            // {SYM: {price, change, history[]}, 'SYM/QUOTE': {...}}
-    getPairInfo,             // helper recomendado para paneles
-    pairOptions,             // ['BTC/USDT', ...]
+    cryptoPrices,
+    getPairInfo,
+    pairOptions,
     assetToSymbol: liveBinanceMap,
+
+    // trades
+    closeTrade,
 
     investmentPlans,
   }), [
@@ -832,7 +821,6 @@ export function DataProvider({ children }) {
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
 
-// ---------- Hook con fallback ----------
 export function useData() {
   const ctx = useContext(DataContext);
   return ctx || {
@@ -866,6 +854,9 @@ export function useData() {
     getPairInfo: () => ({ price: undefined, change: undefined, history: [] }),
     pairOptions: ['BTC/USDT', 'ETH/USDT'],
     assetToSymbol: DEFAULT_BINANCE_MAP,
+
+    closeTrade: async () => false,
+
     investmentPlans: [],
   };
 }
