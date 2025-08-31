@@ -85,12 +85,12 @@ export default function AdminDashboard() {
   const [instForm, setInstForm] = useState({
     symbol: '',
     name: '',
-    source: 'simulated',
+    source: 'simulated',      // 'binance' | 'simulated' | 'manual'
     binance_symbol: '',
     quote: 'USDT',
     base_price: '',
     decimals: 4,
-    volatility_bps: 80, // bps (80 = 0.80%)
+    volatility_bps: 80,       // 80 bps = 0.80%
     difficulty: 'intermediate',
     enabled: true,
   });
@@ -98,7 +98,7 @@ export default function AdminDashboard() {
   const [ruleForm, setRuleForm] = useState({
     start_hour: 9,
     end_hour: 12,
-    type: 'percent', // 'percent' | 'absolute'
+    type: 'percent',          // 'percent' | 'absolute'
     value: 5,
     label: 'Sube en la mañana',
     active: true,
@@ -146,7 +146,7 @@ export default function AdminDashboard() {
     return n >= min && n <= max;
   };
 
-  // ---------- SETTINGS: fetch / save ----------
+  // ---------- SETTINGS ----------
   const fetchSettings = async () => {
     try {
       const { data, error } = await supabase.rpc('get_admin_settings', { prefix: null });
@@ -330,7 +330,8 @@ export default function AdminDashboard() {
     }
   };
 
-  useEffect(() => { reloadAll(); /* eslint-disable-next-line */ }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { reloadAll(); }, []);
   useEffect(() => { fetchMetrics(users, pendingDeposits, pendingWithdrawals).catch(() => {}); }, [users, pendingDeposits, pendingWithdrawals]);
   useEffect(() => { fetchRulesForSymbol(selectedSymbol).catch(() => {}); }, [selectedSymbol]);
 
@@ -339,7 +340,10 @@ export default function AdminDashboard() {
     try {
       const symbol = (instForm.symbol || '').trim().toUpperCase();
       const name = (instForm.name || '').trim();
-      const source = String(instForm.source || 'simulated');
+      let source = String(instForm.source || 'simulated');
+      // Si alguna vez aparece 'real' en el form, lo tratamos como 'binance'
+      if (source === 'real') source = 'binance';
+
       const binance_symbol_raw = (instForm.binance_symbol || '').trim().toUpperCase();
       const quote = (instForm.quote || 'USDT').trim().toUpperCase();
       const dec = Number(instForm.decimals || 4);
@@ -351,10 +355,10 @@ export default function AdminDashboard() {
         source,
         binance_symbol: source === 'binance' ? binance_symbol_raw : null,
         quote,
-        base_price: source === 'binance' ? 0 : Number(instForm.base_price || 1),
+        // para binance ignoramos base_price; en simulada/manual lo usamos
+        base_price: source === 'binance' ? null : Number(instForm.base_price || 1),
         decimals: Number.isFinite(dec) ? dec : 4,
         volatility_bps: Number.isFinite(volBps) ? volBps : 80,
-        volatility: Number.isFinite(volBps) ? volBps / 10000 : 0.008,
         difficulty: instForm.difficulty,
         enabled: !!instForm.enabled,
       };
@@ -371,7 +375,7 @@ export default function AdminDashboard() {
       const { error } = await supabase.from('market_instruments').insert(payload);
       if (error) throw error;
 
-      // Tick inicial opcional para que arranque ya con precio
+      // Tick inicial para simuladas/manual
       if (['simulated', 'manual'].includes(payload.source)) {
         await supabase.rpc('next_simulated_tick', { p_symbol: payload.symbol }).catch(() => {});
       }
@@ -400,7 +404,13 @@ export default function AdminDashboard() {
 
   const updateInstrument = async (symbol, patch) => {
     try {
-      const { error } = await supabase.from('market_instruments').update(patch).eq('symbol', symbol);
+      const safe = { ...patch };
+      if ('decimals' in safe) safe.decimals = Number(safe.decimals);
+      if ('volatility_bps' in safe) safe.volatility_bps = Number(safe.volatility_bps);
+      if ('base_price' in safe && safe.base_price !== null && safe.base_price !== undefined) {
+        safe.base_price = Number(safe.base_price);
+      }
+      const { error } = await supabase.from('market_instruments').update(safe).eq('symbol', symbol);
       if (error) throw error;
       toast({ title: 'Cripto actualizada', description: symbol });
       await fetchInstruments();
@@ -433,7 +443,7 @@ export default function AdminDashboard() {
         symbol: selectedSymbol,
         start_hour: Number(ruleForm.start_hour),
         end_hour: Number(ruleForm.end_hour),
-        type: ruleForm.type, // 'percent' | 'absolute'
+        type: ruleForm.type,
         value: Number(ruleForm.value || 0),
         label: ruleForm.label?.trim() || null,
         active: !!ruleForm.active,
@@ -511,7 +521,7 @@ export default function AdminDashboard() {
       const positive = delta >= 0;
       const insertTx = {
         user_id: userId,
-        type: positive ? 'admin_credit' : 'fee',   // 'admin_debit' no existe en el CHECK
+        type: positive ? 'admin_credit' : 'fee',
         amount: Math.abs(delta),
         status: 'completed',
         currency: 'USDC',
@@ -532,7 +542,6 @@ export default function AdminDashboard() {
 
   const approveDeposit = async (tx) => {
     try {
-      // 1) Intento por RPC existente
       const { data: rpcData, error: rpcErr } = await supabase.rpc('approve_deposit', { p_tx_id: tx.id });
       if (!rpcErr && rpcData && rpcData.ok) {
         toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
@@ -540,7 +549,7 @@ export default function AdminDashboard() {
         await reloadAll();
         return;
       }
-      // 2) Fallback manual
+      // Fallback manual
       const { data: balRow, error: gErr } = await supabase
         .from('balances')
         .select('usdc')
@@ -646,7 +655,7 @@ export default function AdminDashboard() {
       );
       hits.forEach((r) => {
         if (r.type === 'percent') price *= 1 + Number(r.value || 0) / 100;
-        else price += Number(r.value || 0); // 'absolute'
+        else price += Number(r.value || 0);
       });
       list.push({ hour: `${String(h).padStart(2, '0')}:00`, price: Number(price.toFixed(dec)) });
     }
@@ -686,7 +695,6 @@ export default function AdminDashboard() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {/* PLANES */}
             <SettingItem
               label="Planes: Retorno diario (%)"
               k="plans.default_daily_return_pct"
@@ -701,8 +709,6 @@ export default function AdminDashboard() {
               onChange={(v) => setSettings((s) => ({ ...s, 'plans.withdraw_fee_pct': v }))}
               onSave={() => saveSetting('plans.withdraw_fee_pct', settings['plans.withdraw_fee_pct'])}
             />
-
-            {/* BOTS */}
             <SettingItem
               label="Bots: Profit share (%)"
               k="bots.profit_share_pct"
@@ -710,8 +716,6 @@ export default function AdminDashboard() {
               onChange={(v) => setSettings((s) => ({ ...s, 'bots.profit_share_pct': v }))}
               onSave={() => saveSetting('bots.profit_share_pct', settings['bots.profit_share_pct'])}
             />
-
-            {/* REFERIDOS */}
             <SettingItem
               label="Referrals: Nivel 1 (%)"
               k="referrals.level1_pct"
@@ -726,8 +730,6 @@ export default function AdminDashboard() {
               onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level2_pct': v }))}
               onSave={() => saveSetting('referrals.level2_pct', settings['referrals.level2_pct'])}
             />
-
-            {/* PROYECTOS */}
             <SettingItem
               label="Proyectos: Emisión (%)"
               k="projects.issuance_fee_pct"
@@ -742,8 +744,6 @@ export default function AdminDashboard() {
               onChange={(v) => setSettings((s) => ({ ...s, 'projects.secondary_market_fee_pct': v }))}
               onSave={() => saveSetting('projects.secondary_market_fee_pct', settings['projects.secondary_market_fee_pct'])}
             />
-
-            {/* TRADING */}
             <SettingItem
               label="Trading: Slippage máx. (%)"
               k="trading.slippage_pct_max"
@@ -897,7 +897,6 @@ export default function AdminDashboard() {
                   <SelectContent className="bg-slate-800 text-white border-slate-700">
                     <SelectItem value="binance">Binance (live)</SelectItem>
                     <SelectItem value="simulated">Simulada</SelectItem>
-                    <SelectItem value="real">Real (Binance)</SelectItem>
                     <SelectItem value="manual">Manual</SelectItem>
                   </SelectContent>
                 </Select>
