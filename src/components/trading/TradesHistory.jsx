@@ -326,7 +326,8 @@ const TradeRow = ({
 const TradesHistory = ({
   trades = [],
   cryptoPrices = {},
-  closeTrade = () => {},
+  // closeTrade debe aceptar: (tradeId: string, closePrice?: number, force?: boolean) => Promise<boolean|void>
+  closeTrade = async () => {},
   autoCloseDemo = true,      // autocerrar trades con duración (modo demo)
   pnlDecimals = 4,           // decimales PnL $
   pnlPctDecimals = 4,        // decimales PnL %
@@ -380,13 +381,13 @@ const TradesHistory = ({
   const handleRowClose = async (id) => {
     if (!id) return;
     try {
-      // Capturamos precio vivo ANTES de cerrar (hint local)
+      // Capturamos precio vivo ANTES de cerrar (hint local y envío al backend)
       const t = list.find(x => x.id === id);
       const p = Number(getLive(t?.pair));
       if (Number.isFinite(p)) setCloseHint(id, p);
 
       setRowClosingId(id);
-      const result = await closeTrade?.(id, true);
+      const result = await closeTrade?.(id, Number.isFinite(p) ? p : undefined, true);
       const ok = (typeof result === 'boolean') ? result : true;
       if (ok && detailOpen && selected?.id === id) setDetailOpen(false);
     } finally {
@@ -416,8 +417,8 @@ const TradesHistory = ({
           autoClosingSet.current.add(t.id);
           try {
             const p = Number(getLive(t.pair));
-            if (Number.isFinite(p)) setCloseHint(t.id, p); // guardamos hint también en autocierre
-            await closeTrade?.(t.id, true);
+            if (Number.isFinite(p)) setCloseHint(t.id, p);
+            await closeTrade?.(t.id, Number.isFinite(p) ? p : undefined, true);
           } finally {
             setTimeout(() => autoClosingSet.current.delete(t.id), 2000);
           }
@@ -510,31 +511,31 @@ const TradesHistory = ({
             </CardDescription>
           </CardHeader>
 
-        <CardContent>
-          <div className="space-y-4 max-h-96 overflow-y-auto scrollbar-hide">
-            {list.length > 0 ? (
-              list.map((t) => (
-                <TradeRow
-                  key={t.id ?? `${t.pair}-${parseTsMs(t.timestamp) || Math.random()}`}
-                  t={t}
-                  getLive={getLive}
-                  onClose={handleRowClose}
-                  onDetails={openForDetails}
-                  closing={rowClosingId === t.id}
-                  pnlDecimals={pnlDecimals}
-                  priceDecimals={priceDecimals}
-                  getCloseHint={getCloseHint}
-                />
-              ))
-            ) : (
-              <div className="text-center py-8">
-                <Activity className="h-12 w-12 text-slate-600 mx-auto mb-4" />
-                <p className="text-slate-400">No tienes trades aún</p>
-                <p className="text-slate-500 text-sm">Ejecuta tu primer trade para comenzar</p>
-              </div>
-            )}
-          </div>
-        </CardContent>
+          <CardContent>
+            <div className="space-y-4 max-h-96 overflow-y-auto scrollbar-hide">
+              {list.length > 0 ? (
+                list.map((t) => (
+                  <TradeRow
+                    key={t.id ?? `${t.pair}-${parseTsMs(t.timestamp) || Math.random()}`}
+                    t={t}
+                    getLive={getLive}
+                    onClose={handleRowClose}
+                    onDetails={openForDetails}
+                    closing={rowClosingId === t.id}
+                    pnlDecimals={pnlDecimals}
+                    priceDecimals={priceDecimals}
+                    getCloseHint={getCloseHint}
+                  />
+                ))
+              ) : (
+                <div className="text-center py-8">
+                  <Activity className="h-12 w-12 text-slate-600 mx-auto mb-4" />
+                  <p className="text-slate-400">No tienes trades aún</p>
+                  <p className="text-slate-500 text-sm">Ejecuta tu primer trade para comenzar</p>
+                </div>
+              )}
+            </div>
+          </CardContent>
         </Card>
       </motion.div>
 
@@ -616,12 +617,12 @@ const TradesHistory = ({
                 <Button
                   onClick={async () => {
                     if (!selected?.id) return;
-                    // capturamos hint antes de cerrar desde el modal
+                    // capturamos hint y ENVIAMOS precio al backend
                     const p = Number(getLive(selected.pair));
                     if (Number.isFinite(p)) setCloseHint(selected.id, p);
 
                     setClosingModal(true);
-                    const result = await closeTrade?.(selected.id, true);
+                    const result = await closeTrade?.(selected.id, Number.isFinite(p) ? p : undefined, true);
                     setClosingModal(false);
                     const ok = (typeof result === 'boolean') ? result : true;
                     if (ok) setDetailOpen(false);
