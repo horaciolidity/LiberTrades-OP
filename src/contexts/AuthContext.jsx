@@ -182,7 +182,10 @@ export function AuthProvider({ children }) {
   const login = async (email, password) => {
     setLoading(true);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: String(email || '').trim(),
+        password,
+      });
       if (error) throw error;
       if (data?.user?.id) loadAllBG(data.user.id);
       toast({ title: '¡Bienvenido!', description: 'Has iniciado sesión exitosamente' });
@@ -279,6 +282,20 @@ export function AuthProvider({ children }) {
     toast({ title: 'Sesión cerrada', description: 'Has cerrado sesión exitosamente' });
   };
 
+  // Cambiar contraseña manteniendo la sesión activa
+  const updatePassword = async (newPassword) => {
+    if (!user?.id) {
+      toast({ title: 'Sin sesión', description: 'No hay usuario autenticado', variant: 'destructive' });
+      return;
+    }
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      toast({ title: 'Error al actualizar contraseña', description: error.message, variant: 'destructive' });
+      throw error;
+    }
+    toast({ title: 'Contraseña actualizada', description: 'Ahora podrás iniciar sesión en otros dispositivos.' });
+  };
+
   // Acepta solo columnas válidas de profiles
   const pickProfileCols = (obj = {}) => {
     const allow = new Set([
@@ -311,7 +328,13 @@ export function AuthProvider({ children }) {
       return;
     }
 
-    const { data, error } = await supabase.from('profiles').update(payload).eq('id', user.id).select().single();
+    const { data, error } = await supabase
+      .from('profiles')
+      .update(payload)
+      .eq('id', user.id)
+      .select()
+      .single();
+
     if (error) {
       console.error('[profiles.update]', error);
       toast({ title: 'Error al actualizar usuario', description: error.message, variant: 'destructive' });
@@ -350,6 +373,7 @@ export function AuthProvider({ children }) {
         register,
         logout,
         updateUser,
+        updatePassword,     // <— nuevo
         refreshBalances,
         refreshProfile,
       }}
