@@ -81,16 +81,16 @@ export default function AdminDashboard() {
   const [selectedSymbol, setSelectedSymbol] = useState('');
   const [rules, setRules] = useState([]);
 
-  // forms (UI puede tener más campos que tu DB; sólo enviaremos a la DB los válidos)
+  // forms
   const [instForm, setInstForm] = useState({
     symbol: '',
     name: '',
-    source: 'simulated',           // <- ahora por defecto simulada
+    source: 'simulated',
     binance_symbol: '',
     quote: 'USDT',
     base_price: '',
     decimals: 4,
-    volatility_bps: 80,            // bps (80 = 0.80%)
+    volatility_bps: 80, // bps (80 = 0.80%)
     difficulty: 'intermediate',
     enabled: true,
   });
@@ -337,16 +337,24 @@ export default function AdminDashboard() {
   // ---------- CRUD instrumentos ----------
   const addInstrument = async () => {
     try {
+      const symbol = (instForm.symbol || '').trim().toUpperCase();
+      const name = (instForm.name || '').trim();
+      const source = String(instForm.source || 'simulated');
+      const binance_symbol_raw = (instForm.binance_symbol || '').trim().toUpperCase();
+      const quote = (instForm.quote || 'USDT').trim().toUpperCase();
+      const dec = Number(instForm.decimals || 4);
+      const volBps = Number(instForm.volatility_bps ?? 80);
+
       const payload = {
-        symbol: (instForm.symbol || '').trim().toUpperCase(),
-        name: (instForm.name || '').trim(),
-        source: instForm.source,
-        base_price: instForm.source === 'binance'
-          ? 0
-          : Number(instForm.base_price || 1),
-        decimals: Number(instForm.decimals || 4),
-        volatility_bps: Number(instForm.volatility_bps ?? 80), // <- usa la columna correcta
-        volatility: volBps / 10000,
+        symbol,
+        name,
+        source,
+        binance_symbol: source === 'binance' ? binance_symbol_raw : null,
+        quote,
+        base_price: source === 'binance' ? 0 : Number(instForm.base_price || 1),
+        decimals: Number.isFinite(dec) ? dec : 4,
+        volatility_bps: Number.isFinite(volBps) ? volBps : 80,
+        volatility: Number.isFinite(volBps) ? volBps / 10000 : 0.008,
         difficulty: instForm.difficulty,
         enabled: !!instForm.enabled,
       };
@@ -355,7 +363,7 @@ export default function AdminDashboard() {
         toast({ title: 'Faltan datos', description: 'Símbolo y nombre son obligatorios.', variant: 'destructive' });
         return;
       }
-      if (instForm.source === 'binance' && !instForm.binance_symbol.trim()) {
+      if (payload.source === 'binance' && !payload.binance_symbol) {
         toast({ title: 'Falta par de Binance', description: 'Ej: BTCUSDT', variant: 'destructive' });
         return;
       }
@@ -503,7 +511,7 @@ export default function AdminDashboard() {
       const positive = delta >= 0;
       const insertTx = {
         user_id: userId,
-        type: positive ? 'admin_credit' : 'fee',   // <- 'admin_debit' NO existe en el CHECK
+        type: positive ? 'admin_credit' : 'fee',   // 'admin_debit' no existe en el CHECK
         amount: Math.abs(delta),
         status: 'completed',
         currency: 'USDC',

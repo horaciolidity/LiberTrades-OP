@@ -143,10 +143,12 @@ const useLivePriceGetter = (externalPrices) => {
     const norm = normalizePair(pair);
     const base = baseFromPair(norm);
 
+    // Preferir DataContext
     if (typeof getPairInfo === 'function') {
       const info = getPairInfo(norm);
       if (info && Number.isFinite(Number(info.price))) return Number(info.price);
     }
+    // Fallbacks
     const tries = [
       prices?.[base]?.price,
       prices?.[norm]?.price,
@@ -171,14 +173,17 @@ const calcUPnL = (trade, getLive) => {
 };
 
 const inferClosePriceIfMissing = (trade, live, localHint) => {
+  // 0) si capturamos el precio al cerrar, úsalo
   if (Number.isFinite(localHint)) return localHint;
 
+  // 1) explícito desde backend
   const explicit =
     trade.closeprice ??
     trade.closePrice ??
     trade.close_price;
   if (explicit != null && Number.isFinite(Number(explicit))) return Number(explicit);
 
+  // 2) derivarlo de profit si existe
   const entry = num(trade.price ?? trade.priceAtExecution, NaN);
   const qty = getQty(trade);
   const profit =
@@ -190,6 +195,8 @@ const inferClosePriceIfMissing = (trade, live, localHint) => {
   if (Number.isFinite(profit) && Number.isFinite(entry) && qty) {
     return side === 'sell' ? entry - profit / qty : entry + profit / qty;
   }
+
+  // 3) último live como aproximación
   return Number.isFinite(live) ? live : null;
 };
 
@@ -203,8 +210,10 @@ const TradeRow = ({
   const entry = num(t.price ?? t.priceAtExecution, 0);
   const isOpen = String(t.status || '').toLowerCase() === 'open';
 
+  // abiertos ⇒ calc con precio vivo
   const computedOpen = calcUPnL(t, getLive);
 
+  // cerrados ⇒ prioridad: closeHint > closePrice > profit
   let pnlClosed = 0;
   if (!isOpen) {
     const live = Number(getLive(t.pair));
@@ -310,7 +319,7 @@ const TradeRow = ({
 const TradesHistory = ({
   trades = [],
   cryptoPrices = {},
-  // closeTrade debe aceptar: (tradeId: string, closePrice?: number, force?: boolean) => Promise<boolean|void>
+  // closeTrade debe aceptar: (tradeId: string, closePrice: number|null, force?: boolean) => Promise<boolean|void>
   closeTrade = async () => {},
   autoCloseDemo = true,
   pnlDecimals = 4,
@@ -323,6 +332,7 @@ const TradesHistory = ({
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState(null);
 
+  // Hints locales de cierre: id -> precio capturado al cerrar
   const closeHintsRef = useRef(new Map());
   const setCloseHint = (id, price) => {
     if (!id || !Number.isFinite(price)) return;
@@ -330,6 +340,7 @@ const TradesHistory = ({
   };
   const getCloseHint = (id) => closeHintsRef.current.get(id);
 
+  // para auto-cierre si estaba open al abrir el modal
   const wasOpenAtOpenRef = useRef(false);
 
   const [closingModal, setClosingModal] = useState(false);
@@ -341,6 +352,7 @@ const TradesHistory = ({
     setDetailOpen(true);
   };
 
+  // sync trade seleccionado
   useEffect(() => {
     if (!selected) return;
     const updated = list.find((t) => t.id === selected.id);
@@ -360,12 +372,14 @@ const TradesHistory = ({
   const handleRowClose = async (id) => {
     if (!id) return;
     try {
-      const t = list.find(x => x.id === id);
+      // Capturamos precio vivo ANTES de cerrar y lo guardamos como hint
+      const t = list.find((x) => x.id === id);
       const p = Number(getLive(t?.pair));
       if (Number.isFinite(p)) setCloseHint(id, p);
 
       setRowClosingId(id);
-      const result = await closeTrade?.(id, Number.isFinite(p) ? p : null, true);
+      const cp = Number.isFinite(p) ? p : null; // <- nunca undefined
+      const result = await closeTrade?.(id, cp, true);
       const ok = (typeof result === 'boolean') ? result : true;
       if (ok && detailOpen && selected?.id === id) setDetailOpen(false);
     } finally {
@@ -373,6 +387,7 @@ const TradesHistory = ({
     }
   };
 
+  /* --------- AUTOCIERRE DEMO --------- */
   const autoClosingSet = useRef(new Set());
   useEffect(() => {
     if (!autoCloseDemo) return;
@@ -384,7 +399,6 @@ const TradesHistory = ({
         const hasDur =
           Number(num(t.durationSeconds ?? t.duration, 0)) > 0 ||
           Number.isFinite(parseTsMs(t.closeAt ?? t.closeat));
-
         if (!hasDur) continue;
 
         const secs = remainingSeconds(t);
@@ -393,7 +407,8 @@ const TradesHistory = ({
           try {
             const p = Number(getLive(t.pair));
             if (Number.isFinite(p)) setCloseHint(t.id, p);
-            await closeTrade?.(t.id, Number.isFinite(p) ? p : null, true);
+            const cp = Number.isFinite(p) ? p : null; // <- nunca undefined
+            await closeTrade?.(t.id, cp, true);
           } finally {
             setTimeout(() => autoClosingSet.current.delete(t.id), 2000);
           }
@@ -404,6 +419,7 @@ const TradesHistory = ({
     return () => clearInterval(id);
   }, [list, autoCloseDemo, closeTrade, getLive]);
 
+  // Datos para el modal
   const details = useMemo(() => {
     if (!selected) return null;
 
@@ -512,6 +528,7 @@ const TradesHistory = ({
         </Card>
       </motion.div>
 
+      {/* Modal de Detalle */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
         <DialogContent className="sm:max-w-lg bg-slate-900 border-slate-700 text-slate-200">
           <DialogHeader>
@@ -589,11 +606,13 @@ const TradesHistory = ({
                 <Button
                   onClick={async () => {
                     if (!selected?.id) return;
+                    // capturamos hint y ENVIAMOS precio (o null)
                     const p = Number(getLive(selected.pair));
                     if (Number.isFinite(p)) setCloseHint(selected.id, p);
 
                     setClosingModal(true);
-                    const result = await closeTrade?.(selected.id, Number.isFinite(p) ? p : null, true);
+                    const cp = Number.isFinite(p) ? p : null; // <- nunca undefined
+                    const result = await closeTrade?.(selected.id, cp, true);
                     setClosingModal(false);
                     const ok = (typeof result === 'boolean') ? result : true;
                     if (ok) setDetailOpen(false);
