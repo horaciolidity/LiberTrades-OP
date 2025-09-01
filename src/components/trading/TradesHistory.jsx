@@ -134,8 +134,7 @@ const remainingSeconds = (trade) => {
 /* ------------- getter robusto de precio en vivo -------------- */
 /**
  * Lee precios desde el DataContext y (si se proveen) desde `externalPrices` (prioritarios).
- * Se actualiza en caliente gracias a las deps y además tiene un heartbeat suave por si
- * el contexto no dispara re-render en algún navegador.
+ * Fallback extra: si no hay price, usa el ÚLTIMO punto de history para el par.
  */
 const useLivePriceGetter = (externalPrices) => {
   const { cryptoPrices: ctxPrices = {}, getPairInfo } = useData();
@@ -145,25 +144,31 @@ const useLivePriceGetter = (externalPrices) => {
       const norm = normalizePair(pair);
       const base = baseFromPair(norm);
 
-      // 1) Si pasaron precios por props, priorizarlos
+      // 1) props (si vienen)
       const pExt =
         externalPrices?.[norm]?.price ??
         externalPrices?.[base]?.price ??
         externalPrices?.[noSlash(norm)]?.price;
       if (Number.isFinite(Number(pExt))) return Number(pExt);
 
-      // 2) Preferir el helper del contexto
+      // 2) helper del contexto (price directo o último del history)
       if (typeof getPairInfo === 'function') {
         const info = getPairInfo(norm);
-        if (info && Number.isFinite(Number(info.price))) return Number(info.price);
+        const pCtx = Number(info?.price);
+        if (Number.isFinite(pCtx)) return pCtx;
+
+        const hist = Array.isArray(info?.history) ? info.history : [];
+        const last = hist.length ? Number(hist[hist.length - 1]?.value) : NaN;
+        if (Number.isFinite(last)) return last;
       }
 
-      // 3) Fallbacks directos al mapa del contexto
+      // 3) mapa de precios del contexto (incluye claves por base y sin slash)
       const tries = [
         ctxPrices?.[norm]?.price,
         ctxPrices?.[base]?.price,
         ctxPrices?.[noSlash(norm)]?.price,
-        ctxPrices?.[base]?.c ?? ctxPrices?.[base]?.last,
+        ctxPrices?.[norm]?.history?.at?.(-1)?.value,
+        ctxPrices?.[base]?.history?.at?.(-1)?.value,
       ];
       for (const p of tries) {
         if (Number.isFinite(Number(p))) return Number(p);
@@ -324,7 +329,7 @@ const TradeRow = ({
 const TradesHistory = ({
   trades = [],
   cryptoPrices = {},
-  // closeTrade debe aceptar: (tradeId: string, closePrice: number|null, force?: boolean) => Promise<boolean|void>
+  // closeTrade: (tradeId, closePrice|null, force?) => Promise<boolean|void>
   closeTrade = async () => {},
   autoCloseDemo = true,
   pnlDecimals = 4,
@@ -334,7 +339,7 @@ const TradesHistory = ({
   const list = safeArr(trades);
   const getLive = useLivePriceGetter(cryptoPrices);
 
-  // Heartbeat para garantizar re-render (por si no llega un render del contexto)
+  // Heartbeat de repaint por si el contexto no re-renderiza en algunos navegadores
   const [, force] = useState(0);
   useEffect(() => {
     const id = setInterval(() => force((x) => (x + 1) % 1e9), 1000);
@@ -344,7 +349,7 @@ const TradesHistory = ({
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState(null);
 
-  // Hints locales de cierre: id -> precio capturado al cerrar
+  // hints locales de cierre (id -> precio capturado al cerrar)
   const closeHintsRef = useRef(new Map());
   const setCloseHint = (id, price) => {
     if (!id || !Number.isFinite(price)) return;
@@ -352,7 +357,6 @@ const TradesHistory = ({
   };
   const getCloseHint = (id) => closeHintsRef.current.get(id);
 
-  // para auto-cierre si estaba open al abrir el modal
   const wasOpenAtOpenRef = useRef(false);
 
   const [closingModal, setClosingModal] = useState(false);
@@ -364,7 +368,6 @@ const TradesHistory = ({
     setDetailOpen(true);
   };
 
-  // sync trade seleccionado
   useEffect(() => {
     if (!selected) return;
     const updated = list.find((t) => t.id === selected.id);

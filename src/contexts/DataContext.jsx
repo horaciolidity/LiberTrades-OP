@@ -24,7 +24,7 @@ const DEFAULT_BINANCE_MAP = {
   ADA: 'ADAUSDT',
 };
 
-const HISTORY_MAX = 600;
+const HISTORY_MAX = 600;  // ~10 min a 1s
 const TICK_MS = 1000;
 
 /* --------------- Reglas por hora (UTC) --------------- */
@@ -96,6 +96,9 @@ export function DataProvider({ children }) {
   const hasNextV2Ref = useRef(null);
   const badSymsRef = useRef(new Set());
   const lastTickRef = useRef(0);
+
+  // ref_24h por símbolo, tomado de market_state
+  const stateRef = useRef({}); // { [SYM]: { ref24: number } }
 
   useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
   useEffect(() => { rulesRef.current = marketRules; }, [marketRules]);
@@ -288,9 +291,11 @@ export function DataProvider({ children }) {
       const symU = String(row.symbol || '').toUpperCase();
       const price = Number(row.price);
       if (!Number.isFinite(price)) return;
-      const ref24 = Number(row.ref_24h ?? price);
-      const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
 
+      const ref24 = Number(row.ref_24h ?? price);
+      stateRef.current[symU] = { ref24 };
+
+      const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
       setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
     };
 
@@ -301,6 +306,37 @@ export function DataProvider({ children }) {
       .subscribe();
 
     return () => { try { supabase.removeChannel(ch); } catch {} };
+  }, []);
+
+  /* --------- Realtime de market_ticks (empujar precio vivo) --------- */
+  useEffect(() => {
+    const onTick = ({ new: row }) => {
+      if (!row) return;
+      const symU = String(row.symbol || '').toUpperCase();
+      const price = Number(row.price);
+      if (!Number.isFinite(price) || price <= 0) return;
+
+      // % 24h usando ref guardada desde market_state si existe
+      const ref24 = Number(stateRef.current?.[symU]?.ref24 ?? NaN);
+      const change = Number.isFinite(ref24) && ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
+
+      setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
+
+      // Empujar al history de ese símbolo para que el panel/historial reaccionen al instante
+      setPriceHistories((prev) => {
+        const t = nowMs();
+        const prevH = ensureArray(prev[symU]);
+        const nextH = [...prevH, { time: t, value: price }].slice(-HISTORY_MAX);
+        return { ...prev, [symU]: nextH };
+      });
+    };
+
+    const chTicks = supabase
+      .channel('market_ticks_changes')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'market_ticks' }, onTick)
+      .subscribe();
+
+    return () => { try { supabase.removeChannel(chTicks); } catch {} };
   }, []);
 
   /* ---------- Simuladas driver (RPC) ---------- */
@@ -436,6 +472,7 @@ export function DataProvider({ children }) {
             .toFixed(Number.isFinite(decimals) ? decimals : 2)
         );
 
+        // cambio 24h: si lo trae realQuotes úsalo; si no, compáralo contra el primer punto del history local
         let changePct = 0;
         if (quotesCur?.[symU]?.change !== undefined && quotesCur?.[symU]?.change !== null) {
           changePct = Number(quotesCur[symU].change || 0);
@@ -455,8 +492,7 @@ export function DataProvider({ children }) {
       }
 
       setPriceHistories(nextHist);
-      // Reemplazo total para evitar residuos viejos
-      setCryptoPrices(nextPrices);
+      setCryptoPrices(nextPrices); // replace total, evita residuos
     };
 
     const id = setInterval(tick, TICK_MS);
@@ -764,18 +800,22 @@ export function DataProvider({ children }) {
     return Array.from(s);
   }, [instruments]);
 
-  // Busca en varias claves posibles (par, sin slash, base)
+  // Busca en varias claves y, si no hay price, usa último punto de history
   const getPairInfo = (pair) => {
     const k = String(pair || '').toUpperCase().replace(/\s+/g, '');
     const keys = [
       k,
       k.includes('/') ? k.replace('/', '') : k, // BTCUSDT
       k.split('/')[0],                          // BTC
-      k.includes('/') ? k : `${k}/USDT`,       // normalizar por si viene "BTC"
+      k.includes('/') ? k : `${k}/USDT`,
     ];
     for (const key of keys) {
       const val = cryptoPrices[key];
       if (val && Number.isFinite(Number(val.price))) return val;
+      if (val && Array.isArray(val.history) && val.history.length) {
+        const last = Number(val.history[val.history.length - 1]?.value);
+        if (Number.isFinite(last)) return { ...val, price: last };
+      }
     }
     return { price: undefined, change: undefined, history: [] };
   };
