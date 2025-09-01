@@ -24,7 +24,7 @@ const DEFAULT_BINANCE_MAP = {
   ADA: 'ADAUSDT',
 };
 
-const HISTORY_MAX = 600;  // ~10 min a 1s
+const HISTORY_MAX = 600;
 const TICK_MS = 1000;
 
 /* --------------- Reglas por hora (UTC) --------------- */
@@ -91,14 +91,12 @@ export function DataProvider({ children }) {
   const quotesRef = useRef({});
   const histRef = useRef({});
   const liveMapRef = useRef({});
+  const ref24Ref = useRef({});          // << memoria de ref_24h por símbolo
 
   const supportsBulkRef = useRef(null);
   const hasNextV2Ref = useRef(null);
   const badSymsRef = useRef(new Set());
   const lastTickRef = useRef(0);
-
-  // ref_24h por símbolo, tomado de market_state
-  const stateRef = useRef({}); // { [SYM]: { ref24: number } }
 
   useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
   useEffect(() => { rulesRef.current = marketRules; }, [marketRules]);
@@ -199,7 +197,7 @@ export function DataProvider({ children }) {
 
     const init = async () => {
       teardown();
-      const liveEntries = Object.entries(liveBinanceMap); // [SYM, PAIR] (UPPER)
+      const liveEntries = Object.entries(liveBinanceMap);
 
       // Seed por REST
       if (liveEntries.length) {
@@ -284,7 +282,7 @@ export function DataProvider({ children }) {
     return () => { alive = false; teardown(); };
   }, [liveBinanceMap]);
 
-  /* --------- Realtime de market_state (sim/real/manual) --------- */
+  /* --------- Realtime market_state (sim/real/manual) --------- */
   useEffect(() => {
     const onStateChange = ({ new: row }) => {
       if (!row) return;
@@ -293,7 +291,7 @@ export function DataProvider({ children }) {
       if (!Number.isFinite(price)) return;
 
       const ref24 = Number(row.ref_24h ?? price);
-      stateRef.current[symU] = { ref24 };
+      ref24Ref.current[symU] = ref24;
 
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
       setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
@@ -308,35 +306,60 @@ export function DataProvider({ children }) {
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
 
-  /* --------- Realtime de market_ticks (empujar precio vivo) --------- */
+  /* --------- NUEVO: Realtime directo de market_ticks --------- */
   useEffect(() => {
-    const onTick = ({ new: row }) => {
-      if (!row) return;
-      const symU = String(row.symbol || '').toUpperCase();
-      const price = Number(row.price);
+    const applyTick = (symU, price, ts) => {
       if (!Number.isFinite(price) || price <= 0) return;
+      const t = Number.isFinite(Number(ts)) ? Number(ts) : nowMs();
 
-      // % 24h usando ref guardada desde market_state si existe
-      const ref24 = Number(stateRef.current?.[symU]?.ref24 ?? NaN);
-      const change = Number.isFinite(ref24) && ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
+      // history
+      setPriceHistories((prev) => {
+        const cur = ensureArray(prev[symU]);
+        const nextH = [...cur, { time: t, value: price }].slice(-HISTORY_MAX);
+        return { ...prev, [symU]: nextH };
+      });
+
+      // change usando ref_24h si la tenemos (o primera vela/hist)
+      const ref24 =
+        Number(ref24Ref.current[symU]) ||
+        Number(histRef.current?.[symU]?.[0]?.value) ||
+        price;
+
+      const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
 
       setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
 
-      // Empujar al history de ese símbolo para que el panel/historial reaccionen al instante
-      setPriceHistories((prev) => {
-        const t = nowMs();
-        const prevH = ensureArray(prev[symU]);
-        const nextH = [...prevH, { time: t, value: price }].slice(-HISTORY_MAX);
-        return { ...prev, [symU]: nextH };
-      });
+      // publicar inmediatamente en cryptoPrices (SYM, SYM/QUOTE, SYMQUOTE)
+      const inst = instrumentsRef.current.find(
+        (i) => String(i.symbol || '').toUpperCase() === symU
+      );
+      const quoteU = String(inst?.quote || 'USDT').toUpperCase();
+
+      const history = (histRef.current?.[symU] || []).slice(-HISTORY_MAX);
+      const payload = { price, change, history };
+
+      setCryptoPrices((prev) => ({
+        ...prev,
+        [symU]: payload,
+        [`${symU}/${quoteU}`]: payload,
+        [`${symU}${quoteU}`]: payload,
+      }));
     };
 
-    const chTicks = supabase
+    const onTickInsert = ({ new: row }) => {
+      const symU = String(row.symbol || '').toUpperCase();
+      const price = Number(row.price);
+      // ts puede venir como timestamptz; guardamos epoch ms si existe
+      const ts = row.ts ? new Date(row.ts).getTime() : nowMs();
+      applyTick(symU, price, ts);
+    };
+
+    const ch = supabase
       .channel('market_ticks_changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'market_ticks' }, onTick)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'market_ticks' }, onTickInsert)
       .subscribe();
 
-    return () => { try { supabase.removeChannel(chTicks); } catch {} };
+    return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
 
   /* ---------- Simuladas driver (RPC) ---------- */
@@ -418,7 +441,7 @@ export function DataProvider({ children }) {
     return () => { alive = false; clearInterval(timer); };
   }, [instruments]);
 
-  /* --------- Consolidación → cryptoPrices + histories --------- */
+  /* --------- Consolidación → cryptoPrices + histories (fallback) --------- */
   useEffect(() => {
     const tick = () => {
       const t = nowMs();
@@ -435,7 +458,7 @@ export function DataProvider({ children }) {
         .filter((i) => (i.enabled ?? true))
         .map((i) => String(i.symbol || '').toUpperCase());
 
-      const liveSyms = Object.keys(liveMapCur); // ya UPPER
+      const liveSyms = Object.keys(liveMapCur);
       const symbolsSet = new Set([...enabledSyms, ...liveSyms, 'USDT', 'USDC']);
 
       const nextHist = { ...histCur };
@@ -450,7 +473,6 @@ export function DataProvider({ children }) {
         const prevH = ensureArray(nextHist[symU] || nextHist[symU.toLowerCase()]);
         const lastKnown = prevH.length ? prevH[prevH.length - 1].value : undefined;
 
-        // base: preferimos event/state (realQuotes); luego último; luego base_price
         let base = Number(quotesCur?.[symU]?.price);
         if (!Number.isFinite(base) || base <= 0) {
           base = Number.isFinite(lastKnown) ? lastKnown : Number(inst?.base_price ?? 0);
@@ -472,7 +494,6 @@ export function DataProvider({ children }) {
             .toFixed(Number.isFinite(decimals) ? decimals : 2)
         );
 
-        // cambio 24h: si lo trae realQuotes úsalo; si no, compáralo contra el primer punto del history local
         let changePct = 0;
         if (quotesCur?.[symU]?.change !== undefined && quotesCur?.[symU]?.change !== null) {
           changePct = Number(quotesCur[symU].change || 0);
@@ -485,14 +506,14 @@ export function DataProvider({ children }) {
         nextHist[symU] = newH;
 
         const payload = { price: finalPrice, change: changePct, history: newH };
-        // 3 claves: SYM / SYM/QUOTE / SYMQUOTE
         nextPrices[symU] = payload;
         nextPrices[`${symU}/${quoteU}`] = payload;
         nextPrices[`${symU}${quoteU}`] = payload;
       }
 
       setPriceHistories(nextHist);
-      setCryptoPrices(nextPrices); // replace total, evita residuos
+      // merge para no pisar updates directos por tick
+      setCryptoPrices((prev) => ({ ...prev, ...nextPrices }));
     };
 
     const id = setInterval(tick, TICK_MS);
@@ -800,22 +821,18 @@ export function DataProvider({ children }) {
     return Array.from(s);
   }, [instruments]);
 
-  // Busca en varias claves y, si no hay price, usa último punto de history
+  // Busca en varias claves posibles (par, sin slash, base)
   const getPairInfo = (pair) => {
     const k = String(pair || '').toUpperCase().replace(/\s+/g, '');
     const keys = [
       k,
       k.includes('/') ? k.replace('/', '') : k, // BTCUSDT
       k.split('/')[0],                          // BTC
-      k.includes('/') ? k : `${k}/USDT`,
+      k.includes('/') ? k : `${k}/USDT`,       // normaliza "BTC" -> "BTC/USDT"
     ];
     for (const key of keys) {
       const val = cryptoPrices[key];
       if (val && Number.isFinite(Number(val.price))) return val;
-      if (val && Array.isArray(val.history) && val.history.length) {
-        const last = Number(val.history[val.history.length - 1]?.value);
-        if (Number.isFinite(last)) return { ...val, price: last };
-      }
     }
     return { price: undefined, change: undefined, history: [] };
   };
@@ -909,3 +926,4 @@ export function useData() {
     investmentPlans: [],
   };
 }
+ 
