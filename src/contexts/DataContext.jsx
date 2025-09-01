@@ -13,29 +13,10 @@ import { useAuth } from '@/contexts/AuthContext';
 
 const DataContext = createContext(null);
 
-/* =========================== Utils =========================== */
+/* ----------------------- Utils ----------------------- */
 const ensureArray = (v) => (Array.isArray(v) ? v : []);
 const nowMs = () => Date.now();
 
-const normalizePair = (pair, fb = 'BTC/USDT') => {
-  if (!pair) return fb;
-  const s = String(pair).trim().toUpperCase();
-  if (!s) return fb;
-  if (s.includes('/')) {
-    const [b = 'BTC', q = 'USDT'] = s.split('/');
-    return `${b}/${q}`;
-  }
-  if (s.endsWith('USDT')) return `${s.slice(0, -4)}/USDT`;
-  if (s.endsWith('USDC')) return `${s.slice(0, -4)}/USDC`;
-  return `${s}/USDT`;
-};
-const baseFromPair = (pair) => normalizePair(pair).split('/')[0] || 'BTC';
-const noSlash = (s) => String(s || '').replace('/', '');
-
-const HISTORY_MAX = 600;
-const TICK_MS = 1000;
-
-/* ============ Pares Binance por defecto (mapeo) ============= */
 const DEFAULT_BINANCE_MAP = {
   BTC: 'BTCUSDT',
   ETH: 'ETHUSDT',
@@ -43,7 +24,10 @@ const DEFAULT_BINANCE_MAP = {
   ADA: 'ADAUSDT',
 };
 
-/* =============== Reglas por hora (UTC) ====================== */
+const HISTORY_MAX = 600;
+const TICK_MS = 1000;
+
+/* --------------- Reglas por hora (UTC) --------------- */
 const inWindowUTC = (hour, start, end) =>
   (start < end && hour >= start && hour < end) ||
   (start > end && (hour >= start || hour < end)) ||
@@ -72,21 +56,20 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
   return price;
 };
 
-/* ======================== Provider ========================== */
 export function DataProvider({ children }) {
   const { user } = useAuth();
 
-  // ---------- Estado negocio ----------
+  /* ---------------- Estado negocio ---------------- */
   const [investments, setInvestments] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [referrals, setReferrals] = useState([]);
   const [botActivations, setBotActivations] = useState([]);
 
-  // ---------- Mercado (admin) ----------
+  /* ---------------- Mercado (admin) ---------------- */
   const [instruments, setInstruments] = useState([]);
   const [marketRules, setMarketRules] = useState([]);
 
-  // ---------- Precios / Historias ----------
+  /* --------------- Precios / Historias -------------- */
   const [realQuotes, setRealQuotes] = useState({
     USDT: { price: 1, change: 0 },
     USDC: { price: 1, change: 0 },
@@ -99,11 +82,9 @@ export function DataProvider({ children }) {
 
   const [cryptoPrices, setCryptoPrices] = useState({});
 
-  // ---------- Refs / conexiones ----------
+  /* --------------- Refs / conexiones ---------------- */
   const wsRef = useRef(null);
-  const wsAliveRef = useRef(false);
   const restPollRef = useRef(null);
-  const lastTickRef = useRef(0);
 
   const instrumentsRef = useRef([]);
   const rulesRef = useRef([]);
@@ -114,13 +95,14 @@ export function DataProvider({ children }) {
   const supportsBulkRef = useRef(null);
   const hasNextV2Ref = useRef(null);
   const badSymsRef = useRef(new Set());
+  const lastTickRef = useRef(0);
 
   useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
   useEffect(() => { rulesRef.current = marketRules; }, [marketRules]);
   useEffect(() => { quotesRef.current = realQuotes; }, [realQuotes]);
   useEffect(() => { histRef.current = priceHistories; }, [priceHistories]);
 
-  /* -------------- Fetch + realtime instrumentos/reglas -------------- */
+  /* ------- Fetch + realtime instrumentos/reglas ------ */
   const refreshMarketInstruments = async () => {
     const { data, error } = await supabase
       .from('market_instruments')
@@ -146,21 +128,13 @@ export function DataProvider({ children }) {
     forceRefreshMarket();
     const ch = supabase
       .channel('market_realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'market_instruments' },
-        () => refreshMarketInstruments()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'market_rules' },
-        () => refreshMarketRules()
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_instruments' }, refreshMarketInstruments)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_rules' },       refreshMarketRules)
       .subscribe();
-    return () => { try { supabase.removeChannel(ch); } catch (_) {} };
+    return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
 
-  /* ------------------- Mapa dinámico a Binance ------------------- */
+  /* ---------- Mapa dinámico a Binance ---------- */
   const liveBinanceMap = useMemo(() => {
     const map = { ...DEFAULT_BINANCE_MAP };
     Object.keys(map).forEach((k) => {
@@ -179,7 +153,7 @@ export function DataProvider({ children }) {
     return map;
   }, [instruments]);
 
-  /* ---------------------- Polling REST ---------------------- */
+  /* --------------- Polling REST fallback -------------- */
   const startRestPolling = (entries) => {
     clearInterval(restPollRef.current);
     if (!entries.length) return;
@@ -209,23 +183,22 @@ export function DataProvider({ children }) {
     restPollRef.current = setInterval(poll, 5000);
   };
 
-  /* ---------------- Binance WS + fallback ---------------- */
+  /* ---------------- Binance WS + fallback --------------- */
   useEffect(() => {
     let alive = true;
 
     const teardown = () => {
       try { wsRef.current?.close(); } catch {}
       wsRef.current = null;
-      wsAliveRef.current = false;
       clearInterval(restPollRef.current);
       restPollRef.current = null;
     };
 
     const init = async () => {
       teardown();
-      const liveEntries = Object.entries(liveBinanceMap); // [SYM, PAIR] UPPER
+      const liveEntries = Object.entries(liveBinanceMap); // [SYM, PAIR] (UPPER)
 
-      // Seed inicial por REST
+      // Seed por REST
       if (liveEntries.length) {
         try {
           const results = await Promise.all(
@@ -263,7 +236,7 @@ export function DataProvider({ children }) {
         } catch {}
       }
 
-      // WS live + fallback a REST si cae
+      // WS en vivo
       if (liveEntries.length) {
         try {
           const streams = liveEntries
@@ -273,7 +246,6 @@ export function DataProvider({ children }) {
           wsRef.current = ws;
 
           ws.onopen = () => {
-            wsAliveRef.current = true;
             clearInterval(restPollRef.current);
             restPollRef.current = null;
           };
@@ -298,10 +270,7 @@ export function DataProvider({ children }) {
           };
 
           ws.onerror = () => { try { ws.close(); } catch {} };
-          ws.onclose = () => {
-            wsAliveRef.current = false;
-            startRestPolling(liveEntries);
-          };
+          ws.onclose = () => startRestPolling(liveEntries);
         } catch {
           startRestPolling(liveEntries);
         }
@@ -312,40 +281,17 @@ export function DataProvider({ children }) {
     return () => { alive = false; teardown(); };
   }, [liveBinanceMap]);
 
-  /* --------- market_state realtime + RPC simuladas --------- */
+  /* --------- Realtime de market_state (sim/real/manual) --------- */
   useEffect(() => {
-    // Realtime desde market_state
-    const onStateChange = (payload) => {
-      const row = payload.new;
+    const onStateChange = ({ new: row }) => {
       if (!row) return;
       const symU = String(row.symbol || '').toUpperCase();
       const price = Number(row.price);
-      const ref24 = Number(row.ref_24h ?? price);
       if (!Number.isFinite(price)) return;
-
+      const ref24 = Number(row.ref_24h ?? price);
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
 
-      // 1) Actualiza el mapa "crudo"
       setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
-
-      // 2) Actualiza cryptoPrices inmediatamente (sin esperar al tick)
-      setCryptoPrices((prev) => {
-        const prevHist = histRef.current?.[symU] || [];
-        const payload2 = {
-          price,
-          change,
-          ref_24h: ref24,
-          history: prevHist,
-        };
-        const quoteU = instrumentsRef.current.find(i => String(i.symbol || '').toUpperCase() === symU)?.quote || 'USDT';
-        const qU = String(quoteU || 'USDT').toUpperCase();
-        return {
-          ...prev,
-          [symU]: payload2,
-          [`${symU}/${qU}`]: payload2,
-          [`${symU}${qU}`]: payload2,
-        };
-      });
     };
 
     const ch = supabase
@@ -354,7 +300,11 @@ export function DataProvider({ children }) {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'market_state' }, onStateChange)
       .subscribe();
 
-    // RPC driver para simuladas
+    return () => { try { supabase.removeChannel(ch); } catch {} };
+  }, []);
+
+  /* ---------- Simuladas driver (RPC) ---------- */
+  useEffect(() => {
     const simSyms = instruments
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase()))
       .map((i) => String(i.symbol || '').toUpperCase());
@@ -429,14 +379,10 @@ export function DataProvider({ children }) {
       timer = setInterval(drive, TICK_MS);
     })();
 
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      try { supabase.removeChannel(ch); } catch {}
-    };
+    return () => { alive = false; clearInterval(timer); };
   }, [instruments]);
 
-  /* ---------------- Consolidación + histories ---------------- */
+  /* --------- Consolidación → cryptoPrices + histories --------- */
   useEffect(() => {
     const tick = () => {
       const t = nowMs();
@@ -449,9 +395,11 @@ export function DataProvider({ children }) {
       const histCur = histRef.current;
       const liveMapCur = liveMapRef.current;
 
-      const enabledSyms = instrumentsCur.filter((i) => (i.enabled ?? true))
+      const enabledSyms = instrumentsCur
+        .filter((i) => (i.enabled ?? true))
         .map((i) => String(i.symbol || '').toUpperCase());
-      const liveSyms = Object.keys(liveMapCur); // UPPER
+
+      const liveSyms = Object.keys(liveMapCur); // ya UPPER
       const symbolsSet = new Set([...enabledSyms, ...liveSyms, 'USDT', 'USDC']);
 
       const nextHist = { ...histCur };
@@ -466,15 +414,10 @@ export function DataProvider({ children }) {
         const prevH = ensureArray(nextHist[symU] || nextHist[symU.toLowerCase()]);
         const lastKnown = prevH.length ? prevH[prevH.length - 1].value : undefined;
 
-        let base = 0;
-        if (src === 'binance') {
-          base = Number(quotesCur?.[symU]?.price ?? NaN);
-          if (!Number.isFinite(base) || base <= 0) base = Number.isFinite(lastKnown) ? lastKnown : 0;
-        } else if (src === 'manual' || src === 'simulated' || src === 'real') {
-          base = Number(quotesCur?.[symU]?.price ?? inst?.base_price ?? 0);
-        } else {
-          base = Number(quotesCur?.[symU]?.price ?? 0);
-          if (!base && inst) base = Number(inst.base_price ?? 0);
+        // base: preferimos event/state (realQuotes); luego último; luego base_price
+        let base = Number(quotesCur?.[symU]?.price);
+        if (!Number.isFinite(base) || base <= 0) {
+          base = Number.isFinite(lastKnown) ? lastKnown : Number(inst?.base_price ?? 0);
         }
 
         let finalPrice =
@@ -493,31 +436,27 @@ export function DataProvider({ children }) {
             .toFixed(Number.isFinite(decimals) ? decimals : 2)
         );
 
-        // ref_24h para cambio: primer valor del día/historia (fallback)
-        const ref24h =
-          Number.isFinite(quotesCur?.[symU]?.ref_24h) ? Number(quotesCur?.[symU]?.ref_24h)
-          : (prevH?.[0]?.value ?? finalPrice);
-
         let changePct = 0;
-        if (quotesCur?.[symU]?.change != null) {
+        if (quotesCur?.[symU]?.change !== undefined && quotesCur?.[symU]?.change !== null) {
           changePct = Number(quotesCur[symU].change || 0);
-        } else if (ref24h > 0) {
-          changePct = ((finalPrice - ref24h) / ref24h) * 100;
+        } else {
+          const ref = prevH?.[0]?.value ?? finalPrice;
+          if (ref) changePct = ((finalPrice - ref) / ref) * 100;
         }
 
         const newH = [...prevH, { time: t, value: finalPrice }].slice(-HISTORY_MAX);
         nextHist[symU] = newH;
 
-        const payload = { price: finalPrice, change: changePct, history: newH, ref_24h: ref24h };
-
-        // aliases por símbolo y par (con y sin "/")
+        const payload = { price: finalPrice, change: changePct, history: newH };
+        // 3 claves: SYM / SYM/QUOTE / SYMQUOTE
         nextPrices[symU] = payload;
         nextPrices[`${symU}/${quoteU}`] = payload;
         nextPrices[`${symU}${quoteU}`] = payload;
       }
 
       setPriceHistories(nextHist);
-      setCryptoPrices((prev) => ({ ...prev, ...nextPrices }));
+      // Reemplazo total para evitar residuos viejos
+      setCryptoPrices(nextPrices);
     };
 
     const id = setInterval(tick, TICK_MS);
@@ -525,7 +464,7 @@ export function DataProvider({ children }) {
     return () => clearInterval(id);
   }, []);
 
-  /* ---------------------- Planes (UI) ----------------------- */
+  /* ---------------- Planes estáticos ---------------- */
   const investmentPlans = useMemo(
     () => [
       { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
@@ -670,7 +609,7 @@ export function DataProvider({ children }) {
     }
   }, [user?.id]);
 
-  /* --------------------- Mutaciones --------------------- */
+  /* ---------------- Mutaciones negocio --------------- */
   async function addInvestment({ planName, amount, dailyReturn, duration, currency = 'USDC' }) {
     if (!user?.id) return null;
     const payload = {
@@ -746,7 +685,7 @@ export function DataProvider({ children }) {
     };
   }
 
-  /* ----------------------- RPC Bots ---------------------- */
+  /* ---------------- RPC Bots ---------------- */
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
@@ -797,7 +736,7 @@ export function DataProvider({ children }) {
     }
   }
 
-  /* ------------------- Trades: cierre ------------------- */
+  /* ---------------- Trades: cierre ---------------- */
   async function closeTrade(tradeId, closePrice = null, force = true) {
     try {
       const { data, error } = await supabase.rpc('close_trade', {
@@ -805,10 +744,7 @@ export function DataProvider({ children }) {
         p_close_price: (Number.isFinite(Number(closePrice)) ? Number(closePrice) : null),
         p_force: !!force,
       });
-      if (error) {
-        console.error('[close_trade]', error);
-        return false;
-      }
+      if (error) { console.error('[close_trade]', error); return false; }
       return !!data?.ok;
     } catch (e) {
       console.error('[close_trade] exception', e);
@@ -816,27 +752,32 @@ export function DataProvider({ children }) {
     }
   }
 
-  /* --------------------- Helpers UI --------------------- */
+  /* ---------------- Helpers UI ---------------- */
   const pairOptions = useMemo(() => {
     const enabled = instruments.filter((i) => (i.enabled ?? true));
-    const list = enabled.map((i) => `${String(i.symbol || '').toUpperCase()}/${String(i.quote || 'USDT').toUpperCase()}`);
+    const list = enabled.map((i) =>
+      `${String(i.symbol || '').toUpperCase()}/${String(i.quote || 'USDT').toUpperCase()}`
+    );
     const s = new Set(list);
     if (!s.has('BTC/USDT')) s.add('BTC/USDT');
     if (!s.has('ETH/USDT')) s.add('ETH/USDT');
     return Array.from(s);
   }, [instruments]);
 
+  // Busca en varias claves posibles (par, sin slash, base)
   const getPairInfo = (pair) => {
-    const norm = normalizePair(pair || 'BTC/USDT');
-    const keyPair = norm.toUpperCase();
-    const keyNoSlash = noSlash(keyPair);
-    const base = baseFromPair(keyPair);
-    return (
-      cryptoPrices[keyPair] ??
-      cryptoPrices[keyNoSlash] ??
-      cryptoPrices[base] ??
-      { price: undefined, change: undefined, history: [] }
-    );
+    const k = String(pair || '').toUpperCase().replace(/\s+/g, '');
+    const keys = [
+      k,
+      k.includes('/') ? k.replace('/', '') : k, // BTCUSDT
+      k.split('/')[0],                          // BTC
+      k.includes('/') ? k : `${k}/USDT`,       // normalizar por si viene "BTC"
+    ];
+    for (const key of keys) {
+      const val = cryptoPrices[key];
+      if (val && Number.isFinite(Number(val.price))) return val;
+    }
+    return { price: undefined, change: undefined, history: [] };
   };
 
   const value = useMemo(() => ({
@@ -888,7 +829,7 @@ export function DataProvider({ children }) {
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
 
-/* ======================== Hook ======================== */
+/* ---------------- Hook ---------------- */
 export function useData() {
   const ctx = useContext(DataContext);
   return ctx || {
