@@ -1,5 +1,5 @@
 // src/components/trading/TradingPanel.jsx
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,7 +14,6 @@ const fmt = (n, dec = 2) => {
 };
 
 /** ---------- Normalización de pares y base ---------- */
-// Acepta "BTC/USDT", "BTCUSDT", "btc/usdt"… y devuelve SIEMPRE "BTC/USDT"
 const normalizePair = (pair, fallback = 'BTC/USDT') => {
   if (!pair) return fallback;
   const s = String(pair).trim().toUpperCase();
@@ -27,7 +26,6 @@ const normalizePair = (pair, fallback = 'BTC/USDT') => {
   if (s.endsWith('USDC')) return `${s.slice(0, -4)}/USDC`;
   return `${s}/USDT`;
 };
-
 const baseFromPair = (pair) => (normalizePair(pair).split('/')[0] || 'BTC');
 const noSlash = (pair) => String(pair || '').replace('/', '');
 /** -------------------------------------------------- */
@@ -43,8 +41,17 @@ export default function TradingPanel({
 }) {
   const {
     pairOptions: pairsFromCtx = [],
-    getPairInfo,           // <<< clave para no desfasar con el gráfico
+    getPairInfo,
+    // 👇 importante para que el componente re-renderize con ticks del contexto
+    cryptoPrices: ctxPrices = {},
   } = useData();
+
+  // (heartbeat) por si el provider muta objetos sin cambiar la ref
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => bump((x) => (x + 1) % 1e9), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   // Normalizamos TODAS las opciones de pares del contexto
   const normalizedCtxPairs = useMemo(() => {
@@ -71,18 +78,45 @@ export default function TradingPanel({
 
   // Feed unificado (mismo que usa el gráfico vía DataContext)
   const fromCtx = getPairInfo?.(effectivePair) || {};
-  // Fallback: si te pasan precios por props, intentamos matchear
+  // Si el contexto no trae, intentamos desde el mapa crudo de ctx o props
   const baseKey = baseFromPair(effectivePair);
+  const fromCtxMap =
+    ctxPrices?.[effectivePair] ??
+    ctxPrices?.[baseKey] ??
+    ctxPrices?.[noSlash(effectivePair)] ??
+    null;
+
   const fromProps =
     cryptoPrices?.[effectivePair] ??
     cryptoPrices?.[baseKey] ??
-    cryptoPrices?.[noSlash(effectivePair)] ?? null;
+    cryptoPrices?.[noSlash(effectivePair)] ??
+    null;
 
-  // Elegimos SIEMPRE contexto, y sólo completamos con props si falta algo
+  // Calculamos change si no viene (usamos ref_24h/ref24h del contexto si existe)
+  const priceCandidate =
+    Number.isFinite(Number(fromCtx.price)) ? Number(fromCtx.price)
+      : Number.isFinite(Number(fromCtxMap?.price)) ? Number(fromCtxMap?.price)
+      : Number.isFinite(Number(fromProps?.price)) ? Number(fromProps?.price)
+      : NaN;
+
+  const ref24hCandidate =
+    Number.isFinite(Number(fromCtx.ref_24h)) ? Number(fromCtx.ref_24h)
+      : Number.isFinite(Number(fromCtx.ref24h)) ? Number(fromCtx.ref24h)
+      : Number.isFinite(Number(fromCtxMap?.ref_24h)) ? Number(fromCtxMap?.ref_24h)
+      : Number.isFinite(Number(fromProps?.ref_24h)) ? Number(fromProps?.ref_24h)
+      : NaN;
+
+  const changeCandidate =
+    Number.isFinite(Number(fromCtx.change)) ? Number(fromCtx.change)
+      : Number.isFinite(Number(fromCtxMap?.change)) ? Number(fromCtxMap?.change)
+      : Number.isFinite(Number(fromProps?.change)) ? Number(fromProps?.change)
+      : (Number.isFinite(priceCandidate) && Number.isFinite(ref24hCandidate) && ref24hCandidate > 0
+          ? ((priceCandidate / ref24hCandidate) - 1) * 100
+          : NaN);
+
   const currentPriceData = {
-    price: Number.isFinite(Number(fromCtx.price)) ? fromCtx.price : fromProps?.price,
-    change: Number.isFinite(Number(fromCtx.change)) ? fromCtx.change : fromProps?.change,
-    history: fromCtx.history || fromProps?.history || [],
+    price: priceCandidate,
+    change: changeCandidate,
   };
 
   const currentPrice = Number(currentPriceData?.price ?? 0);
@@ -209,22 +243,22 @@ export default function TradingPanel({
         </div>
 
         {/* Info de precio */}
-        {currentPriceData && hasPrice ? (
+        {hasPrice ? (
           <div className="bg-slate-800/50 p-4 rounded-lg">
             <div className="flex justify-between items-center mb-2">
               <span className="text-slate-400">Precio Actual ({baseSym}):</span>
               <span className="text-white font-semibold">
-                ${fmt(currentPriceData.price)}
+                ${fmt(currentPrice)}
               </span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-slate-400">Cambio 24h:</span>
               <span
                 className={`font-semibold ${
-                  changeNum >= 0 ? 'text-green-400' : 'text-red-400'
+                  Number.isFinite(changeNum) && changeNum >= 0 ? 'text-green-400' : 'text-red-400'
                 }`}
               >
-                {fmt(changeNum)}%
+                {Number.isFinite(changeNum) ? fmt(changeNum) : '0.00'}%
               </span>
             </div>
           </div>
