@@ -1,5 +1,5 @@
 // src/components/trading/TradesHistory.jsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   Card, CardContent, CardHeader, CardTitle, CardDescription,
@@ -132,34 +132,46 @@ const remainingSeconds = (trade) => {
 };
 
 /* ------------- getter robusto de precio en vivo -------------- */
+/**
+ * Lee precios desde el DataContext y (si se proveen) desde `externalPrices` (prioritarios).
+ * Se actualiza en caliente gracias a las deps y además tiene un heartbeat suave por si
+ * el contexto no dispara re-render en algún navegador.
+ */
 const useLivePriceGetter = (externalPrices) => {
   const { cryptoPrices: ctxPrices = {}, getPairInfo } = useData();
-  const prices = useMemo(
-    () => (externalPrices && Object.keys(externalPrices).length ? externalPrices : ctxPrices),
-    [externalPrices, ctxPrices]
+
+  return useCallback(
+    (pair) => {
+      const norm = normalizePair(pair);
+      const base = baseFromPair(norm);
+
+      // 1) Si pasaron precios por props, priorizarlos
+      const pExt =
+        externalPrices?.[norm]?.price ??
+        externalPrices?.[base]?.price ??
+        externalPrices?.[noSlash(norm)]?.price;
+      if (Number.isFinite(Number(pExt))) return Number(pExt);
+
+      // 2) Preferir el helper del contexto
+      if (typeof getPairInfo === 'function') {
+        const info = getPairInfo(norm);
+        if (info && Number.isFinite(Number(info.price))) return Number(info.price);
+      }
+
+      // 3) Fallbacks directos al mapa del contexto
+      const tries = [
+        ctxPrices?.[norm]?.price,
+        ctxPrices?.[base]?.price,
+        ctxPrices?.[noSlash(norm)]?.price,
+        ctxPrices?.[base]?.c ?? ctxPrices?.[base]?.last,
+      ];
+      for (const p of tries) {
+        if (Number.isFinite(Number(p))) return Number(p);
+      }
+      return NaN;
+    },
+    [externalPrices, ctxPrices, getPairInfo]
   );
-
-  return (pair) => {
-    const norm = normalizePair(pair);
-    const base = baseFromPair(norm);
-
-    // Preferir DataContext
-    if (typeof getPairInfo === 'function') {
-      const info = getPairInfo(norm);
-      if (info && Number.isFinite(Number(info.price))) return Number(info.price);
-    }
-    // Fallbacks
-    const tries = [
-      prices?.[base]?.price,
-      prices?.[norm]?.price,
-      prices?.[noSlash(norm)]?.price,
-      prices?.[base]?.c ?? prices?.[base]?.last,
-    ];
-    for (const p of tries) {
-      if (Number.isFinite(Number(p))) return Number(p);
-    }
-    return NaN;
-  };
 };
 
 /* ------------------ PnL (marca y realizado) ------------------ */
@@ -173,17 +185,14 @@ const calcUPnL = (trade, getLive) => {
 };
 
 const inferClosePriceIfMissing = (trade, live, localHint) => {
-  // 0) si capturamos el precio al cerrar, úsalo
   if (Number.isFinite(localHint)) return localHint;
 
-  // 1) explícito desde backend
   const explicit =
     trade.closeprice ??
     trade.closePrice ??
     trade.close_price;
   if (explicit != null && Number.isFinite(Number(explicit))) return Number(explicit);
 
-  // 2) derivarlo de profit si existe
   const entry = num(trade.price ?? trade.priceAtExecution, NaN);
   const qty = getQty(trade);
   const profit =
@@ -195,8 +204,6 @@ const inferClosePriceIfMissing = (trade, live, localHint) => {
   if (Number.isFinite(profit) && Number.isFinite(entry) && qty) {
     return side === 'sell' ? entry - profit / qty : entry + profit / qty;
   }
-
-  // 3) último live como aproximación
   return Number.isFinite(live) ? live : null;
 };
 
@@ -210,10 +217,8 @@ const TradeRow = ({
   const entry = num(t.price ?? t.priceAtExecution, 0);
   const isOpen = String(t.status || '').toLowerCase() === 'open';
 
-  // abiertos ⇒ calc con precio vivo
   const computedOpen = calcUPnL(t, getLive);
 
-  // cerrados ⇒ prioridad: closeHint > closePrice > profit
   let pnlClosed = 0;
   if (!isOpen) {
     const live = Number(getLive(t.pair));
@@ -329,6 +334,13 @@ const TradesHistory = ({
   const list = safeArr(trades);
   const getLive = useLivePriceGetter(cryptoPrices);
 
+  // Heartbeat para garantizar re-render (por si no llega un render del contexto)
+  const [, force] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => force((x) => (x + 1) % 1e9), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState(null);
 
@@ -357,7 +369,6 @@ const TradesHistory = ({
     if (!selected) return;
     const updated = list.find((t) => t.id === selected.id);
     if (!updated) return;
-
     setSelected(updated);
 
     if (
@@ -372,13 +383,12 @@ const TradesHistory = ({
   const handleRowClose = async (id) => {
     if (!id) return;
     try {
-      // Capturamos precio vivo ANTES de cerrar y lo guardamos como hint
       const t = list.find((x) => x.id === id);
       const p = Number(getLive(t?.pair));
       if (Number.isFinite(p)) setCloseHint(id, p);
 
       setRowClosingId(id);
-      const cp = Number.isFinite(p) ? p : null; // <- nunca undefined
+      const cp = Number.isFinite(p) ? p : null;
       const result = await closeTrade?.(id, cp, true);
       const ok = (typeof result === 'boolean') ? result : true;
       if (ok && detailOpen && selected?.id === id) setDetailOpen(false);
@@ -407,7 +417,7 @@ const TradesHistory = ({
           try {
             const p = Number(getLive(t.pair));
             if (Number.isFinite(p)) setCloseHint(t.id, p);
-            const cp = Number.isFinite(p) ? p : null; // <- nunca undefined
+            const cp = Number.isFinite(p) ? p : null;
             await closeTrade?.(t.id, cp, true);
           } finally {
             setTimeout(() => autoClosingSet.current.delete(t.id), 2000);
@@ -415,7 +425,6 @@ const TradesHistory = ({
         }
       }
     }, 500);
-
     return () => clearInterval(id);
   }, [list, autoCloseDemo, closeTrade, getLive]);
 
@@ -606,12 +615,11 @@ const TradesHistory = ({
                 <Button
                   onClick={async () => {
                     if (!selected?.id) return;
-                    // capturamos hint y ENVIAMOS precio (o null)
                     const p = Number(getLive(selected.pair));
                     if (Number.isFinite(p)) setCloseHint(selected.id, p);
 
                     setClosingModal(true);
-                    const cp = Number.isFinite(p) ? p : null; // <- nunca undefined
+                    const cp = Number.isFinite(p) ? p : null;
                     const result = await closeTrade?.(selected.id, cp, true);
                     setClosingModal(false);
                     const ok = (typeof result === 'boolean') ? result : true;

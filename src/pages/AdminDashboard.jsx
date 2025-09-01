@@ -369,7 +369,9 @@ export default function AdminDashboard() {
         return;
       }
 
-      const { error } = await supabase.from('market_instruments').insert(payload);
+      const { error } = await supabase
+      .from('market_instruments')
+      .upsert(payload, { onConflict: 'symbol' }); // si existe, actualiza
       if (error) throw error;
 
       // Tick inicial para simuladas/manual/real (servidor)
