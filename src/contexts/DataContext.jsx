@@ -91,7 +91,7 @@ export function DataProvider({ children }) {
   const quotesRef = useRef({});
   const histRef = useRef({});
   const liveMapRef = useRef({});
-  const ref24Ref = useRef({});          // << memoria de ref_24h por símbolo
+  const ref24Ref = useRef({}); // memoria de ref_24h por símbolo
 
   const supportsBulkRef = useRef(null);
   const hasNextV2Ref = useRef(null);
@@ -286,15 +286,39 @@ export function DataProvider({ children }) {
   useEffect(() => {
     const onStateChange = ({ new: row }) => {
       if (!row) return;
-      const symU = String(row.symbol || '').toUpperCase();
+      const symU  = String(row.symbol || '').toUpperCase();
       const price = Number(row.price);
       if (!Number.isFinite(price)) return;
 
+      // recordamos ref_24h y % 24h
       const ref24 = Number(row.ref_24h ?? price);
       ref24Ref.current[symU] = ref24;
-
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
+
+      // 1) actualizar fuente cruda
       setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
+
+      // 2) inyección inmediata al history + cryptoPrices (para que panel/PNL se muevan ya)
+      const t = nowMs();
+      setPriceHistories((prev) => {
+        const cur = ensureArray(prev[symU]);
+        const nextH = [...cur, { time: t, value: price }].slice(-HISTORY_MAX);
+        return { ...prev, [symU]: nextH };
+      });
+
+      const inst = instrumentsRef.current.find(
+        (i) => String(i.symbol || '').toUpperCase() === symU
+      );
+      const quoteU = String(inst?.quote || 'USDT').toUpperCase();
+      const history = (histRef.current?.[symU] || []).slice(-HISTORY_MAX);
+      const payload = { price, change, history };
+
+      setCryptoPrices((prev) => ({
+        ...prev,
+        [symU]: payload,
+        [`${symU}/${quoteU}`]: payload,
+        [`${symU}${quoteU}`]: payload,
+      }));
     };
 
     const ch = supabase
@@ -306,7 +330,7 @@ export function DataProvider({ children }) {
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
 
-  /* --------- NUEVO: Realtime directo de market_ticks --------- */
+  /* --------- Realtime directo de market_ticks --------- */
   useEffect(() => {
     const applyTick = (symU, price, ts) => {
       if (!Number.isFinite(price) || price <= 0) return;
@@ -319,7 +343,7 @@ export function DataProvider({ children }) {
         return { ...prev, [symU]: nextH };
       });
 
-      // change usando ref_24h si la tenemos (o primera vela/hist)
+      // cambio con ref24 si lo tenemos (o primera vela)
       const ref24 =
         Number(ref24Ref.current[symU]) ||
         Number(histRef.current?.[symU]?.[0]?.value) ||
@@ -327,9 +351,10 @@ export function DataProvider({ children }) {
 
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
 
+      // crudo
       setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
 
-      // publicar inmediatamente en cryptoPrices (SYM, SYM/QUOTE, SYMQUOTE)
+      // publicar inmediato en cryptoPrices
       const inst = instrumentsRef.current.find(
         (i) => String(i.symbol || '').toUpperCase() === symU
       );
@@ -349,7 +374,6 @@ export function DataProvider({ children }) {
     const onTickInsert = ({ new: row }) => {
       const symU = String(row.symbol || '').toUpperCase();
       const price = Number(row.price);
-      // ts puede venir como timestamptz; guardamos epoch ms si existe
       const ts = row.ts ? new Date(row.ts).getTime() : nowMs();
       applyTick(symU, price, ts);
     };
@@ -512,7 +536,7 @@ export function DataProvider({ children }) {
       }
 
       setPriceHistories(nextHist);
-      // merge para no pisar updates directos por tick
+      // MERGE (no reemplazo total) para no pisar updates inmediatos del realtime
       setCryptoPrices((prev) => ({ ...prev, ...nextPrices }));
     };
 
@@ -821,15 +845,14 @@ export function DataProvider({ children }) {
     return Array.from(s);
   }, [instruments]);
 
-  // Busca en varias claves posibles (par, sin slash, base)
+  // Busca en varias claves posibles (par, sin slash, base) + variantes lowercase
   const getPairInfo = (pair) => {
     const k = String(pair || '').toUpperCase().replace(/\s+/g, '');
-    const keys = [
-      k,
-      k.includes('/') ? k.replace('/', '') : k, // BTCUSDT
-      k.split('/')[0],                          // BTC
-      k.includes('/') ? k : `${k}/USDT`,       // normaliza "BTC" -> "BTC/USDT"
-    ];
+    const noSlash = k.includes('/') ? k.replace('/', '') : k;
+    const base = k.split('/')[0];
+    const norm = k.includes('/') ? k : `${k}/USDT`;
+    const keys = [k, noSlash, base, norm, k.toLowerCase(), noSlash.toLowerCase(), base.toLowerCase(), norm.toLowerCase()];
+
     for (const key of keys) {
       const val = cryptoPrices[key];
       if (val && Number.isFinite(Number(val.price))) return val;
@@ -926,4 +949,3 @@ export function useData() {
     investmentPlans: [],
   };
 }
- 
