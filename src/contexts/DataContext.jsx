@@ -154,7 +154,6 @@ export function DataProvider({ children }) {
   /* ---------------- Admin settings fetch -------------- */
   const fetchAdminSettings = async () => {
     try {
-      // Traemos sólo los de "trading." para no cargar de más
       const { data, error } = await supabase.rpc('get_admin_settings', { prefix: 'trading.' });
       if (error) throw error;
       const map = {};
@@ -165,7 +164,6 @@ export function DataProvider({ children }) {
       });
       setAdminSettings(map);
     } catch (e) {
-      // Silencioso; si falla, usamos DEFAULT_SLIPPAGE
       console.warn('[fetchAdminSettings] error:', e?.message || e);
     }
   };
