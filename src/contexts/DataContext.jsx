@@ -82,6 +82,13 @@ export function DataProvider({ children }) {
 
   const [cryptoPrices, setCryptoPrices] = useState({});
 
+  /* --------------- Admin settings (slippage) --------- */
+  const [adminSettings, setAdminSettings] = useState({});
+  const DEFAULT_SLIPPAGE = 0.2; // % por defecto si no hay setting
+  const slippageMaxPct = Number(
+    adminSettings['trading.slippage_pct_max'] ?? DEFAULT_SLIPPAGE
+  );
+
   /* --------------- Refs / conexiones ---------------- */
   const wsRef = useRef(null);
   const restPollRef = useRef(null);
@@ -143,6 +150,26 @@ export function DataProvider({ children }) {
       .subscribe();
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
+
+  /* ---------------- Admin settings fetch -------------- */
+  const fetchAdminSettings = async () => {
+    try {
+      // Traemos sólo los de "trading." para no cargar de más
+      const { data, error } = await supabase.rpc('get_admin_settings', { prefix: 'trading.' });
+      if (error) throw error;
+      const map = {};
+      (data || []).forEach((row) => {
+        const k = String(row.setting_key);
+        const n = Number(row.setting_value);
+        if (Number.isFinite(n)) map[k] = n;
+      });
+      setAdminSettings(map);
+    } catch (e) {
+      // Silencioso; si falla, usamos DEFAULT_SLIPPAGE
+      console.warn('[fetchAdminSettings] error:', e?.message || e);
+    }
+  };
+  useEffect(() => { fetchAdminSettings(); }, []);
 
   /* ---------- Mapa dinámico a Binance ---------- */
   const liveBinanceMap = useMemo(() => {
@@ -315,25 +342,27 @@ export function DataProvider({ children }) {
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
 
-  /* --------- Realtime directo de market_ticks (con reglas) --------- */
+  /* --------- Realtime directo de market_ticks --------- */
   useEffect(() => {
-    const applyTick = (symU, basePrice, ts) => {
-      if (!Number.isFinite(basePrice) || basePrice <= 0) return;
-      const t = Number.isFinite(Number(ts)) ? Number(ts) : nowMs();
+    const onTickInsert = ({ new: row }) => {
+      const symU = String(row.symbol || '').toUpperCase();
+      const price = Number(row.price);
+      const ts = row.ts ? new Date(row.ts).getTime() : nowMs();
+      if (!Number.isFinite(price) || price <= 0) return;
 
-      // aplicar reglas al precio del tick para que panel / gráfico / PnL coincidan
-      const price = applyRulesForSymbol(symU, basePrice, rulesRef.current, new Date());
-
+      // construimos history y lo reusamos para el payload
       setPriceHistories((prev) => {
         const cur = ensureArray(prev[symU]);
-        const nextH = [...cur, { time: t, value: price }].slice(-HISTORY_MAX);
+        const nextH = [...cur, { time: ts, value: price }].slice(-HISTORY_MAX);
 
+        // compute change con ref24 o primera vela
         const ref24 =
           Number(ref24Ref.current[symU]) ||
           Number(nextH[0]?.value) ||
           price;
         const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
 
+        // publicamos AL INSTANTE el mismo history recién calculado
         const inst = instrumentsRef.current.find(
           (i) => String(i.symbol || '').toUpperCase() === symU
         );
@@ -347,17 +376,11 @@ export function DataProvider({ children }) {
           [`${symU}${quoteU}`]: payload,
         }));
 
+        // también reflejamos en realQuotes para otros consumidores
         setRealQuotes((prevRQ) => ({ ...prevRQ, [symU]: { price, change } }));
 
         return { ...prev, [symU]: nextH };
       });
-    };
-
-    const onTickInsert = ({ new: row }) => {
-      const symU = String(row.symbol || '').toUpperCase();
-      const basePrice = Number(row.price);
-      const ts = row.ts ? new Date(row.ts).getTime() : nowMs();
-      applyTick(symU, basePrice, ts);
     };
 
     const ch = supabase
@@ -526,7 +549,9 @@ export function DataProvider({ children }) {
         let finalPrice =
           (symU === 'USDT' || symU === 'USDC')
             ? 1
-            : applyRulesForSymbol(symU, base, rulesCur, new Date()); // aplicar reglas a TODAS las fuentes
+            : (src === 'manual' || src === 'simulated' || src === 'real')
+              ? base
+              : applyRulesForSymbol(symU, base, rulesCur, new Date());
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
           finalPrice = lastKnown;
@@ -919,10 +944,16 @@ export function DataProvider({ children }) {
     // trades
     closeTrade,
 
+    // settings de admin
+    settings: adminSettings,
+    slippageMaxPct,
+    refreshSettings: fetchAdminSettings,
+
     investmentPlans,
   }), [
     investments, transactions, referrals, botActivations,
     instruments, marketRules, cryptoPrices, pairOptions, liveBinanceMap,
+    adminSettings, slippageMaxPct,
     investmentPlans,
   ]);
 
@@ -965,6 +996,11 @@ export function useData() {
     assetToSymbol: DEFAULT_BINANCE_MAP,
 
     closeTrade: async () => false,
+
+    // settings
+    settings: {},
+    slippageMaxPct: 0.2,
+    refreshSettings: async () => {},
 
     investmentPlans: [],
   };
