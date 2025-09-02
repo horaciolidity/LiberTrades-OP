@@ -92,7 +92,7 @@ export function DataProvider({ children }) {
   const quotesRef = useRef({});
   const histRef = useRef({});
   const liveMapRef = useRef({});
-  const ref24Ref = useRef({});          // memoria de ref_24h por símbolo
+  const ref24Ref = useRef({}); // memoria de ref_24h por símbolo
 
   const supportsBulkRef = useRef(null);
   const hasNextV2Ref = useRef(null);
@@ -315,27 +315,25 @@ export function DataProvider({ children }) {
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
 
-  /* --------- NUEVO: Realtime directo de market_ticks --------- */
+  /* --------- Realtime directo de market_ticks (con reglas) --------- */
   useEffect(() => {
-    const onTickInsert = ({ new: row }) => {
-      const symU = String(row.symbol || '').toUpperCase();
-      const price = Number(row.price);
-      const ts = row.ts ? new Date(row.ts).getTime() : nowMs();
-      if (!Number.isFinite(price) || price <= 0) return;
+    const applyTick = (symU, basePrice, ts) => {
+      if (!Number.isFinite(basePrice) || basePrice <= 0) return;
+      const t = Number.isFinite(Number(ts)) ? Number(ts) : nowMs();
 
-      // construimos history y lo reusamos para el payload
+      // aplicar reglas al precio del tick para que panel / gráfico / PnL coincidan
+      const price = applyRulesForSymbol(symU, basePrice, rulesRef.current, new Date());
+
       setPriceHistories((prev) => {
         const cur = ensureArray(prev[symU]);
-        const nextH = [...cur, { time: ts, value: price }].slice(-HISTORY_MAX);
+        const nextH = [...cur, { time: t, value: price }].slice(-HISTORY_MAX);
 
-        // compute change con ref24 o primera vela
         const ref24 =
           Number(ref24Ref.current[symU]) ||
           Number(nextH[0]?.value) ||
           price;
         const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
 
-        // publicamos AL INSTANTE el mismo history recién calculado
         const inst = instrumentsRef.current.find(
           (i) => String(i.symbol || '').toUpperCase() === symU
         );
@@ -349,11 +347,17 @@ export function DataProvider({ children }) {
           [`${symU}${quoteU}`]: payload,
         }));
 
-        // también reflejamos en realQuotes para otros consumidores
         setRealQuotes((prevRQ) => ({ ...prevRQ, [symU]: { price, change } }));
 
         return { ...prev, [symU]: nextH };
       });
+    };
+
+    const onTickInsert = ({ new: row }) => {
+      const symU = String(row.symbol || '').toUpperCase();
+      const basePrice = Number(row.price);
+      const ts = row.ts ? new Date(row.ts).getTime() : nowMs();
+      applyTick(symU, basePrice, ts);
     };
 
     const ch = supabase
@@ -522,9 +526,7 @@ export function DataProvider({ children }) {
         let finalPrice =
           (symU === 'USDT' || symU === 'USDC')
             ? 1
-            : (src === 'manual' || src === 'simulated' || src === 'real')
-              ? base
-              : applyRulesForSymbol(symU, base, rulesCur, new Date());
+            : applyRulesForSymbol(symU, base, rulesCur, new Date()); // aplicar reglas a TODAS las fuentes
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
           finalPrice = lastKnown;
