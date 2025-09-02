@@ -85,13 +85,14 @@ export function DataProvider({ children }) {
   /* --------------- Refs / conexiones ---------------- */
   const wsRef = useRef(null);
   const restPollRef = useRef(null);
+  const statePollRef = useRef(null); // fallback a market_state
 
   const instrumentsRef = useRef([]);
   const rulesRef = useRef([]);
   const quotesRef = useRef({});
   const histRef = useRef({});
   const liveMapRef = useRef({});
-  const ref24Ref = useRef({}); // memoria de ref_24h por símbolo
+  const ref24Ref = useRef({});          // memoria de ref_24h por símbolo
 
   const supportsBulkRef = useRef(null);
   const hasNextV2Ref = useRef(null);
@@ -129,8 +130,16 @@ export function DataProvider({ children }) {
     forceRefreshMarket();
     const ch = supabase
       .channel('market_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_instruments' }, refreshMarketInstruments)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'market_rules' },       refreshMarketRules)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'market_instruments' },
+        () => refreshMarketInstruments()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'market_rules' },
+        () => refreshMarketRules()
+      )
       .subscribe();
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
@@ -286,39 +295,15 @@ export function DataProvider({ children }) {
   useEffect(() => {
     const onStateChange = ({ new: row }) => {
       if (!row) return;
-      const symU  = String(row.symbol || '').toUpperCase();
+      const symU = String(row.symbol || '').toUpperCase();
       const price = Number(row.price);
       if (!Number.isFinite(price)) return;
 
-      // recordamos ref_24h y % 24h
       const ref24 = Number(row.ref_24h ?? price);
       ref24Ref.current[symU] = ref24;
+
       const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
-
-      // 1) actualizar fuente cruda
       setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
-
-      // 2) inyección inmediata al history + cryptoPrices (para que panel/PNL se muevan ya)
-      const t = nowMs();
-      setPriceHistories((prev) => {
-        const cur = ensureArray(prev[symU]);
-        const nextH = [...cur, { time: t, value: price }].slice(-HISTORY_MAX);
-        return { ...prev, [symU]: nextH };
-      });
-
-      const inst = instrumentsRef.current.find(
-        (i) => String(i.symbol || '').toUpperCase() === symU
-      );
-      const quoteU = String(inst?.quote || 'USDT').toUpperCase();
-      const history = (histRef.current?.[symU] || []).slice(-HISTORY_MAX);
-      const payload = { price, change, history };
-
-      setCryptoPrices((prev) => ({
-        ...prev,
-        [symU]: payload,
-        [`${symU}/${quoteU}`]: payload,
-        [`${symU}${quoteU}`]: payload,
-      }));
     };
 
     const ch = supabase
@@ -330,52 +315,45 @@ export function DataProvider({ children }) {
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
 
-  /* --------- Realtime directo de market_ticks --------- */
+  /* --------- NUEVO: Realtime directo de market_ticks --------- */
   useEffect(() => {
-    const applyTick = (symU, price, ts) => {
-      if (!Number.isFinite(price) || price <= 0) return;
-      const t = Number.isFinite(Number(ts)) ? Number(ts) : nowMs();
-
-      // history
-      setPriceHistories((prev) => {
-        const cur = ensureArray(prev[symU]);
-        const nextH = [...cur, { time: t, value: price }].slice(-HISTORY_MAX);
-        return { ...prev, [symU]: nextH };
-      });
-
-      // cambio con ref24 si lo tenemos (o primera vela)
-      const ref24 =
-        Number(ref24Ref.current[symU]) ||
-        Number(histRef.current?.[symU]?.[0]?.value) ||
-        price;
-
-      const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
-
-      // crudo
-      setRealQuotes((prev) => ({ ...prev, [symU]: { price, change } }));
-
-      // publicar inmediato en cryptoPrices
-      const inst = instrumentsRef.current.find(
-        (i) => String(i.symbol || '').toUpperCase() === symU
-      );
-      const quoteU = String(inst?.quote || 'USDT').toUpperCase();
-
-      const history = (histRef.current?.[symU] || []).slice(-HISTORY_MAX);
-      const payload = { price, change, history };
-
-      setCryptoPrices((prev) => ({
-        ...prev,
-        [symU]: payload,
-        [`${symU}/${quoteU}`]: payload,
-        [`${symU}${quoteU}`]: payload,
-      }));
-    };
-
     const onTickInsert = ({ new: row }) => {
       const symU = String(row.symbol || '').toUpperCase();
       const price = Number(row.price);
       const ts = row.ts ? new Date(row.ts).getTime() : nowMs();
-      applyTick(symU, price, ts);
+      if (!Number.isFinite(price) || price <= 0) return;
+
+      // construimos history y lo reusamos para el payload
+      setPriceHistories((prev) => {
+        const cur = ensureArray(prev[symU]);
+        const nextH = [...cur, { time: ts, value: price }].slice(-HISTORY_MAX);
+
+        // compute change con ref24 o primera vela
+        const ref24 =
+          Number(ref24Ref.current[symU]) ||
+          Number(nextH[0]?.value) ||
+          price;
+        const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
+
+        // publicamos AL INSTANTE el mismo history recién calculado
+        const inst = instrumentsRef.current.find(
+          (i) => String(i.symbol || '').toUpperCase() === symU
+        );
+        const quoteU = String(inst?.quote || 'USDT').toUpperCase();
+        const payload = { price, change, history: nextH };
+
+        setCryptoPrices((prevCP) => ({
+          ...prevCP,
+          [symU]: payload,
+          [`${symU}/${quoteU}`]: payload,
+          [`${symU}${quoteU}`]: payload,
+        }));
+
+        // también reflejamos en realQuotes para otros consumidores
+        setRealQuotes((prevRQ) => ({ ...prevRQ, [symU]: { price, change } }));
+
+        return { ...prev, [symU]: nextH };
+      });
     };
 
     const ch = supabase
@@ -385,6 +363,45 @@ export function DataProvider({ children }) {
 
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
+
+  /* ---------- Fallback: polling a market_state ---------- */
+  useEffect(() => {
+    const startStatePolling = () => {
+      clearInterval(statePollRef.current);
+      const syms = instrumentsRef.current
+        .filter((i) => (i.enabled ?? true) && ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase()))
+        .map((i) => String(i.symbol || '').toUpperCase());
+      if (!syms.length) return;
+
+      const poll = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('market_state')
+            .select('symbol, price, ref_24h')
+            .in('symbol', syms);
+          if (error) return;
+          const next = {};
+          for (const r of ensureArray(data)) {
+            const symU = String(r.symbol || '').toUpperCase();
+            const price = Number(r.price);
+            if (!Number.isFinite(price) || price <= 0) continue;
+            const ref24 = Number(r.ref_24h ?? price);
+            ref24Ref.current[symU] = ref24;
+            const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
+            next[symU] = { price, change };
+          }
+          if (Object.keys(next).length) {
+            setRealQuotes((prev) => ({ ...prev, ...next }));
+          }
+        } catch {}
+      };
+      poll();
+      statePollRef.current = setInterval(poll, 1000);
+    };
+
+    startStatePolling();
+    return () => clearInterval(statePollRef.current);
+  }, [instruments]);
 
   /* ---------- Simuladas driver (RPC) ---------- */
   useEffect(() => {
@@ -536,7 +553,7 @@ export function DataProvider({ children }) {
       }
 
       setPriceHistories(nextHist);
-      // MERGE (no reemplazo total) para no pisar updates inmediatos del realtime
+      // merge para no pisar updates directos por tick
       setCryptoPrices((prev) => ({ ...prev, ...nextPrices }));
     };
 
@@ -845,14 +862,15 @@ export function DataProvider({ children }) {
     return Array.from(s);
   }, [instruments]);
 
-  // Busca en varias claves posibles (par, sin slash, base) + variantes lowercase
+  // Busca en varias claves posibles (par, sin slash, base)
   const getPairInfo = (pair) => {
     const k = String(pair || '').toUpperCase().replace(/\s+/g, '');
-    const noSlash = k.includes('/') ? k.replace('/', '') : k;
-    const base = k.split('/')[0];
-    const norm = k.includes('/') ? k : `${k}/USDT`;
-    const keys = [k, noSlash, base, norm, k.toLowerCase(), noSlash.toLowerCase(), base.toLowerCase(), norm.toLowerCase()];
-
+    const keys = [
+      k,
+      k.includes('/') ? k.replace('/', '') : k, // BTCUSDT
+      k.split('/')[0],                          // BTC
+      k.includes('/') ? k : `${k}/USDT`,       // normaliza "BTC" -> "BTC/USDT"
+    ];
     for (const key of keys) {
       const val = cryptoPrices[key];
       if (val && Number.isFinite(Number(val.price))) return val;
