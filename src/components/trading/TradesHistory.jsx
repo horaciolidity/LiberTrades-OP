@@ -87,24 +87,28 @@ const fmtDuration = (seconds) => {
 
 /* --------------------- helpers de trading -------------------- */
 const getQty = (t) => {
-  const q =
+  const direct =
     num(t?.qty, NaN) ??
     num(t?.quantity, NaN) ??
     num(t?.units, NaN) ??
     num(t?.size, NaN);
-  if (Number.isFinite(q) && q > 0) return q;
+  if (Number.isFinite(direct) && direct > 0) return direct;
 
-  const entry = num(t?.price ?? t?.priceAtExecution, 0);
+  // precio de entrada con sinónimos
+  const entry = num(t?.entry_price ?? t?.entryPrice ?? t?.price ?? t?.priceAtExecution, 0);
+
+  // notional en USD con sinónimos
   const amount =
-    num(t?.amountAtOpen ?? t?.amount_usd ?? t?.amount, 0);
+    num(t?.amountAtOpen ?? t?.amount_usd ?? t?.amount_usd_open ?? t?.notional_usd ?? t?.amount, 0);
+
   if (entry > 0 && amount > 0) return amount / entry;
   return 0;
 };
 
 const getOpenNotional = (t) => {
-  const entry = num(t?.price ?? t?.priceAtExecution, 0);
+  const entry = num(t?.entry_price ?? t?.entryPrice ?? t?.price ?? t?.priceAtExecution, 0);
   const amountOpen =
-    num(t?.amountAtOpen ?? t?.amount_usd, NaN) ??
+    num(t?.amountAtOpen ?? t?.amount_usd ?? t?.amount_usd_open ?? t?.notional_usd, NaN) ??
     num(t?.amount, NaN);
   if (Number.isFinite(amountOpen) && amountOpen > 0) return amountOpen;
 
@@ -132,10 +136,6 @@ const remainingSeconds = (trade) => {
 };
 
 /* ------------- getter robusto de precio en vivo -------------- */
-/**
- * Lee precios desde el DataContext y (si se proveen) desde `externalPrices` (prioritarios).
- * Fallback extra: si no hay price, usa el ÚLTIMO punto de history para el par.
- */
 const useLivePriceGetter = (externalPrices) => {
   const { cryptoPrices: ctxPrices = {}, getPairInfo } = useData();
 
@@ -151,7 +151,7 @@ const useLivePriceGetter = (externalPrices) => {
         externalPrices?.[noSlash(norm)]?.price;
       if (Number.isFinite(Number(pExt))) return Number(pExt);
 
-      // 2) helper del contexto (price directo o último del history)
+      // 2) helper del contexto
       if (typeof getPairInfo === 'function') {
         const info = getPairInfo(norm);
         const pCtx = Number(info?.price);
@@ -162,7 +162,7 @@ const useLivePriceGetter = (externalPrices) => {
         if (Number.isFinite(last)) return last;
       }
 
-      // 3) mapa de precios del contexto (incluye claves por base y sin slash)
+      // 3) mapa directo del contexto
       const tries = [
         ctxPrices?.[norm]?.price,
         ctxPrices?.[base]?.price,
@@ -179,13 +179,32 @@ const useLivePriceGetter = (externalPrices) => {
   );
 };
 
-/* ------------------ PnL (marca y realizado) ------------------ */
+/* ----------- helpers PnL persistido / cierre ----------- */
+const realizedFromRow = (t) => {
+  const cands = [
+    t?.realized_pnl_usd,
+    t?.realized_pnl,
+    t?.pnl_usd,
+    t?.pnlUsd,
+    t?.profit_usd,
+    t?.profit,
+    t?.realized,
+  ];
+  for (const v of cands) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return NaN;
+};
+
+const sideOf = (t) => String(t?.type ?? t?.side ?? '').toLowerCase();
+
 const calcUPnL = (trade, getLive) => {
-  const live = Number(getLive(trade?.pair));
-  const entry = num(trade?.price ?? trade?.priceAtExecution, NaN);
+  const live = Number(getLive(trade?.pair ?? (trade?.symbol ? `${trade.symbol}/${trade.quote || 'USDT'}` : '')));
+  const entry = num(trade?.entry_price ?? trade?.entryPrice ?? trade?.price ?? trade?.priceAtExecution, NaN);
   const qty = getQty(trade);
   if (!Number.isFinite(live) || !Number.isFinite(entry) || !qty) return 0;
-  const side = String(trade?.type || '').toLowerCase();
+  const side = sideOf(trade);
   return side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
 };
 
@@ -193,22 +212,21 @@ const inferClosePriceIfMissing = (trade, live, localHint) => {
   if (Number.isFinite(localHint)) return localHint;
 
   const explicit =
-    trade.closeprice ??
+    trade.close_price ??
     trade.closePrice ??
-    trade.close_price;
+    trade.closeprice;
   if (explicit != null && Number.isFinite(Number(explicit))) return Number(explicit);
 
-  const entry = num(trade.price ?? trade.priceAtExecution, NaN);
+  const entry = num(trade.entry_price ?? trade.entryPrice ?? trade.price ?? trade.priceAtExecution, NaN);
   const qty = getQty(trade);
-  const profit =
-    num(trade.profit, NaN) ??
-    num(trade.realized, NaN) ??
-    num(trade.realized_pnl, NaN);
-  const side = String(trade.type || '').toLowerCase();
+  const side = sideOf(trade);
 
-  if (Number.isFinite(profit) && Number.isFinite(entry) && qty) {
-    return side === 'sell' ? entry - profit / qty : entry + profit / qty;
+  // usar PnL persistido si lo hay
+  const persisted = realizedFromRow(trade);
+  if (Number.isFinite(persisted) && Number.isFinite(entry) && qty) {
+    return side === 'sell' ? entry - persisted / qty : entry + persisted / qty;
   }
+
   return Number.isFinite(live) ? live : null;
 };
 
@@ -217,26 +235,30 @@ const TradeRow = ({
   t, getLive, onClose, onDetails, closing,
   pnlDecimals, priceDecimals, getCloseHint,
 }) => {
-  const pair = typeof t.pair === 'string' ? normalizePair(t.pair) : 'BTC/USDT';
-  const side = String(t.type || '').toLowerCase();
-  const entry = num(t.price ?? t.priceAtExecution, 0);
+  const pairRaw = t.pair ?? (t.symbol ? `${t.symbol}/${t.quote || 'USDT'}` : 'BTC/USDT');
+  const pair = normalizePair(pairRaw);
+  const side = sideOf(t);
+  const entry = num(t.entry_price ?? t.entryPrice ?? t.price ?? t.priceAtExecution, 0);
   const isOpen = String(t.status || '').toLowerCase() === 'open';
 
   const computedOpen = calcUPnL(t, getLive);
 
   let pnlClosed = 0;
   if (!isOpen) {
-    const live = Number(getLive(t.pair));
-    const closeP = inferClosePriceIfMissing(t, live, getCloseHint?.(t.id));
-    const qty = getQty(t);
-    if (Number.isFinite(closeP) && qty) {
-      pnlClosed = side === 'sell' ? (entry - closeP) * qty : (closeP - entry) * qty;
+    // 1) si está persistido en BD, úsalo (incluye 0.00 válido)
+    const persisted = realizedFromRow(t);
+    if (!Number.isNaN(persisted)) {
+      pnlClosed = persisted;
     } else {
-      const p =
-        num(t.profit, NaN) ??
-        num(t.realized, NaN) ??
-        num(t.realized_pnl, NaN);
-      pnlClosed = Number.isFinite(p) ? p : 0;
+      // 2) si no hay persistido, reconstruyo con close_price/qty
+      const live = Number(getLive(pair));
+      const closeP = inferClosePriceIfMissing(t, live, getCloseHint?.(t.id));
+      const qty = getQty(t);
+      if (Number.isFinite(closeP) && qty) {
+        pnlClosed = side === 'sell' ? (entry - closeP) * qty : (closeP - entry) * qty;
+      } else {
+        pnlClosed = 0;
+      }
     }
   }
 
@@ -248,7 +270,7 @@ const TradeRow = ({
   const ss = Number.isFinite(secs) ? String(secs % 60).padStart(2, '0') : null;
 
   const amountForRow =
-    num(t.amountAtOpen ?? t.amount_usd ?? t.amount, NaN);
+    num(t.amountAtOpen ?? t.amount_usd ?? t.amount_usd_open ?? t.notional_usd ?? t.amount, NaN);
   const amountText = Number.isFinite(amountForRow)
     ? `$${fmt(amountForRow, 2)}`
     : (entry > 0 && getQty(t) > 0 ? `$${fmt(entry * getQty(t), 2)}` : '$0.00');
@@ -282,7 +304,7 @@ const TradeRow = ({
         <p className={`font-semibold ${pnlPos ? 'text-green-400' : 'text-red-400'}`}>
           {fmtSigned(pnlShown, pnlDecimals)}
         </p>
-        <p className="text-slate-400 text-sm">{fmtTime(t.timestamp)}</p>
+        <p className="text-slate-400 text-sm">{fmtTime(t.timestamp ?? t.created_at ?? t.createdAt)}</p>
       </div>
 
       <div className="ml-4 w-44 flex items-center justify-end gap-2">
@@ -339,7 +361,6 @@ const TradesHistory = ({
   const list = safeArr(trades);
   const getLive = useLivePriceGetter(cryptoPrices);
 
-  // Heartbeat de repaint por si el contexto no re-renderiza en algunos navegadores
   const [, force] = useState(0);
   useEffect(() => {
     const id = setInterval(() => force((x) => (x + 1) % 1e9), 1000);
@@ -387,7 +408,8 @@ const TradesHistory = ({
     if (!id) return;
     try {
       const t = list.find((x) => x.id === id);
-      const p = Number(getLive(t?.pair));
+      const pair = t?.pair ?? (t?.symbol ? `${t.symbol}/${t.quote || 'USDT'}` : '');
+      const p = Number(getLive(pair));
       if (Number.isFinite(p)) setCloseHint(id, p);
 
       setRowClosingId(id);
@@ -418,7 +440,8 @@ const TradesHistory = ({
         if (secs === 0 && !autoClosingSet.current.has(t.id)) {
           autoClosingSet.current.add(t.id);
           try {
-            const p = Number(getLive(t.pair));
+            const pair = t?.pair ?? (t?.symbol ? `${t.symbol}/${t.quote || 'USDT'}` : '');
+            const p = Number(getLive(pair));
             if (Number.isFinite(p)) setCloseHint(t.id, p);
             const cp = Number.isFinite(p) ? p : null;
             await closeTrade?.(t.id, cp, true);
@@ -435,12 +458,13 @@ const TradesHistory = ({
   const details = useMemo(() => {
     if (!selected) return null;
 
-    const side = String(selected.type || '').toLowerCase();
-    const entry = num(selected.price ?? selected.priceAtExecution, 0);
+    const side = sideOf(selected);
+    const entry = num(selected.entry_price ?? selected.entryPrice ?? selected.price ?? selected.priceAtExecution, 0);
     const qty = getQty(selected);
     const amountOpen = getOpenNotional(selected);
 
-    const live = Number(getLive(selected.pair));
+    const pair = selected.pair ?? (selected.symbol ? `${selected.symbol}/${selected.quote || 'USDT'}` : '');
+    const live = Number(getLive(pair));
     const isOpen = String(selected.status || '').toLowerCase() === 'open';
 
     const closePrice = isOpen
@@ -454,14 +478,13 @@ const TradesHistory = ({
 
     let realized = null;
     if (!isOpen) {
-      if (Number.isFinite(closePrice) && qty) {
+      const persisted = realizedFromRow(selected);
+      if (!Number.isNaN(persisted)) {
+        realized = persisted;
+      } else if (Number.isFinite(closePrice) && qty) {
         realized = side === 'sell' ? (entry - closePrice) * qty : (closePrice - entry) * qty;
       } else {
-        const p =
-          num(selected.profit, NaN) ??
-          num(selected.realized, NaN) ??
-          num(selected.realized_pnl, NaN);
-        realized = Number.isFinite(p) ? p : 0;
+        realized = 0;
       }
     }
 
@@ -517,7 +540,7 @@ const TradesHistory = ({
               {list.length > 0 ? (
                 list.map((t) => (
                   <TradeRow
-                    key={t.id ?? `${t.pair}-${parseTsMs(t.timestamp) || Math.random()}`}
+                    key={t.id ?? `${t.pair ?? t.symbol}-${parseTsMs(t.timestamp ?? t.created_at) || Math.random()}`}
                     t={t}
                     getLive={getLive}
                     onClose={handleRowClose}
@@ -546,7 +569,7 @@ const TradesHistory = ({
           <DialogHeader>
             <DialogTitle className="text-white">Detalle de la operación</DialogTitle>
             <DialogDescription className="text-slate-400">
-              Información completa del trade {normalizePair(selected?.pair || '')}
+              Información completa del trade {normalizePair(selected?.pair ?? (selected?.symbol ? `${selected.symbol}/${selected.quote || 'USDT'}` : ''))}
             </DialogDescription>
           </DialogHeader>
 
@@ -556,12 +579,12 @@ const TradesHistory = ({
                 <div className="p-3 rounded bg-slate-800/60">
                   <p className="text-slate-400 text-xs">Tipo</p>
                   <p className={`font-semibold ${details.pnlShown >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {String(selected.type || '').toLowerCase() === 'sell' ? 'SELL' : 'BUY'}
+                    {sideOf(selected) === 'sell' ? 'SELL' : 'BUY'}
                   </p>
                 </div>
                 <div className="p-3 rounded bg-slate-800/60">
                   <p className="text-slate-400 text-xs">Par</p>
-                  <p className="font-semibold">{normalizePair(selected?.pair)}</p>
+                  <p className="font-semibold">{normalizePair(selected?.pair ?? (selected?.symbol ? `${selected.symbol}/${selected.quote || 'USDT'}` : ''))}</p>
                 </div>
 
                 <div className="p-3 rounded bg-slate-800/60">
@@ -618,7 +641,8 @@ const TradesHistory = ({
                 <Button
                   onClick={async () => {
                     if (!selected?.id) return;
-                    const p = Number(getLive(selected.pair));
+                    const pair = selected?.pair ?? (selected?.symbol ? `${selected.symbol}/${selected.quote || 'USDT'}` : '');
+                    const p = Number(getLive(pair));
                     if (Number.isFinite(p)) setCloseHint(selected.id, p);
 
                     setClosingModal(true);
