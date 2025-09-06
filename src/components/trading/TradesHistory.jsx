@@ -180,6 +180,7 @@ const useLivePriceGetter = (externalPrices) => {
 };
 
 /* ----------- helpers PnL persistido / cierre ----------- */
+// FIX: ignorar null/undefined (Number(null) === 0; nos rompía mostrando 0)
 const realizedFromRow = (t) => {
   const cands = [
     t?.realized_pnl_usd,
@@ -191,6 +192,7 @@ const realizedFromRow = (t) => {
     t?.realized,
   ];
   for (const v of cands) {
+    if (v === null || v === undefined) continue;
     const n = Number(v);
     if (Number.isFinite(n)) return n;
   }
@@ -221,7 +223,7 @@ const inferClosePriceIfMissing = (trade, live, localHint) => {
   const qty = getQty(trade);
   const side = sideOf(trade);
 
-  // usar PnL persistido si lo hay
+  // usar PnL persistido si lo hay (ya corregido para ignorar null)
   const persisted = realizedFromRow(trade);
   if (Number.isFinite(persisted) && Number.isFinite(entry) && qty) {
     return side === 'sell' ? entry - persisted / qty : entry + persisted / qty;
@@ -245,7 +247,7 @@ const TradeRow = ({
 
   let pnlClosed = 0;
   if (!isOpen) {
-    // 1) si está persistido en BD, úsalo (incluye 0.00 válido)
+    // 1) si está persistido en BD, úsalo (incluye 0 válido)
     const persisted = realizedFromRow(t);
     if (!Number.isNaN(persisted)) {
       pnlClosed = persisted;
