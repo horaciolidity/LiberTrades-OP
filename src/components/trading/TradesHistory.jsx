@@ -19,7 +19,8 @@ const fmt = (v, d = 2) =>
   (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : (0).toFixed(d));
 const fmtSigned = (v, d = 2) => {
   const x = Number(v);
-  if (!Number.isFinite(x)) return `+${(0).toFixed(d)}`;
+  if (!Number.isFinite(x)) return (0).toFixed(d);
+  if (x === 0) return x.toFixed(d);
   return `${x >= 0 ? '+' : ''}${x.toFixed(d)}`;
 };
 
@@ -265,7 +266,8 @@ const TradeRow = ({
   }
 
   const pnlShown = isOpen ? computedOpen : pnlClosed;
-  const pnlPos = pnlShown >= 0;
+  const pnlPos = pnlShown > 0;
+  const pnlNeg = pnlShown < 0;
 
   const secs = remainingSeconds(t);
   const mm = Number.isFinite(secs) ? Math.floor(secs / 60) : null;
@@ -303,9 +305,13 @@ const TradeRow = ({
       </div>
 
       <div className="text-right">
-        <p className={`font-semibold ${pnlPos ? 'text-green-400' : 'text-red-400'}`}>
-          {fmtSigned(pnlShown, pnlDecimals)}
-        </p>
+        <p
+  className={`font-semibold ${
+    pnlShown > 0 ? 'text-green-400' : pnlShown < 0 ? 'text-red-400' : 'text-slate-300'
+  }`}
+>
+  {fmtSigned(pnlShown, pnlDecimals)}
+</p>
         <p className="text-slate-400 text-sm">{fmtTime(t.timestamp ?? t.created_at ?? t.createdAt)}</p>
       </div>
 
@@ -328,12 +334,16 @@ const TradeRow = ({
           </>
         ) : (
           <span
-            className={`px-2 py-1 rounded text-xs ${
-              pnlPos ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-            }`}
-          >
-            {pnlPos ? 'Ganancia' : 'Pérdida'}
-          </span>
+    className={`px-2 py-1 rounded text-xs ${
+      pnlPos
+        ? 'bg-green-500/20 text-green-400'
+        : pnlNeg
+        ? 'bg-red-500/20 text-red-400'
+        : 'bg-slate-500/20 text-slate-300'
+    }`}
+  >
+    {pnlPos ? 'Ganancia' : pnlNeg ? 'Pérdida' : '±0'}
+  </span>
         )}
         <Button
           size="sm"
