@@ -159,8 +159,10 @@ const useLivePriceGetter = (externalPrices) => {
         if (Number.isFinite(pCtx)) return pCtx;
 
         const hist = Array.isArray(info?.history) ? info.history : [];
-        const last = hist.length ? Number(hist[hist.length - 1]?.value) : NaN;
-        if (Number.isFinite(last)) return last;
+        theLast: {
+          const last = hist.length ? Number(hist[hist.length - 1]?.value) : NaN;
+          if (Number.isFinite(last)) return last;
+        }
       }
 
       // 3) mapa directo del contexto
@@ -248,20 +250,18 @@ const TradeRow = ({
 
   let pnlClosed = 0;
   if (!isOpen) {
-    // 1) si está persistido en BD, úsalo (incluye 0 válido)
+    // reconstrucción robusta si el persistido falta o es 0 pero tenemos datos para calcular
     const persisted = realizedFromRow(t);
-    if (!Number.isNaN(persisted)) {
-      pnlClosed = persisted;
+    const live = Number(getLive(pair));
+    const closeP = inferClosePriceIfMissing(t, live, getCloseHint?.(t.id));
+    const qty = getQty(t);
+    const tol = 1e-9;
+    const canRecalc = Number.isFinite(closeP) && qty > 0 && Math.abs(closeP - entry) > tol;
+
+    if (!Number.isFinite(persisted) || (persisted === 0 && canRecalc)) {
+      pnlClosed = side === 'sell' ? (entry - closeP) * qty : (closeP - entry) * qty;
     } else {
-      // 2) si no hay persistido, reconstruyo con close_price/qty
-      const live = Number(getLive(pair));
-      const closeP = inferClosePriceIfMissing(t, live, getCloseHint?.(t.id));
-      const qty = getQty(t);
-      if (Number.isFinite(closeP) && qty) {
-        pnlClosed = side === 'sell' ? (entry - closeP) * qty : (closeP - entry) * qty;
-      } else {
-        pnlClosed = 0;
-      }
+      pnlClosed = persisted;
     }
   }
 
@@ -306,12 +306,12 @@ const TradeRow = ({
 
       <div className="text-right">
         <p
-  className={`font-semibold ${
-    pnlShown > 0 ? 'text-green-400' : pnlShown < 0 ? 'text-red-400' : 'text-slate-300'
-  }`}
->
-  {fmtSigned(pnlShown, pnlDecimals)}
-</p>
+          className={`font-semibold ${
+            pnlShown > 0 ? 'text-green-400' : pnlShown < 0 ? 'text-red-400' : 'text-slate-300'
+          }`}
+        >
+          {fmtSigned(pnlShown, pnlDecimals)}
+        </p>
         <p className="text-slate-400 text-sm">{fmtTime(t.timestamp ?? t.created_at ?? t.createdAt)}</p>
       </div>
 
@@ -334,16 +334,16 @@ const TradeRow = ({
           </>
         ) : (
           <span
-    className={`px-2 py-1 rounded text-xs ${
-      pnlPos
-        ? 'bg-green-500/20 text-green-400'
-        : pnlNeg
-        ? 'bg-red-500/20 text-red-400'
-        : 'bg-slate-500/20 text-slate-300'
-    }`}
-  >
-    {pnlPos ? 'Ganancia' : pnlNeg ? 'Pérdida' : '±0'}
-  </span>
+            className={`px-2 py-1 rounded text-xs ${
+              pnlPos
+                ? 'bg-green-500/20 text-green-400'
+                : pnlNeg
+                ? 'bg-red-500/20 text-red-400'
+                : 'bg-slate-500/20 text-slate-300'
+            }`}
+          >
+            {pnlPos ? 'Ganancia' : pnlNeg ? 'Pérdida' : '±0'}
+          </span>
         )}
         <Button
           size="sm"
@@ -452,7 +452,7 @@ const TradesHistory = ({
         if (secs === 0 && !autoClosingSet.current.has(t.id)) {
           autoClosingSet.current.add(t.id);
           try {
-            const pair = t?.pair ?? (t?.symbol ? `${t.symbol}/${t.quote || 'USDT'}` : '');
+            const pair = t?.pair ?? (t?.symbol ? `${t.symbol}/${t?.quote || 'USDT'}` : '');
             const p = Number(getLive(pair));
             if (Number.isFinite(p)) setCloseHint(t.id, p);
             const cp = Number.isFinite(p) ? p : null;
@@ -491,12 +491,14 @@ const TradesHistory = ({
     let realized = null;
     if (!isOpen) {
       const persisted = realizedFromRow(selected);
-      if (!Number.isNaN(persisted)) {
-        realized = persisted;
-      } else if (Number.isFinite(closePrice) && qty) {
+      const tol = 1e-9;
+      const canRecalc =
+        Number.isFinite(closePrice) && qty > 0 && Math.abs((closePrice ?? entry) - entry) > tol;
+
+      if (!Number.isFinite(persisted) || (persisted === 0 && canRecalc)) {
         realized = side === 'sell' ? (entry - closePrice) * qty : (closePrice - entry) * qty;
       } else {
-        realized = 0;
+        realized = persisted;
       }
     }
 
