@@ -860,17 +860,18 @@ export function DataProvider({ children }) {
   }
 
   /* ---------------- Trades: cierre ---------------- */
+  // Usa el RPC del server: close_trade_rpc(p_trade_id, p_close_price, p_force)
   async function closeTrade(tradeId, closePrice = null, force = true) {
     try {
-      const { data, error } = await supabase.rpc('close_trade', {
+      const { data, error } = await supabase.rpc('close_trade_rpc', {
         p_trade_id: tradeId,
         p_close_price: (Number.isFinite(Number(closePrice)) ? Number(closePrice) : null),
         p_force: !!force,
       });
-      if (error) { console.error('[close_trade]', error); return false; }
+      if (error) { console.error('[close_trade_rpc]', error); return false; }
       return !!data?.ok;
     } catch (e) {
-      console.error('[close_trade] exception', e);
+      console.error('[close_trade_rpc] exception', e);
       return false;
     }
   }
