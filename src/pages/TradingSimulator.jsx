@@ -43,7 +43,9 @@ const parseBaseFromPair = (pair) => {
 export default function TradingSimulator() {
   const { user } = useAuth();
   const { playSound } = useSound();
-  const { cryptoPrices: marketPrices = {} } = useData(); // feed global (puede traer history)
+
+  // Ahora también traemos closeTrade (RPC) desde DataContext
+  const { cryptoPrices: marketPrices = {}, closeTrade: closeTradeRPC } = useData(); // feed global + RPC cierre
   const tradingLogic = useTradingLogic(); // DEMO
 
   const [mode, setMode] = useState('demo'); // 'demo' | 'real'
@@ -311,7 +313,7 @@ export default function TradingSimulator() {
   }, [realTrades, mergedPrices, selectedPair]);
 
   // =================== Trading actions ===================
-  // Abre trade (real)
+  // Abre trade (real) – sigue siendo insert simple (no hay RPC de apertura definida)
   const handleTrade = async (tradeData) => {
     if (!user?.id) return;
 
@@ -360,65 +362,36 @@ export default function TradingSimulator() {
     fetchRealData();
   };
 
-  const handleCloseTrade = async (tradeId, manual = false) => {
+  // Cierra trade:
+  //  - DEMO: usa tradingLogic local
+  //  - REAL: **RPC close_trade** vía DataContext (sin UPDATE a mano)
+  const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) => {
     if (mode === 'demo') {
-      tradingLogic.closeTrade(tradeId, manual);
-      return;
+      tradingLogic.closeTrade(tradeId, force);
+      return true;
     }
-    if (!tradeId) return;
+    if (!tradeId) return false;
 
-    const { data: tr, error: gErr } = await supabase
-      .from('trades')
-      .select('*')
-      .eq('id', tradeId)
-      .single();
+    try {
+      // Si no viene precio, intentamos inferir el live del par del trade
+      let closePrice = Number(maybeClosePrice);
+      if (!Number.isFinite(closePrice)) {
+        const tr = realTrades.find((x) => x.id === tradeId);
+        const base = parseBaseFromPair(tr?.pair || selectedPair);
+        const live = Number(mergedPrices?.[base]?.price);
+        closePrice = Number.isFinite(live) ? live : null;
+      }
 
-    if (gErr || !tr) {
-      console.error('[trade get] error:', gErr);
-      return;
+      // Llamada robusta al RPC del server (cierra trade, calcula realized y acredita saldo)
+      const ok = await closeTradeRPC?.(tradeId, Number.isFinite(closePrice) ? closePrice : null, true);
+      // Refresco los datos reales para ver reflejado el cierre
+      await fetchRealData();
+      if (ok) playSound?.('success');
+      return !!ok;
+    } catch (e) {
+      console.error('[handleCloseTrade RPC]', e);
+      return false;
     }
-
-    // Precio live al momento del cierre y cálculo del profit
-    const base = parseBaseFromPair(tr.pair);
-    const liveClose = Number(mergedPrices?.[base]?.price ?? tr.price ?? 0);
-    const { upnl } = computeLivePnL({ ...tr, priceAtExecution: tr.price });
-    const realized = Number(upnl || 0);
-
-    const { error: uErr } = await supabase
-      .from('trades')
-      .update({
-        status: 'closed',
-        profit: realized,
-        closeprice: liveClose,   // << guardamos precio de cierre
-        // DB: closeat es BIGINT ⇒ enviar ms
-        closeat: Date.now(),
-      })
-      .eq('id', tradeId);
-
-    if (uErr) {
-      console.error('[trade close] error:', uErr);
-      return;
-    }
-
-    // Devolver nocional + profit al saldo real
-    const { data: balRow, error: bErr } = await supabase
-      .from('balances')
-      .select('usdc')
-      .eq('user_id', user.id)
-      .single();
-
-    if (!bErr) {
-      const current = Number(balRow?.usdc || 0);
-      const creditBack = Number(tr.amount || 0) + Number(realized || 0);
-      const next = current + creditBack;
-      await supabase
-        .from('balances')
-        .update({ usdc: next, updated_at: new Date().toISOString() })
-        .eq('user_id', user.id);
-    }
-
-    playSound?.('success');
-    fetchRealData();
   };
 
   // Bridge único para el Panel (demo/real) → RESPETA la API del TradingPanel (onTrade(payload))
@@ -595,7 +568,8 @@ export default function TradingSimulator() {
         <TradesHistory
           trades={mode === 'demo' ? demoTradesWithLive : realTradesWithLive}
           cryptoPrices={mergedPrices}
-          closeTrade={handleCloseTrade} // acepta (id, manual?)
+          // 👇 En real cierra vía RPC (server). En demo, cierra local.
+          closeTrade={handleCloseTrade}
         />
       </div>
     </>

@@ -364,7 +364,7 @@ const TradesHistory = ({
   trades = [],
   cryptoPrices = {},
   // closeTrade: (tradeId, closePrice|null, force?) => Promise<boolean|void>
-  closeTrade = async () => {},
+  closeTrade = undefined,
   autoCloseDemo = true,
   pnlDecimals = 4,
   pnlPctDecimals = 4,
@@ -372,6 +372,13 @@ const TradesHistory = ({
 }) => {
   const list = safeArr(trades);
   const getLive = useLivePriceGetter(cryptoPrices);
+
+  // si no nos pasan closeTrade por props, usar el del DataContext (RPC)
+  const { closeTrade: ctxCloseTrade } = useData();
+  const doCloseTrade = useMemo(
+    () => (typeof closeTrade === 'function' ? closeTrade : ctxCloseTrade),
+    [closeTrade, ctxCloseTrade]
+  );
 
   const [, force] = useState(0);
   useEffect(() => {
@@ -416,6 +423,18 @@ const TradesHistory = ({
     }
   }, [list, selected?.id, detailOpen]);
 
+  const callCloseRpc = useCallback(
+    async (id, priceHint) => {
+      // Usa el closeTrade elegido (prop o DataContext). DataContext cierra vía RPC.
+      if (typeof doCloseTrade !== 'function') return false;
+      const cp = Number.isFinite(priceHint) ? Number(priceHint) : null;
+      const result = await doCloseTrade(id, cp, true);
+      // compat: si retorna boolean -> usarlo; si retorna objeto {ok} -> truthy
+      return typeof result === 'boolean' ? result : !!result;
+    },
+    [doCloseTrade]
+  );
+
   const handleRowClose = async (id) => {
     if (!id) return;
     try {
@@ -425,9 +444,7 @@ const TradesHistory = ({
       if (Number.isFinite(p)) setCloseHint(id, p);
 
       setRowClosingId(id);
-      const cp = Number.isFinite(p) ? p : null;
-      const result = await closeTrade?.(id, cp, true);
-      const ok = (typeof result === 'boolean') ? result : true;
+      const ok = await callCloseRpc(id, p);
       if (ok && detailOpen && selected?.id === id) setDetailOpen(false);
     } finally {
       setRowClosingId(null);
@@ -455,8 +472,7 @@ const TradesHistory = ({
             const pair = t?.pair ?? (t?.symbol ? `${t.symbol}/${t?.quote || 'USDT'}` : '');
             const p = Number(getLive(pair));
             if (Number.isFinite(p)) setCloseHint(t.id, p);
-            const cp = Number.isFinite(p) ? p : null;
-            await closeTrade?.(t.id, cp, true);
+            await callCloseRpc(t.id, p);
           } finally {
             setTimeout(() => autoClosingSet.current.delete(t.id), 2000);
           }
@@ -464,7 +480,7 @@ const TradesHistory = ({
       }
     }, 500);
     return () => clearInterval(id);
-  }, [list, autoCloseDemo, closeTrade, getLive]);
+  }, [list, autoCloseDemo, callCloseRpc, getLive]);
 
   // Datos para el modal
   const details = useMemo(() => {
@@ -660,10 +676,8 @@ const TradesHistory = ({
                     if (Number.isFinite(p)) setCloseHint(selected.id, p);
 
                     setClosingModal(true);
-                    const cp = Number.isFinite(p) ? p : null;
-                    const result = await closeTrade?.(selected.id, cp, true);
+                    const ok = await callCloseRpc(selected.id, p);
                     setClosingModal(false);
-                    const ok = (typeof result === 'boolean') ? result : true;
                     if (ok) setDetailOpen(false);
                   }}
                   className="bg-red-600 hover:bg-red-700"

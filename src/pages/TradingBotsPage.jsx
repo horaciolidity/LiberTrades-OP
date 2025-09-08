@@ -1,5 +1,5 @@
 // src/pages/TradingBotsPage.jsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter,
@@ -29,22 +29,22 @@ import { toast } from '@/components/ui/use-toast';
 import { useData } from '@/contexts/DataContext';
 import { Link } from 'react-router-dom';
 
-// ====== Helpers ======
+/* ========== Helpers ========== */
 const fmt = (n, dec = 2) => {
   const v = Number(n);
   return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
 };
 const clamp = (v, a = 0, b = 100) => Math.min(b, Math.max(a, v));
 const parsePctRange = (txt) => {
-  // "~5-8%" -> { min: 5, max: 8 }
   const m = String(txt || '').match(/(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*%/);
   if (m) return { min: Number(m[1]), max: Number(m[2]) };
   const s = String(txt || '').match(/(\d+(?:\.\d+)?)\s*%/);
   if (s) return { min: Number(s[1]), max: Number(s[1]) };
   return { min: 0, max: 0 };
 };
+const normStatus = (s) => String(s || '').trim().toLowerCase();
 
-// ====== Catálogo de bots (visible) ======
+/* ========== Catálogo de bots (visible) ========== */
 const tradingBots = [
   {
     id: 1,
@@ -87,28 +87,39 @@ const tradingBots = [
   },
 ];
 
+/* ========== Página ========== */
 const TradingBotsPage = () => {
   const { user, balances } = useAuth();
   const { playSound } = useSound();
 
-  // DataContext: RPC y activaciones
+  // DataContext: los métodos deben llamar tus RPC del server
   const {
     botActivations,
-    activateBot,
-    pauseBot,
-    resumeBot,
-    cancelBot,
+    activateBot,   // RPC: activate_bot
+    pauseBot,      // RPC: pause_bot
+    resumeBot,     // RPC: resume_bot
+    cancelBot,     // RPC: cancel_bot
     refreshBotActivations,
-    creditBotProfit, // opcional para pruebas/acreditaciones futuras
+    // creditBotProfit, // disponible si lo necesitás más adelante
   } = useData();
 
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busyActivate, setBusyActivate] = useState(false);
+  const [busyById, setBusyById] = useState(() => new Map()); // busy por activación (pausa/resume/cancel)
 
-  // ==== Resumen de mis bots (derivados) ====
+  const setRowBusy = useCallback((id, val) => {
+    setBusyById((prev) => {
+      const m = new Map(prev);
+      if (val) m.set(id, true);
+      else m.delete(id);
+      return m;
+    });
+  }, []);
+
+  /* ---- Derivados: mis bots ---- */
   const myActiveBots = useMemo(
-    () => (botActivations || []).filter((b) => (b?.status || '').toLowerCase() === 'active'),
+    () => (botActivations || []).filter((b) => normStatus(b?.status) === 'active'),
     [botActivations]
   );
   const botsAllocated = useMemo(
@@ -117,9 +128,8 @@ const TradingBotsPage = () => {
   );
   const botsCount = myActiveBots.length;
 
-  // Estimación mensual de los bots activos en conjunto (rango)
+  // Estimación mensual de todos los bots activos
   const activeEstimated = useMemo(() => {
-    // mapeamos por nombre para encontrar el rango del catálogo
     let minSum = 0;
     let maxSum = 0;
     for (const b of myActiveBots) {
@@ -132,25 +142,26 @@ const TradingBotsPage = () => {
     return { min: minSum, max: maxSum };
   }, [myActiveBots]);
 
-  // Barra de energía específica para "objetivo de bots"
-  const GOALS = { botsCount: 3, botsUsd: 2000 }; // objetivo simple editable
+  // Objetivos simples para “energía de bots”
+  const GOALS = { botsCount: 3, botsUsd: 2000 };
   const pctBotsCount = clamp((botsCount / GOALS.botsCount) * 100);
   const pctBotsUsd = clamp((botsAllocated / GOALS.botsUsd) * 100);
   const energyBots = clamp((pctBotsCount + pctBotsUsd) / 2);
 
-  // ==== Refresh on mount / user change ====
+  /* ---- Refresh on mount / user change ---- */
   useEffect(() => {
     if (!user?.id) return;
     refreshBotActivations?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  const availableUsd = Number(balances?.usdc ?? 0); // saldo disponible para activar
+  const availableUsd = Number(balances?.usdc ?? 0); // saldo disponible
 
-  // ===== Handlers =====
+  /* ========== Handlers (vía RPC en DataContext) ========== */
   const handleActivateBot = async () => {
     try {
       playSound?.('invest');
+
       if (!user?.id) {
         toast({ title: 'No autenticado', description: 'Iniciá sesión para continuar.', variant: 'destructive' });
         return;
@@ -160,7 +171,7 @@ const TradingBotsPage = () => {
         return;
       }
       const amount = parseFloat(investmentAmount);
-      if (Number.isNaN(amount) || amount <= 0) {
+      if (!Number.isFinite(amount) || amount <= 0) {
         toast({ title: 'Monto inválido', description: 'Ingresá un monto válido.', variant: 'destructive' });
         return;
       }
@@ -181,8 +192,8 @@ const TradingBotsPage = () => {
         return;
       }
 
-      setBusy(true);
-      const res = await activateBot({
+      setBusyActivate(true);
+      const res = await activateBot?.({
         botId: selectedBot.id,
         botName: selectedBot.name,
         strategy: selectedBot.strategy,
@@ -217,13 +228,70 @@ const TradingBotsPage = () => {
       console.error('[handleActivateBot]', e);
       toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
     } finally {
-      setBusy(false);
+      setBusyActivate(false);
     }
   };
 
+  const doPause = async (id) => {
+    if (!id) return;
+    setRowBusy(id, true);
+    try {
+      const r = await pauseBot?.(id);
+      if (r?.ok) {
+        toast({ title: 'Bot pausado' });
+        await refreshBotActivations?.();
+      } else {
+        toast({ title: 'No se pudo pausar', description: r?.msg || '', variant: 'destructive' });
+      }
+    } catch (e) {
+      console.error('[pauseBot]', e);
+      toast({ title: 'Error', description: 'No se pudo pausar el bot.', variant: 'destructive' });
+    } finally {
+      setRowBusy(id, false);
+    }
+  };
+
+  const doResume = async (id) => {
+    if (!id) return;
+    setRowBusy(id, true);
+    try {
+      const r = await resumeBot?.(id);
+      if (r?.ok) {
+        toast({ title: 'Bot reanudado' });
+        await refreshBotActivations?.();
+      } else {
+        toast({ title: 'No se pudo reanudar', description: r?.msg || '', variant: 'destructive' });
+      }
+    } catch (e) {
+      console.error('[resumeBot]', e);
+      toast({ title: 'Error', description: 'No se pudo reanudar el bot.', variant: 'destructive' });
+    } finally {
+      setRowBusy(id, false);
+    }
+  };
+
+  const doCancel = async (id) => {
+    if (!id) return;
+    setRowBusy(id, true);
+    try {
+      const r = await cancelBot?.(id);
+      if (r?.ok) {
+        toast({ title: 'Bot cancelado' });
+        await refreshBotActivations?.();
+      } else {
+        toast({ title: 'No se pudo cancelar', description: r?.msg || '', variant: 'destructive' });
+      }
+    } catch (e) {
+      console.error('[cancelBot]', e);
+      toast({ title: 'Error', description: 'No se pudo cancelar el bot.', variant: 'destructive' });
+    } finally {
+      setRowBusy(id, false);
+    }
+  };
+
+  /* ---- Cantidades rápidas ---- */
   const quickAmounts = useMemo(() => {
     const base = [250, 500, 1000, 2000];
-    // sugerencias en función del disponible
     const extra = availableUsd > 0 ? [Math.min(availableUsd, 5000)] : [];
     return [...base, ...extra.filter((v) => !base.includes(v))];
   }, [availableUsd]);
@@ -400,7 +468,11 @@ const TradingBotsPage = () => {
                       onClick={() => {
                         playSound?.('click');
                         setSelectedBot(bot);
-                        setInvestmentAmount(String(Math.min(Math.max(bot.minInvestment, 250), Math.max(availableUsd, bot.minInvestment))));
+                        const suggested = Math.min(
+                          Math.max(bot.minInvestment, 250),
+                          Math.max(availableUsd, bot.minInvestment)
+                        );
+                        setInvestmentAmount(String(suggested));
                       }}
                       className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90`}
                     >
@@ -420,7 +492,7 @@ const TradingBotsPage = () => {
 
         {/* Modal de activación */}
         {selectedBot && (() => {
-          const ModalIcon = selectedBot.icon; // componente dinámico válido
+          const ModalIcon = selectedBot.icon;
           const gradient =
             selectedBot.bgColor.includes('blue')
               ? 'from-blue-500 to-cyan-500'
@@ -434,7 +506,7 @@ const TradingBotsPage = () => {
           const estMax = (max / 100) * amountNum;
 
           const disabled =
-            busy ||
+            busyActivate ||
             !amountNum ||
             amountNum < selectedBot.minInvestment ||
             amountNum > availableUsd ||
@@ -496,9 +568,7 @@ const TradingBotsPage = () => {
                     <div className="text-xs text-slate-400">Estimación mensual (según monto ingresado)</div>
                     <div className="text-white font-semibold">
                       {amountNum > 0 ? (
-                        <>
-                          +${fmt(estMin)} – +${fmt(estMax)}
-                        </>
+                        <>+${fmt(estMin)} – +${fmt(estMax)}</>
                       ) : (
                         '—'
                       )}
@@ -525,7 +595,7 @@ const TradingBotsPage = () => {
                     disabled={disabled}
                     className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90 disabled:opacity-60`}
                   >
-                    {busy ? 'Activando...' : `Activar ${selectedBot.name}`}
+                    {busyActivate ? 'Activando...' : `Activar ${selectedBot.name}`}
                   </Button>
                   <Button variant="outline" onClick={() => setSelectedBot(null)} className="w-full">
                     Cancelar
@@ -544,13 +614,18 @@ const TradingBotsPage = () => {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {botActivations.map((a) => {
-                const status = String(a.status || '').toLowerCase();
+                const status = normStatus(a.status);
                 const cat = tradingBots.find((x) => x.name === a.botName);
                 const { min, max } = parsePctRange(cat?.monthlyReturn);
                 const estMin = (min / 100) * Number(a.amountUsd || 0);
                 const estMax = (max / 100) * Number(a.amountUsd || 0);
                 const isActive = status === 'active';
                 const isPaused = status === 'paused';
+                const isCanceled = status === 'canceled' || status === 'cancelled';
+                const rowBusy = busyById.get(a.id);
+
+                const createdAt =
+                  a.createdAt || a.created_at || (a.created_at_ms ? new Date(a.created_at_ms) : null);
 
                 return (
                   <Card key={a.id} className="crypto-card">
@@ -563,6 +638,8 @@ const TradingBotsPage = () => {
                               ? 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10'
                               : isPaused
                               ? 'text-amber-300 border-amber-500/30 bg-amber-500/10'
+                              : isCanceled
+                              ? 'text-rose-300 border-rose-500/30 bg-rose-500/10'
                               : 'text-slate-300 border-slate-600 bg-slate-700/30'
                           }`}
                         >
@@ -582,7 +659,7 @@ const TradingBotsPage = () => {
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                           <div className="text-xs text-slate-400">Creado</div>
                           <div className="text-white font-semibold">
-                            {a.createdAt ? new Date(a.createdAt).toLocaleString() : '—'}
+                            {createdAt ? new Date(createdAt).toLocaleString() : '—'}
                           </div>
                         </div>
                       </div>
@@ -591,39 +668,32 @@ const TradingBotsPage = () => {
                         {isActive && (
                           <Button
                             variant="outline"
-                            onClick={async () => {
-                              const r = await pauseBot(a.id);
-                              if (r?.ok) toast({ title: 'Bot pausado' });
-                              else toast({ title: 'No se pudo pausar', variant: 'destructive' });
-                            }}
+                            onClick={() => doPause(a.id)}
+                            disabled={rowBusy}
                           >
                             <PauseCircle className="w-4 h-4 mr-1" />
-                            Pausar
+                            {rowBusy ? 'Pausando…' : 'Pausar'}
                           </Button>
                         )}
                         {isPaused && (
                           <Button
-                            onClick={async () => {
-                              const r = await resumeBot(a.id);
-                              if (r?.ok) toast({ title: 'Bot reanudado' });
-                              else toast({ title: 'No se pudo reanudar', variant: 'destructive' });
-                            }}
+                            onClick={() => doResume(a.id)}
+                            disabled={rowBusy}
                           >
                             <PlayCircle className="w-4 h-4 mr-1" />
-                            Reanudar
+                            {rowBusy ? 'Reanudando…' : 'Reanudar'}
                           </Button>
                         )}
-                        <Button
-                          variant="destructive"
-                          onClick={async () => {
-                            const r = await cancelBot(a.id);
-                            if (r?.ok) toast({ title: 'Bot cancelado' });
-                            else toast({ title: 'No se pudo cancelar', variant: 'destructive' });
-                          }}
-                        >
-                          <XCircle className="w-4 h-4 mr-1" />
-                          Cancelar
-                        </Button>
+                        {!isCanceled && (
+                          <Button
+                            variant="destructive"
+                            onClick={() => doCancel(a.id)}
+                            disabled={rowBusy}
+                          >
+                            <XCircle className="w-4 h-4 mr-1" />
+                            {rowBusy ? 'Cancelando…' : 'Cancelar'}
+                          </Button>
+                        )}
                       </div>
                     </CardContent>
                   </Card>
