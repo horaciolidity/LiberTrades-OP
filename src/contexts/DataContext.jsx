@@ -860,22 +860,22 @@ export function DataProvider({ children }) {
   }
 
   /* ---------------- Trades: cierre ---------------- */
-// Usa el RPC del server: close_trade_rpc(p_trade_id uuid, p_close_price numeric, p_force boolean)
+// Usa el RPC del server: close_trade_rpc(p_trade_id text, p_close_price numeric, p_force boolean)
 async function closeTrade(tradeId, closePrice = null, force = true) {
   try {
     const { data, error } = await supabase.rpc('close_trade_rpc', {
-      p_trade_id: tradeId, // puede ser string UUID
+      p_trade_id: String(tradeId), // lo mando como texto
       p_close_price: Number.isFinite(Number(closePrice)) ? Number(closePrice) : null,
       p_force: !!force,
     });
     if (error) { console.error('[close_trade_rpc]', error); return false; }
-    // el RPC puede devolver { ok: true } o boolean; soporta ambos
-    return typeof data === 'boolean' ? data : !!data?.ok;
+    return !!data?.ok;
   } catch (e) {
     console.error('[close_trade_rpc] exception', e);
     return false;
   }
 }
+
 
 
 
