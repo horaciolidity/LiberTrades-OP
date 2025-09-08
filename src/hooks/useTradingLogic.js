@@ -75,7 +75,8 @@ export const useTradingLogic = () => {
       amount,
       priceAtExecution: currentPrice,
       timestamp: now,
-      duration: tradeDuration * 1000,
+      duration: tradeDuration * 1000,     // ms (legacy)
+      durationSeconds: tradeDuration,     // ✅ compat nuevo UI
       closeAt: now + tradeDuration * 1000,
       status: 'open',
       profit: 0,
@@ -91,7 +92,7 @@ export const useTradingLogic = () => {
   }, [tradeAmount, selectedPair, cryptoPrices, virtualBalance, tradeType, tradeDuration]);
 
   // --------- Apertura programática (compatibilidad con tu UI) ----------
-  //    openTrade({ pair?, type?, amount? })
+  //    openTrade({ pair?, type?, amount?, priceAtExecution?, duration? })
   const openTrade = useCallback(
     (opts = {}) => {
       const nextPair = opts.pair || selectedPair;
@@ -99,13 +100,15 @@ export const useTradingLogic = () => {
       const nextAmount = num(opts.amount ?? tradeAmount);
 
       const baseSym = (nextPair.split?.('/')?.[0] || 'BTC').toUpperCase();
-      const currentPrice = num(cryptoPrices?.[baseSym]?.price);
+      const currentPrice = num(opts.priceAtExecution ?? cryptoPrices?.[baseSym]?.price);
       if (!currentPrice || !nextAmount) return;
 
       if (nextAmount > virtualBalance) {
         toast({ title: 'Fondos insuficientes', description: 'No tienes suficiente saldo virtual', variant: 'destructive' });
         return;
       }
+
+      const durSec = num(opts.duration ?? tradeDuration) || 60;
 
       setVirtualBalance((prev) => Math.max(0, prev - nextAmount));
 
@@ -117,8 +120,9 @@ export const useTradingLogic = () => {
         amount: nextAmount,
         priceAtExecution: currentPrice,
         timestamp: now,
-        duration: tradeDuration * 1000,
-        closeAt: now + tradeDuration * 1000,
+        duration: durSec * 1000,      // ms (legacy)
+        durationSeconds: durSec,      // ✅ compat nuevo UI
+        closeAt: now + durSec * 1000,
         status: 'open',
         profit: 0,
       };
@@ -133,15 +137,28 @@ export const useTradingLogic = () => {
     [cryptoPrices, selectedPair, tradeType, tradeAmount, tradeDuration, virtualBalance]
   );
 
-  // --------- Cerrar trade ----------
+  // --------- Cerrar trade (firma robusta) ----------
+  // Admite:
+  //   closeTrade(id, manual:boolean)           <-- legacy
+  //   closeTrade(id, closePrice:number, force) <-- nuevo (TradesHistory/Simulator)
   const closeTrade = useCallback(
-    (tradeId, manual = false) => {
+    (tradeId, arg2 = null /* closePrice | manual */, _force = true) => {
+      let manual = false;
+      let providedClosePrice = null;
+
+      if (typeof arg2 === 'number' && Number.isFinite(arg2)) {
+        providedClosePrice = Number(arg2);
+      } else if (typeof arg2 === 'boolean') {
+        manual = arg2;
+      }
+
       setTrades((prev) =>
         prev.map((t) => {
           if (t.id !== tradeId || t.status !== 'open') return t;
 
           const baseSym = (t.pair.split?.('/')?.[0] || 'BTC').toUpperCase();
-          const currentPrice = num(cryptoPrices?.[baseSym]?.price);
+          const live = num(cryptoPrices?.[baseSym]?.price);
+          const currentPrice = Number.isFinite(providedClosePrice) ? providedClosePrice : live;
           if (!currentPrice) return t;
 
           const pnlPct =
@@ -158,7 +175,14 @@ export const useTradingLogic = () => {
             variant: profit >= 0 ? 'default' : 'destructive',
           });
 
-          return { ...t, status: 'closed', profit, priceAtClose: currentPrice };
+          return {
+            ...t,
+            status: 'closed',
+            profit,
+            priceAtClose: currentPrice,
+            closeprice: currentPrice, // ✅ alias para el detalle
+            closeAt: Date.now(),
+          };
         })
       );
     },
@@ -182,7 +206,10 @@ export const useTradingLogic = () => {
     toast({ title: 'Balance reiniciado', description: 'Tu saldo demo volvió a $10,000' });
   };
 
-  const totalProfit = trades.filter((t) => t.status === 'closed').reduce((s, t) => s + num(t.profit), 0);
+  const totalProfit = trades
+    .filter((t) => t.status === 'closed')
+    .reduce((s, t) => s + num(t.profit), 0);
+
   const openTrades = trades.filter((t) => t.status === 'open');
 
   return {
@@ -208,7 +235,7 @@ export const useTradingLogic = () => {
     // acciones
     executeTrade, // botones del panel
     openTrade,    // llamadas programáticas
-    closeTrade,
+    closeTrade,   // firma robusta
     resetBalance,
   };
 };
