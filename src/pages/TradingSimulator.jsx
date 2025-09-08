@@ -31,7 +31,7 @@ const userLevels = {
 
 const safe = (arr) => (Array.isArray(arr) ? arr : []);
 
-// tolerante a undefined y distintos formatos
+// Base del par (BTC/USDT → BTC). Tolerante a formatos.
 const parseBaseFromPair = (pair) => {
   const raw = String(pair || DEFAULT_PAIR);
   const p = raw.replace('/', '').toUpperCase();
@@ -44,9 +44,9 @@ export default function TradingSimulator() {
   const { user } = useAuth();
   const { playSound } = useSound();
 
-  // Ahora también traemos closeTrade (RPC) desde DataContext
-  const { cryptoPrices: marketPrices = {}, closeTrade: closeTradeRPC } = useData(); // feed global + RPC cierre
-  const tradingLogic = useTradingLogic(); // DEMO
+  // Feed global + RPC de cierre desde DataContext
+  const { cryptoPrices: marketPrices = {}, closeTrade: closeTradeRPC } = useData();
+  const tradingLogic = useTradingLogic(); // DEMO local
 
   const [mode, setMode] = useState('demo'); // 'demo' | 'real'
 
@@ -134,17 +134,23 @@ export default function TradingSimulator() {
   // Historial local (para el gráfico si el contexto no trae uno)
   const [localHistory, setLocalHistory] = useState([]);
   const histRef = useRef([]);
+  // reset al cambiar de base
   useEffect(() => {
-    if (livePrice == null) return;
+    histRef.current = [];
+    setLocalHistory([]);
+  }, [baseForChart]);
+  // acumular puntos
+  useEffect(() => {
+    if (livePrice == null || !Number.isFinite(Number(livePrice))) return;
     const pt = { time: Date.now(), price: Number(livePrice) };
     histRef.current = [...histRef.current, pt].slice(-500);
     setLocalHistory(histRef.current);
-  }, [livePrice, baseForChart]); // si cambia base, se reinicia arriba por estado de instrumento
+  }, [livePrice]);
 
   // Mezclo el precio live en el mapa de precios del contexto
   const mergedPrices = useMemo(() => {
     const m = { ...marketPrices };
-    if (livePrice != null) {
+    if (livePrice != null && Number.isFinite(Number(livePrice))) {
       m[baseForChart] = {
         ...(m[baseForChart] || {}),
         price: Number(livePrice),
@@ -286,11 +292,18 @@ export default function TradingSimulator() {
   const computeLivePnL = (trade) => {
     const base = parseBaseFromPair(trade?.pair || selectedPair);
     const current = Number(mergedPrices?.[base]?.price ?? 0);
-    const entry = Number(trade?.price ?? trade?.priceAtExecution ?? 0); // soporta real y demo
-    const amountUsd = Number(trade?.amount ?? 0);
+    const entry = Number(trade?.price ?? trade?.priceAtExecution ?? 0);
+    // soporta distintos nombres para nocional en USD
+    const amountUsd = Number(
+      trade?.amountAtOpen ??
+      trade?.amount_usd ??
+      trade?.amount_usd_open ??
+      trade?.notional_usd ??
+      trade?.amount ??
+      0
+    );
     if (!current || !entry || !amountUsd) return { upnl: 0, livePrice: current || null };
 
-    // tamaño en unidades del activo
     const qty = amountUsd / entry;
     const side = String(trade?.type || '').toLowerCase(); // buy | sell
     const upnl = side === 'sell' ? (entry - current) * qty : (current - entry) * qty;
@@ -313,7 +326,7 @@ export default function TradingSimulator() {
   }, [realTrades, mergedPrices, selectedPair]);
 
   // =================== Trading actions ===================
-  // Abre trade (real) – sigue siendo insert simple (no hay RPC de apertura definida)
+  // Abre trade (real)
   const handleTrade = async (tradeData) => {
     if (!user?.id) return;
 
@@ -330,7 +343,7 @@ export default function TradingSimulator() {
       amount: Number(tradeData.amount),
       price: Number(tradeData.price),
       status: 'open',
-      // DB: timestamp es timestamptz ⇒ enviar ISO
+      // timestamptz ⇒ ISO
       timestamp: new Date().toISOString(),
     };
 
@@ -364,16 +377,17 @@ export default function TradingSimulator() {
 
   // Cierra trade:
   //  - DEMO: usa tradingLogic local
-  //  - REAL: **RPC close_trade** vía DataContext (sin UPDATE a mano)
+  //  - REAL: RPC close_trade vía DataContext (sin UPDATE a mano)
   const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) => {
     if (mode === 'demo') {
-      tradingLogic.closeTrade(tradeId, force);
+      // El hook interpreta boolean en 2º arg como "manual"
+      tradingLogic.closeTrade(tradeId, true);
       return true;
     }
     if (!tradeId) return false;
 
     try {
-      // Si no viene precio, intentamos inferir el live del par del trade
+      // Si no viene precio, inferir el live del par del trade
       let closePrice = Number(maybeClosePrice);
       if (!Number.isFinite(closePrice)) {
         const tr = realTrades.find((x) => x.id === tradeId);
@@ -382,9 +396,8 @@ export default function TradingSimulator() {
         closePrice = Number.isFinite(live) ? live : null;
       }
 
-      // Llamada robusta al RPC del server (cierra trade, calcula realized y acredita saldo)
-      const ok = await closeTradeRPC?.(tradeId, Number.isFinite(closePrice) ? closePrice : null, true);
-      // Refresco los datos reales para ver reflejado el cierre
+      // RPC del server (si tu función en DB usa uuid, este tradeId (string) va bien)
+      const ok = await closeTradeRPC?.(String(tradeId), Number.isFinite(closePrice) ? closePrice : null, true);
       await fetchRealData();
       if (ok) playSound?.('success');
       return !!ok;
@@ -394,10 +407,9 @@ export default function TradingSimulator() {
     }
   };
 
-  // Bridge único para el Panel (demo/real) → RESPETA la API del TradingPanel (onTrade(payload))
+  // Bridge único para el Panel (demo/real)
   const onTradeFromPanel = async (payload) => {
     if (mode === 'demo') {
-      // El panel ya manda { pair, type, amount, price, duration }
       tradingLogic.openTrade({
         pair: payload.pair,
         type: payload.type,
@@ -502,17 +514,17 @@ export default function TradingSimulator() {
               priceHistory={chartHistory}
               selectedPair={selectedPair}
               cryptoPrices={mergedPrices}
-              openTrades={openTradesForChart}   // 👈 líneas guía + marcadores
+              openTrades={openTradesForChart}   // líneas guía + marcadores
               showGuides
             />
           </div>
 
-          {/* Panel de Trading en la columna derecha (donde estaba el chat) */}
+          {/* Panel de Trading en la columna derecha */}
           <div className="xl:col-span-3">
             <TradingPanel
               selectedPair={selectedPair}
               setSelectedPair={tradingLogic.setSelectedPair}
-              onTrade={onTradeFromPanel}                 // << clave
+              onTrade={onTradeFromPanel}
               mode={mode}
               balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
               cryptoPrices={mergedPrices}
@@ -521,7 +533,7 @@ export default function TradingSimulator() {
           </div>
         </div>
 
-        {/* Chat abajo (donde antes estaba el panel) */}
+        {/* Chat */}
         <Card className="crypto-card">
           <CardHeader>
             <CardTitle className="text-white flex items-center text-lg">
@@ -568,7 +580,7 @@ export default function TradingSimulator() {
         <TradesHistory
           trades={mode === 'demo' ? demoTradesWithLive : realTradesWithLive}
           cryptoPrices={mergedPrices}
-          // 👇 En real cierra vía RPC (server). En demo, cierra local.
+          // En real cierra vía RPC (server). En demo, cierra local.
           closeTrade={handleCloseTrade}
         />
       </div>

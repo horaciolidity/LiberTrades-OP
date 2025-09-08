@@ -17,10 +17,12 @@ const num = (v, fb = 0) => (Number.isFinite(Number(v)) ? Number(v) : fb);
 
 const fmt = (v, d = 2) =>
   (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : (0).toFixed(d));
+
 const fmtSigned = (v, d = 2) => {
   const x = Number(v);
   if (!Number.isFinite(x)) return (0).toFixed(d);
-  if (x === 0) return x.toFixed(d);
+  if (Object.is(x, -0)) return (0).toFixed(d);
+  if (x === 0) return (0).toFixed(d);
   return `${x >= 0 ? '+' : ''}${x.toFixed(d)}`;
 };
 
@@ -95,10 +97,8 @@ const getQty = (t) => {
     num(t?.size, NaN);
   if (Number.isFinite(direct) && direct > 0) return direct;
 
-  // precio de entrada con sinónimos
   const entry = num(t?.entry_price ?? t?.entryPrice ?? t?.price ?? t?.priceAtExecution, 0);
 
-  // notional en USD con sinónimos
   const amount =
     num(t?.amountAtOpen ?? t?.amount_usd ?? t?.amount_usd_open ?? t?.notional_usd ?? t?.amount, 0);
 
@@ -159,10 +159,8 @@ const useLivePriceGetter = (externalPrices) => {
         if (Number.isFinite(pCtx)) return pCtx;
 
         const hist = Array.isArray(info?.history) ? info.history : [];
-        theLast: {
-          const last = hist.length ? Number(hist[hist.length - 1]?.value) : NaN;
-          if (Number.isFinite(last)) return last;
-        }
+        const last = hist.length ? Number(hist[hist.length - 1]?.value) : NaN;
+        if (Number.isFinite(last)) return last;
       }
 
       // 3) mapa directo del contexto
@@ -183,7 +181,7 @@ const useLivePriceGetter = (externalPrices) => {
 };
 
 /* ----------- helpers PnL persistido / cierre ----------- */
-// FIX: ignorar null/undefined (Number(null) === 0; nos rompía mostrando 0)
+// Ignorar null/undefined
 const realizedFromRow = (t) => {
   const cands = [
     t?.realized_pnl_usd,
@@ -226,7 +224,6 @@ const inferClosePriceIfMissing = (trade, live, localHint) => {
   const qty = getQty(trade);
   const side = sideOf(trade);
 
-  // usar PnL persistido si lo hay (ya corregido para ignorar null)
   const persisted = realizedFromRow(trade);
   if (Number.isFinite(persisted) && Number.isFinite(entry) && qty) {
     return side === 'sell' ? entry - persisted / qty : entry + persisted / qty;
@@ -250,7 +247,6 @@ const TradeRow = ({
 
   let pnlClosed = 0;
   if (!isOpen) {
-    // reconstrucción robusta si el persistido falta o es 0 pero tenemos datos para calcular
     const persisted = realizedFromRow(t);
     const live = Number(getLive(pair));
     const closeP = inferClosePriceIfMissing(t, live, getCloseHint?.(t.id));
@@ -425,11 +421,9 @@ const TradesHistory = ({
 
   const callCloseRpc = useCallback(
     async (id, priceHint) => {
-      // Usa el closeTrade elegido (prop o DataContext). DataContext cierra vía RPC.
       if (typeof doCloseTrade !== 'function') return false;
       const cp = Number.isFinite(priceHint) ? Number(priceHint) : null;
       const result = await doCloseTrade(id, cp, true);
-      // compat: si retorna boolean -> usarlo; si retorna objeto {ok} -> truthy
       return typeof result === 'boolean' ? result : !!result;
     },
     [doCloseTrade]
@@ -549,7 +543,7 @@ const TradesHistory = ({
       tsClose,
       secondsElapsed,
     };
-  }, [selected, getLive]);
+  }, [selected, getLive, pnlDecimals, pnlPctDecimals, priceDecimals]);
 
   return (
     <>
@@ -570,7 +564,7 @@ const TradesHistory = ({
               {list.length > 0 ? (
                 list.map((t) => (
                   <TradeRow
-                    key={t.id ?? `${t.pair ?? t.symbol}-${parseTsMs(t.timestamp ?? t.created_at) || Math.random()}`}
+                    key={String(t.id ?? `${t.pair ?? t.symbol}-${parseTsMs(t.timestamp ?? t.created_at) || Math.random()}`)}
                     t={t}
                     getLive={getLive}
                     onClose={handleRowClose}

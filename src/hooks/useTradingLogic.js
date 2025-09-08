@@ -12,8 +12,8 @@ export const useTradingLogic = () => {
 
   // --------- Estado principal (demo) ----------
   const [selectedPair, setSelectedPair] = useState('BTC/USDT');
-  const [tradeAmount, setTradeAmount] = useState('100'); // string para no “trabar” el <Input />
-  const [tradeType, setTradeType] = useState('buy');     // 'buy' | 'sell'
+  const [tradeAmount, setTradeAmount] = useState('100');  // string para no trabar el <Input />
+  const [tradeType, setTradeType] = useState('buy');      // 'buy' | 'sell'
   const [tradeDuration, setTradeDuration] = useState(60); // segundos
   const [isTrading, setIsTrading] = useState(false);
   const [trades, setTrades] = useState([]);
@@ -34,7 +34,7 @@ export const useTradingLogic = () => {
       if (Array.isArray(savedTrades)) setTrades(savedTrades);
       if (savedBalance != null) setVirtualBalance(num(savedBalance));
     } catch {
-      /* ignore */
+      // ignore
     }
   }, [user?.id]);
 
@@ -64,6 +64,8 @@ export const useTradingLogic = () => {
       return;
     }
 
+    const durSec = Math.max(1, num(tradeDuration) || 60);
+
     setIsTrading(true);
     setVirtualBalance((prev) => Math.max(0, prev - amount));
 
@@ -75,9 +77,9 @@ export const useTradingLogic = () => {
       amount,
       priceAtExecution: currentPrice,
       timestamp: now,
-      duration: tradeDuration * 1000,     // ms (legacy)
-      durationSeconds: tradeDuration,     // ✅ compat nuevo UI
-      closeAt: now + tradeDuration * 1000,
+      duration: durSec * 1000,     // ms (legacy)
+      durationSeconds: durSec,     // compat nuevo UI
+      closeAt: now + durSec * 1000,
       status: 'open',
       profit: 0,
     };
@@ -108,7 +110,7 @@ export const useTradingLogic = () => {
         return;
       }
 
-      const durSec = num(opts.duration ?? tradeDuration) || 60;
+      const durSec = Math.max(1, num(opts.duration ?? tradeDuration) || 60);
 
       setVirtualBalance((prev) => Math.max(0, prev - nextAmount));
 
@@ -120,8 +122,8 @@ export const useTradingLogic = () => {
         amount: nextAmount,
         priceAtExecution: currentPrice,
         timestamp: now,
-        duration: durSec * 1000,      // ms (legacy)
-        durationSeconds: durSec,      // ✅ compat nuevo UI
+        duration: durSec * 1000,   // ms (legacy)
+        durationSeconds: durSec,   // compat nuevo UI
         closeAt: now + durSec * 1000,
         status: 'open',
         profit: 0,
@@ -180,7 +182,7 @@ export const useTradingLogic = () => {
             status: 'closed',
             profit,
             priceAtClose: currentPrice,
-            closeprice: currentPrice, // ✅ alias para el detalle
+            closeprice: currentPrice, // alias para componentes que lo usen así
             closeAt: Date.now(),
           };
         })
