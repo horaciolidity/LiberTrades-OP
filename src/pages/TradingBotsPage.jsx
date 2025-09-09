@@ -1,4 +1,3 @@
-// src/pages/TradingBotsPage.jsx
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -22,6 +21,7 @@ import {
   PauseCircle,
   PlayCircle,
   XCircle,
+  Coins,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSound } from '@/contexts/SoundContext';
@@ -44,7 +44,7 @@ const parsePctRange = (txt) => {
 };
 const normStatus = (s) => String(s || '').trim().toLowerCase();
 
-/* ========== Catálogo de bots (visible) ========== */
+/* ========== Catálogo visible (marketing) ========== */
 const tradingBots = [
   {
     id: 1,
@@ -92,20 +92,23 @@ const TradingBotsPage = () => {
   const { user, balances } = useAuth();
   const { playSound } = useSound();
 
-  // DataContext: RPCs backend
+  // DataContext: RPCs y datos
   const {
     botActivations,
+    transactions,              // << usamos transacciones para sumar bot_profit
     activateBot,
     pauseBot,
     resumeBot,
     cancelBot,
     refreshBotActivations,
+    refreshTransactions,       // por si queremos refrescar al entrar
+    // creditBotProfit,        // lo podés usar en un panel admin si querés
   } = useData();
 
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
   const [busyActivate, setBusyActivate] = useState(false);
-  const [busyById, setBusyById] = useState(() => new Map()); // busy por activación
+  const [busyById, setBusyById] = useState(() => new Map());
 
   const setRowBusy = useCallback((id, val) => {
     setBusyById((prev) => {
@@ -147,19 +150,41 @@ const TradingBotsPage = () => {
   const pctBotsUsd = clamp((botsAllocated / GOALS.botsUsd) * 100);
   const energyBots = clamp((pctBotsCount + pctBotsUsd) / 2);
 
+  /* ---- Ganancias reales de bots (desde wallet_transactions) ---- */
+  const botProfitTx = useMemo(
+    () => (transactions || []).filter(
+      (t) => String(t.type) === 'bot_profit' && String(t.status) === 'completed'
+    ),
+    [transactions]
+  );
+
+  const totalBotProfit = useMemo(
+    () => botProfitTx.reduce((s, t) => s + Number(t.amount || 0), 0),
+    [botProfitTx]
+  );
+
+  // Mapa: activation_id => ganancia acumulada
+  const profitByActivation = useMemo(() => {
+    const m = new Map();
+    for (const t of botProfitTx) {
+      const k = t.referenceId || t.reference_id; // DataContext normaliza ambas
+      if (!k) continue;
+      m.set(k, (m.get(k) || 0) + Number(t.amount || 0));
+    }
+    return m;
+  }, [botProfitTx]);
+
   /* ---- Refresh on mount / user change ---- */
   useEffect(() => {
     if (!user?.id) return;
     refreshBotActivations?.();
+    refreshTransactions?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // soporte a distintas claves de saldo
-  const availableUsd = Number(
-    balances?.usdc ?? balances?.USDC ?? balances?.usd ?? 0
-  );
+  const availableUsd = Number(balances?.usdc ?? 0);
 
-  /* ========== Handlers (vía RPC en DataContext) ========== */
+  /* ========== Handlers ========== */
   const handleActivateBot = async () => {
     try {
       playSound?.('invest');
@@ -225,7 +250,7 @@ const TradingBotsPage = () => {
       });
       setSelectedBot(null);
       setInvestmentAmount('');
-      await refreshBotActivations?.();
+      await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
     } catch (e) {
       console.error('[handleActivateBot]', e);
       toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
@@ -295,8 +320,7 @@ const TradingBotsPage = () => {
   const quickAmounts = useMemo(() => {
     const base = [250, 500, 1000, 2000];
     const extra = availableUsd > 0 ? [Math.min(availableUsd, 5000)] : [];
-    const all = [...base, ...extra];
-    return Array.from(new Set(all)); // únicos
+    return [...base, ...extra.filter((v) => !base.includes(v))];
   }, [availableUsd]);
 
   return (
@@ -329,7 +353,7 @@ const TradingBotsPage = () => {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
                 <div className="text-xs text-slate-400 flex items-center gap-2">
                   <Wallet className="w-4 h-4 text-emerald-300" />
@@ -359,6 +383,13 @@ const TradingBotsPage = () => {
                 <div className="text-2xl text-white font-semibold">
                   ${fmt(activeEstimated.min)} – ${fmt(activeEstimated.max)}
                 </div>
+              </div>
+              <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
+                <div className="text-xs text-slate-400 flex items-center gap-2">
+                  <Coins className="w-4 h-4 text-green-300" />
+                  Ganancias acumuladas (reales)
+                </div>
+                <div className="text-2xl text-white font-semibold">+${fmt(totalBotProfit)}</div>
               </div>
             </div>
 
@@ -630,6 +661,10 @@ const TradingBotsPage = () => {
                 const createdAt =
                   a.createdAt || a.created_at || (a.created_at_ms ? new Date(a.created_at_ms) : null);
 
+                // Ganancia acumulada real por esta activación
+                const accProfit = Number(profitByActivation.get(a.id) || 0);
+                const roiPct = a.amountUsd > 0 ? (accProfit / Number(a.amountUsd)) * 100 : 0;
+
                 return (
                   <Card key={a.id} className="crypto-card">
                     <CardHeader>
@@ -664,6 +699,14 @@ const TradingBotsPage = () => {
                           <div className="text-white font-semibold">
                             {createdAt ? new Date(createdAt).toLocaleString() : '—'}
                           </div>
+                        </div>
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">Ganancia acumulada</div>
+                          <div className="text-white font-semibold">+${fmt(accProfit)}</div>
+                        </div>
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">ROI</div>
+                          <div className="text-white font-semibold">{fmt(roiPct)}%</div>
                         </div>
                       </div>
 
