@@ -65,8 +65,8 @@ export function DataProvider({ children }) {
   const [referrals, setReferrals] = useState([]);
   const [botActivations, setBotActivations] = useState([]);
 
-  /* ---------------- Trades (reales, en DB) ----------- */
-  const [trades, setTrades] = useState([]);
+  /* ---------------- Trades (legacy manual) ----------- */
+  const [trades, setTrades] = useState([]); // tabla 'trades' y RPC close_trade_rpc
 
   /* ---------------- Mercado (admin) ---------------- */
   const [instruments, setInstruments] = useState([]);
@@ -724,7 +724,7 @@ export function DataProvider({ children }) {
     setBotActivations(mapped);
   }
 
-  /* ---------------- Trades (DB) ---------------- */
+  /* ---------------- Trades (legacy) ---------------- */
   async function refreshTrades() {
     if (!user?.id) { setTrades([]); return; }
     const { data, error } = await supabase
@@ -749,7 +749,7 @@ export function DataProvider({ children }) {
       refreshBotActivations();
       refreshTrades();
 
-      // Realtime trades para que la UI siempre tenga el profit persistido
+      // Realtime trades (legacy) para tener el profit persistido
       const ch = supabase
         .channel('trades_rt')
         .on(
@@ -838,7 +838,7 @@ export function DataProvider({ children }) {
     };
   }
 
-  /* ---------------- RPC Bots ---------------- */
+  /* ---------------- RPC Bots (activación/estado) --------------- */
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
@@ -889,9 +889,7 @@ export function DataProvider({ children }) {
     }
   }
 
-  /* ---------------- Trades: cierre (RPC) -------------- */
-  // Wrapper a la firma: close_trade_rpc(text, numeric, boolean)
-  // Devuelve el payload del RPC para que puedas actualizar la card al instante.
+  /* ---------------- Trades: cierre (legacy RPC) -------------- */
   async function closeTrade(tradeId, closePrice = null, force = true) {
     try {
       const { data, error } = await supabase.rpc('close_trade_rpc', {
@@ -903,14 +901,69 @@ export function DataProvider({ children }) {
         console.error('[close_trade_rpc]', error);
         return null;
       }
-      // Opcional: refrescamos listado para tener el profit persistido al toque
       await refreshTrades();
-      // Esperamos algo como { ok: true, realized, close_price, ... }
       return data || null;
     } catch (e) {
       console.error('[close_trade_rpc] exception', e);
       return null;
     }
+  }
+
+  /* ---------------- BOT TRADES (nuevo) ---------------- */
+  // abrir
+  async function openBotTrade({ activationId, pair, side, amountUsd, leverage = 3, tpPct = null, slPct = null, entry = null }) {
+    const { data, error } = await supabase.rpc('bot_trade_open', {
+      p_activation_id: activationId,
+      p_pair: pair,
+      p_side: side,
+      p_amount_usd: Number(amountUsd),
+      p_leverage: Number(leverage),
+      p_tp_pct: tpPct,
+      p_sl_pct: slPct,
+      p_entry: entry,
+    });
+    if (error) throw error;
+    return data; // { ok, id, entry, liq }
+  }
+  // mark-to-market
+  async function mtmBotTrade(tradeId) {
+    const { data, error } = await supabase.rpc('bot_trade_mtm', { p_trade_id: tradeId });
+    if (error) throw error;
+    return data; // { ok, last }
+  }
+  // cerrar
+  async function closeBotTrade(tradeId, reason = 'manual', closePrice = null) {
+    const { data, error } = await supabase.rpc('bot_trade_close', {
+      p_trade_id: tradeId,
+      p_reason: reason,
+      p_close_price: closePrice,
+    });
+    if (error) throw error;
+    // al cerrar se registra wallet_transactions, refrescamos para reflejar balance
+    await refreshTransactions();
+    return data; // { ok, pnl, close }
+  }
+  // listar
+  async function listBotTrades(activationId, limit = 50) {
+    const { data, error } = await supabase
+      .from('v_bot_trades')
+      .select('*')
+      .eq('activation_id', activationId)
+      .order('opened_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return ensureArray(data);
+  }
+  // realtime
+  function subscribeBotTrades(activationId, cb) {
+    return supabase
+      .channel(`bot_trades_${activationId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bot_trades', filter: `activation_id=eq.${activationId}` },
+        cb
+      )
+      .subscribe();
   }
 
   /* ---------------- Helpers UI ---------------- */
@@ -977,10 +1030,17 @@ export function DataProvider({ children }) {
     pairOptions,
     assetToSymbol: liveBinanceMap,
 
-    // trades (DB)
+    // trades (legacy)
     trades,
     refreshTrades,
     closeTrade,
+
+    // BOT trades (nuevo)
+    openBotTrade,
+    mtmBotTrade,
+    closeBotTrade,
+    listBotTrades,
+    subscribeBotTrades,
 
     // settings de admin
     settings: adminSettings,
@@ -1032,10 +1092,17 @@ export function useData() {
     pairOptions: ['BTC/USDT', 'ETH/USDT'],
     assetToSymbol: DEFAULT_BINANCE_MAP,
 
-    // trades
+    // trades (legacy)
     trades: [],
     refreshTrades: async () => {},
     closeTrade: async () => null,
+
+    // BOT trades
+    openBotTrade: async () => null,
+    mtmBotTrade: async () => null,
+    closeBotTrade: async () => null,
+    listBotTrades: async () => [],
+    subscribeBotTrades: () => ({ unsubscribe: () => {} }),
 
     // settings
     settings: {},

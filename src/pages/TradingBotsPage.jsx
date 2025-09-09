@@ -92,21 +92,20 @@ const TradingBotsPage = () => {
   const { user, balances } = useAuth();
   const { playSound } = useSound();
 
-  // DataContext: los métodos deben llamar tus RPC del server
+  // DataContext: RPCs backend
   const {
     botActivations,
-    activateBot,   // RPC: activate_bot
-    pauseBot,      // RPC: pause_bot
-    resumeBot,     // RPC: resume_bot
-    cancelBot,     // RPC: cancel_bot
+    activateBot,
+    pauseBot,
+    resumeBot,
+    cancelBot,
     refreshBotActivations,
-    // creditBotProfit, // disponible si lo necesitás más adelante
   } = useData();
 
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
   const [busyActivate, setBusyActivate] = useState(false);
-  const [busyById, setBusyById] = useState(() => new Map()); // busy por activación (pausa/resume/cancel)
+  const [busyById, setBusyById] = useState(() => new Map()); // busy por activación
 
   const setRowBusy = useCallback((id, val) => {
     setBusyById((prev) => {
@@ -155,7 +154,10 @@ const TradingBotsPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  const availableUsd = Number(balances?.usdc ?? 0); // saldo disponible
+  // soporte a distintas claves de saldo
+  const availableUsd = Number(
+    balances?.usdc ?? balances?.USDC ?? balances?.usd ?? 0
+  );
 
   /* ========== Handlers (vía RPC en DataContext) ========== */
   const handleActivateBot = async () => {
@@ -293,7 +295,8 @@ const TradingBotsPage = () => {
   const quickAmounts = useMemo(() => {
     const base = [250, 500, 1000, 2000];
     const extra = availableUsd > 0 ? [Math.min(availableUsd, 5000)] : [];
-    return [...base, ...extra.filter((v) => !base.includes(v))];
+    const all = [...base, ...extra];
+    return Array.from(new Set(all)); // únicos
   }, [availableUsd]);
 
   return (
