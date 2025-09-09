@@ -50,7 +50,7 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
 
     const type = String(r.type || '').toLowerCase();
     const v = Number(r.value ?? 0);
-    if (type === 'percent') price *= (1 + v / 100);
+    if (type === 'percent') price *= 1 + v / 100;
     else price += v;
   }
   return price;
@@ -64,6 +64,9 @@ export function DataProvider({ children }) {
   const [transactions, setTransactions] = useState([]);
   const [referrals, setReferrals] = useState([]);
   const [botActivations, setBotActivations] = useState([]);
+
+  /* ---------------- Trades (reales, en DB) ----------- */
+  const [trades, setTrades] = useState([]);
 
   /* ---------------- Mercado (admin) ---------------- */
   const [instruments, setInstruments] = useState([]);
@@ -84,7 +87,7 @@ export function DataProvider({ children }) {
 
   /* --------------- Admin settings (slippage) --------- */
   const [adminSettings, setAdminSettings] = useState({});
-  const DEFAULT_SLIPPAGE = 0.2; // % por defecto si no hay setting
+  const DEFAULT_SLIPPAGE = 0.2; // %
   const slippageMaxPct = Number(
     adminSettings['trading.slippage_pct_max'] ?? DEFAULT_SLIPPAGE
   );
@@ -578,7 +581,6 @@ export function DataProvider({ children }) {
       }
 
       setPriceHistories(nextHist);
-      // merge para no pisar updates directos por tick
       setCryptoPrices((prev) => ({ ...prev, ...nextPrices }));
     };
 
@@ -716,19 +718,47 @@ export function DataProvider({ children }) {
       botName: b.bot_name,
       strategy: b.strategy,
       amountUsd: Number(b.amount_usd || 0),
-      status: b.status, // active | paused | cancelled
+      status: b.status,
       createdAt: b.created_at,
     }));
     setBotActivations(mapped);
   }
 
+  /* ---------------- Trades (DB) ---------------- */
+  async function refreshTrades() {
+    if (!user?.id) { setTrades([]); return; }
+    const { data, error } = await supabase
+      .from('trades')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+    if (!error) setTrades(ensureArray(data));
+  }
+
   useEffect(() => {
-    setInvestments([]); setTransactions([]); setReferrals([]); setBotActivations([]);
+    setInvestments([]);
+    setTransactions([]);
+    setReferrals([]);
+    setBotActivations([]);
+    setTrades([]);
+
     if (user?.id) {
       refreshInvestments();
       refreshTransactions();
       refreshReferrals();
       refreshBotActivations();
+      refreshTrades();
+
+      // Realtime trades para que la UI siempre tenga el profit persistido
+      const ch = supabase
+        .channel('trades_rt')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'trades', filter: `user_id=eq.${user.id}` },
+          () => refreshTrades()
+        )
+        .subscribe();
+      return () => { try { supabase.removeChannel(ch); } catch {} };
     }
   }, [user?.id]);
 
@@ -859,17 +889,29 @@ export function DataProvider({ children }) {
     }
   }
 
-  /* ---------------- Trades: cierre ---------------- */
-async function closeTrade(tradeId, closePrice = null, force = true) {
-  const { data, error } = await supabase.rpc('close_trade_rpc', {
-    p_trade_id: String(tradeId),
-    p_close_price: Number.isFinite(Number(closePrice)) ? Number(closePrice) : null,
-    p_force: !!force,
-  });
-  if (error) { console.error('[close_trade_rpc]', error); return false; }
-  return !!(data && (data.ok === true || data.success === true));
-}
-
+  /* ---------------- Trades: cierre (RPC) -------------- */
+  // Wrapper a la firma: close_trade_rpc(text, numeric, boolean)
+  // Devuelve el payload del RPC para que puedas actualizar la card al instante.
+  async function closeTrade(tradeId, closePrice = null, force = true) {
+    try {
+      const { data, error } = await supabase.rpc('close_trade_rpc', {
+        p_trade_id: String(tradeId),
+        p_close_price: Number.isFinite(Number(closePrice)) ? Number(closePrice) : null,
+        p_force: !!force,
+      });
+      if (error) {
+        console.error('[close_trade_rpc]', error);
+        return null;
+      }
+      // Opcional: refrescamos listado para tener el profit persistido al toque
+      await refreshTrades();
+      // Esperamos algo como { ok: true, realized, close_price, ... }
+      return data || null;
+    } catch (e) {
+      console.error('[close_trade_rpc] exception', e);
+      return null;
+    }
+  }
 
   /* ---------------- Helpers UI ---------------- */
   const pairOptions = useMemo(() => {
@@ -935,7 +977,9 @@ async function closeTrade(tradeId, closePrice = null, force = true) {
     pairOptions,
     assetToSymbol: liveBinanceMap,
 
-    // trades
+    // trades (DB)
+    trades,
+    refreshTrades,
     closeTrade,
 
     // settings de admin
@@ -947,8 +991,7 @@ async function closeTrade(tradeId, closePrice = null, force = true) {
   }), [
     investments, transactions, referrals, botActivations,
     instruments, marketRules, cryptoPrices, pairOptions, liveBinanceMap,
-    adminSettings, slippageMaxPct,
-    investmentPlans,
+    adminSettings, slippageMaxPct, investmentPlans, trades,
   ]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
@@ -989,7 +1032,10 @@ export function useData() {
     pairOptions: ['BTC/USDT', 'ETH/USDT'],
     assetToSymbol: DEFAULT_BINANCE_MAP,
 
-    closeTrade: async () => false,
+    // trades
+    trades: [],
+    refreshTrades: async () => {},
+    closeTrade: async () => null,
 
     // settings
     settings: {},
