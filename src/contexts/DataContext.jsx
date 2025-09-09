@@ -66,7 +66,7 @@ export function DataProvider({ children }) {
   const [botActivations, setBotActivations] = useState([]);
 
   /* ---------------- Trades (legacy manual) ----------- */
-  const [trades, setTrades] = useState([]); // tabla 'trades' y RPC close_trade_rpc
+  const [trades, setTrades] = useState([]);
 
   /* ---------------- Mercado (admin) ---------------- */
   const [instruments, setInstruments] = useState([]);
@@ -95,14 +95,14 @@ export function DataProvider({ children }) {
   /* --------------- Refs / conexiones ---------------- */
   const wsRef = useRef(null);
   const restPollRef = useRef(null);
-  const statePollRef = useRef(null); // fallback a market_state
+  const statePollRef = useRef(null);
 
   const instrumentsRef = useRef([]);
   const rulesRef = useRef([]);
   const quotesRef = useRef({});
   const histRef = useRef({});
   const liveMapRef = useRef({});
-  const ref24Ref = useRef({}); // memoria de ref_24h por símbolo
+  const ref24Ref = useRef({});
 
   const supportsBulkRef = useRef(null);
   const hasNextV2Ref = useRef(null);
@@ -319,7 +319,7 @@ export function DataProvider({ children }) {
     return () => { alive = false; teardown(); };
   }, [liveBinanceMap]);
 
-  /* --------- Realtime market_state (sim/real/manual) --------- */
+  /* --------- Realtime market_state --------- */
   useEffect(() => {
     const onStateChange = ({ new: row }) => {
       if (!row) return;
@@ -343,7 +343,7 @@ export function DataProvider({ children }) {
     return () => { try { supabase.removeChannel(ch); } catch {} };
   }, []);
 
-  /* --------- Realtime directo de market_ticks --------- */
+  /* --------- Realtime market_ticks --------- */
   useEffect(() => {
     const onTickInsert = ({ new: row }) => {
       const symU = String(row.symbol || '').toUpperCase();
@@ -351,19 +351,16 @@ export function DataProvider({ children }) {
       const ts = row.ts ? new Date(row.ts).getTime() : nowMs();
       if (!Number.isFinite(price) || price <= 0) return;
 
-      // construimos history y lo reusamos para el payload
       setPriceHistories((prev) => {
         const cur = ensureArray(prev[symU]);
         const nextH = [...cur, { time: ts, value: price }].slice(-HISTORY_MAX);
 
-        // compute change con ref24 o primera vela
         const ref24 =
           Number(ref24Ref.current[symU]) ||
           Number(nextH[0]?.value) ||
           price;
         const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
 
-        // publicamos AL INSTANTE el mismo history recién calculado
         const inst = instrumentsRef.current.find(
           (i) => String(i.symbol || '').toUpperCase() === symU
         );
@@ -377,7 +374,6 @@ export function DataProvider({ children }) {
           [`${symU}${quoteU}`]: payload,
         }));
 
-        // también reflejamos en realQuotes para otros consumidores
         setRealQuotes((prevRQ) => ({ ...prevRQ, [symU]: { price, change } }));
 
         return { ...prev, [symU]: nextH };
@@ -510,7 +506,7 @@ export function DataProvider({ children }) {
     return () => { alive = false; clearInterval(timer); };
   }, [instruments]);
 
-  /* --------- Consolidación → cryptoPrices + histories (fallback) --------- */
+  /* --------- Consolidación → cryptoPrices + histories --------- */
   useEffect(() => {
     const tick = () => {
       const t = nowMs();
@@ -749,7 +745,6 @@ export function DataProvider({ children }) {
       refreshBotActivations();
       refreshTrades();
 
-      // Realtime trades (legacy) para tener el profit persistido
       const ch = supabase
         .channel('trades_rt')
         .on(
@@ -863,7 +858,7 @@ export function DataProvider({ children }) {
         p_user_id: user?.id,
       });
       if (error) return { ok: false, code: 'RPC_ERROR', error };
-      await refreshBotActivations();
+      await Promise.all([refreshBotActivations(), refreshTransactions()]);
       return data ?? { ok: true };
     } catch {
       return { ok: false, code: 'RPC_NOT_FOUND' };
@@ -910,7 +905,6 @@ export function DataProvider({ children }) {
   }
 
   /* ---------------- BOT TRADES (nuevo) ---------------- */
-  // abrir
   async function openBotTrade({ activationId, pair, side, amountUsd, leverage = 3, tpPct = null, slPct = null, entry = null }) {
     const { data, error } = await supabase.rpc('bot_trade_open', {
       p_activation_id: activationId,
@@ -925,13 +919,11 @@ export function DataProvider({ children }) {
     if (error) throw error;
     return data; // { ok, id, entry, liq }
   }
-  // mark-to-market
   async function mtmBotTrade(tradeId) {
     const { data, error } = await supabase.rpc('bot_trade_mtm', { p_trade_id: tradeId });
     if (error) throw error;
     return data; // { ok, last }
   }
-  // cerrar
   async function closeBotTrade(tradeId, reason = 'manual', closePrice = null) {
     const { data, error } = await supabase.rpc('bot_trade_close', {
       p_trade_id: tradeId,
@@ -939,11 +931,9 @@ export function DataProvider({ children }) {
       p_close_price: closePrice,
     });
     if (error) throw error;
-    // al cerrar se registra wallet_transactions, refrescamos para reflejar balance
     await refreshTransactions();
     return data; // { ok, pnl, close }
   }
-  // listar
   async function listBotTrades(activationId, limit = 50) {
     const { data, error } = await supabase
       .from('v_bot_trades')
@@ -954,17 +944,21 @@ export function DataProvider({ children }) {
     if (error) throw error;
     return ensureArray(data);
   }
-  // realtime
-  function subscribeBotTrades(activationId, cb) {
-    return supabase
-      .channel(`bot_trades_${activationId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'bot_trades', filter: `activation_id=eq.${activationId}` },
-        cb
-      )
-      .subscribe();
-  }
+  // Reemplazá SOLO esta función dentro del DataContext:
+
+function subscribeBotTrades(activationId, cb) {
+  const ch = supabase
+    .channel(`bot_trades_${activationId}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'bot_trades', filter: `activation_id=eq.${activationId}` },
+      cb
+    )
+    .subscribe();
+
+  return ch; // -> así podés hacer ch.unsubscribe() donde lo uses
+}
+
 
   /* ---------------- Helpers UI ---------------- */
   const pairOptions = useMemo(() => {
@@ -978,7 +972,6 @@ export function DataProvider({ children }) {
     return Array.from(s);
   }, [instruments]);
 
-  // Busca en varias claves posibles (par, sin slash, base)
   const getPairInfo = (pair) => {
     const k = String(pair || '').toUpperCase().replace(/\s+/g, '');
     const keys = [
@@ -1102,7 +1095,7 @@ export function useData() {
     mtmBotTrade: async () => null,
     closeBotTrade: async () => null,
     listBotTrades: async () => [],
-    subscribeBotTrades: () => ({ unsubscribe: () => {} }),
+    subscribeBotTrades: () => () => {},
 
     // settings
     settings: {},

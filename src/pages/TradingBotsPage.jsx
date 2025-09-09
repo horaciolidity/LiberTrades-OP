@@ -95,14 +95,13 @@ const TradingBotsPage = () => {
   // DataContext: RPCs y datos
   const {
     botActivations,
-    transactions,              // << usamos transacciones para sumar bot_profit
+    transactions,              // usamos transacciones para sumar bot_profit
     activateBot,
     pauseBot,
     resumeBot,
     cancelBot,
     refreshBotActivations,
-    refreshTransactions,       // por si queremos refrescar al entrar
-    // creditBotProfit,        // lo podés usar en un panel admin si querés
+    refreshTransactions,
   } = useData();
 
   const [selectedBot, setSelectedBot] = useState(null);
@@ -152,9 +151,12 @@ const TradingBotsPage = () => {
 
   /* ---- Ganancias reales de bots (desde wallet_transactions) ---- */
   const botProfitTx = useMemo(
-    () => (transactions || []).filter(
-      (t) => String(t.type) === 'bot_profit' && String(t.status) === 'completed'
-    ),
+    () =>
+      (transactions || []).filter(
+        (t) =>
+          String(t?.type || '').toLowerCase() === 'bot_profit' &&
+          String(t?.status || '').toLowerCase() === 'completed'
+      ),
     [transactions]
   );
 
@@ -167,7 +169,7 @@ const TradingBotsPage = () => {
   const profitByActivation = useMemo(() => {
     const m = new Map();
     for (const t of botProfitTx) {
-      const k = t.referenceId || t.reference_id; // DataContext normaliza ambas
+      const k = t.referenceId ?? t.reference_id; // DataContext normaliza ambas
       if (!k) continue;
       m.set(k, (m.get(k) || 0) + Number(t.amount || 0));
     }
