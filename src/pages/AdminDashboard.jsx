@@ -40,6 +40,8 @@ const DEFAULT_KEYS = [
   'projects.issuance_fee_pct',
   'projects.secondary_market_fee_pct',
   'trading.slippage_pct_max',
+  'trading.bot_cancel_fee_usd',
+  'trading.bot_cancel_fee_pct',
 ];
 
 const DEFAULT_VALUES = {
@@ -51,6 +53,8 @@ const DEFAULT_VALUES = {
   'projects.issuance_fee_pct': 1.0,
   'projects.secondary_market_fee_pct': 0.5,
   'trading.slippage_pct_max': 0.2,
+  'trading.bot_cancel_fee_usd': 0,
+  'trading.bot_cancel_fee_pct': 0,
 };
 
 export default function AdminDashboard() {
@@ -129,6 +133,8 @@ export default function AdminDashboard() {
     'projects.issuance_fee_pct': [0, 10],
     'projects.secondary_market_fee_pct': [0, 10],
     'trading.slippage_pct_max': [0, 5],
+    'trading.bot_cancel_fee_usd': [0, 100000],
+    'trading.bot_cancel_fee_pct': [0, 100],
   };
 
   const parseNum = (v) => {
@@ -181,7 +187,12 @@ export default function AdminDashboard() {
     try {
       const { error } = await supabase.rpc('set_admin_setting', { p_key: key, p_value: n, p_note: null });
       if (error) throw error;
-      toast({ title: 'Ajuste guardado', description: `${key}: ${pct(n)}%` });
+
+      const isUsd = key === 'trading.bot_cancel_fee_usd';
+      toast({
+        title: 'Ajuste guardado',
+        description: isUsd ? `${key}: $${fmt(n)}` : `${key}: ${pct(n)}%`,
+      });
       setSettingsOriginal((o) => ({ ...o, [key]: n }));
     } catch (e) {
       console.error(e);
@@ -370,8 +381,8 @@ export default function AdminDashboard() {
       }
 
       const { error } = await supabase
-      .from('market_instruments')
-      .upsert(payload, { onConflict: 'symbol' }); // si existe, actualiza
+        .from('market_instruments')
+        .upsert(payload, { onConflict: 'symbol' });
       if (error) throw error;
 
       // Tick inicial para simuladas/manual/real (servidor)
@@ -684,10 +695,10 @@ export default function AdminDashboard() {
         <CardHeader>
           <CardTitle className="text-white flex items-center">
             <Settings className="h-5 w-5 mr-2 text-cyan-400" />
-            Configuración (%)
+            Configuración
           </CardTitle>
           <CardDescription className="text-slate-300">
-            Define porcentajes para planes, bots, referidos, proyectos y trading. (Sólo admins)
+            Define porcentajes y fees para planes, bots, referidos, proyectos y trading. (Sólo admins)
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -702,60 +713,85 @@ export default function AdminDashboard() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <SettingItem
-              label="Planes: Retorno diario (%)"
+              label="Planes: Retorno diario"
+              unit="%"
               k="plans.default_daily_return_pct"
               value={settings['plans.default_daily_return_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'plans.default_daily_return_pct': v }))}
               onSave={() => saveSetting('plans.default_daily_return_pct', settings['plans.default_daily_return_pct'])}
             />
             <SettingItem
-              label="Planes: Fee de retiro (%)"
+              label="Planes: Fee de retiro"
+              unit="%"
               k="plans.withdraw_fee_pct"
               value={settings['plans.withdraw_fee_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'plans.withdraw_fee_pct': v }))}
               onSave={() => saveSetting('plans.withdraw_fee_pct', settings['plans.withdraw_fee_pct'])}
             />
             <SettingItem
-              label="Bots: Profit share (%)"
+              label="Bots: Profit share"
+              unit="%"
               k="bots.profit_share_pct"
               value={settings['bots.profit_share_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'bots.profit_share_pct': v }))}
               onSave={() => saveSetting('bots.profit_share_pct', settings['bots.profit_share_pct'])}
             />
             <SettingItem
-              label="Referrals: Nivel 1 (%)"
+              label="Referrals: Nivel 1"
+              unit="%"
               k="referrals.level1_pct"
               value={settings['referrals.level1_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level1_pct': v }))}
               onSave={() => saveSetting('referrals.level1_pct', settings['referrals.level1_pct'])}
             />
             <SettingItem
-              label="Referrals: Nivel 2 (%)"
+              label="Referrals: Nivel 2"
+              unit="%"
               k="referrals.level2_pct"
               value={settings['referrals.level2_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'referrals.level2_pct': v }))}
               onSave={() => saveSetting('referrals.level2_pct', settings['referrals.level2_pct'])}
             />
             <SettingItem
-              label="Proyectos: Emisión (%)"
+              label="Proyectos: Emisión"
+              unit="%"
               k="projects.issuance_fee_pct"
               value={settings['projects.issuance_fee_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'projects.issuance_fee_pct': v }))}
               onSave={() => saveSetting('projects.issuance_fee_pct', settings['projects.issuance_fee_pct'])}
             />
             <SettingItem
-              label="Proyectos: Mercado secundario (%)"
+              label="Proyectos: Mercado secundario"
+              unit="%"
               k="projects.secondary_market_fee_pct"
               value={settings['projects.secondary_market_fee_pct']}
               onChange={(v) => setSettings((s) => ({ ...s, 'projects.secondary_market_fee_pct': v }))}
               onSave={() => saveSetting('projects.secondary_market_fee_pct', settings['projects.secondary_market_fee_pct'])}
             />
             <SettingItem
-              label="Trading: Slippage máx. (%)"
+              label="Trading: Slippage máx."
+              unit="%"
               k="trading.slippage_pct_max"
               value={settings['trading.slippage_pct_max']}
               onChange={(v) => setSettings((s) => ({ ...s, 'trading.slippage_pct_max': v }))}
               onSave={() => saveSetting('trading.slippage_pct_max', settings['trading.slippage_pct_max'])}
+            />
+            <SettingItem
+              label="Bots: Fee cancelación (USD)"
+              unit="$"
+              step="0.01"
+              k="trading.bot_cancel_fee_usd"
+              value={settings['trading.bot_cancel_fee_usd']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'trading.bot_cancel_fee_usd': v }))}
+              onSave={() => saveSetting('trading.bot_cancel_fee_usd', settings['trading.bot_cancel_fee_usd'])}
+            />
+            <SettingItem
+              label="Bots: Fee cancelación (%)"
+              unit="%"
+              k="trading.bot_cancel_fee_pct"
+              value={settings['trading.bot_cancel_fee_pct']}
+              onChange={(v) => setSettings((s) => ({ ...s, 'trading.bot_cancel_fee_pct': v }))}
+              onSave={() => saveSetting('trading.bot_cancel_fee_pct', settings['trading.bot_cancel_fee_pct'])}
             />
           </div>
         </CardContent>
@@ -869,7 +905,7 @@ export default function AdminDashboard() {
                     ))}
                     {instruments.length === 0 && (
                       <tr>
-                        <td colSpan="10" className="py-6 text-center text-slate-400">
+                        <td colSpan={10} className="py-6 text-center text-slate-400">
                           Sin criptomonedas.
                         </td>
                       </tr>
@@ -1163,7 +1199,7 @@ export default function AdminDashboard() {
                   </tr>
                 ))}
                 {filteredUsers.length === 0 && (
-                  <tr><td colSpan="5" className="py-6 text-center text-slate-400">Sin resultados.</td></tr>
+                  <tr><td colSpan={5} className="py-6 text-center text-slate-400">Sin resultados.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1242,21 +1278,21 @@ export default function AdminDashboard() {
   );
 }
 
-/** Item reusable para Configuración (%) */
-function SettingItem({ label, k, value, onChange, onSave }) {
+/** Item reusable para Configuración */
+function SettingItem({ label, k, value, onChange, onSave, unit = '%', step = '0.01' }) {
   return (
     <div className="p-4 bg-slate-800/50 rounded border border-slate-700/50 space-y-2">
       <p className="text-slate-300 text-sm">{label}</p>
       <div className="flex items-center gap-2">
         <Input
           type="number"
-          step="0.01"
+          step={step}
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
           className="bg-slate-900 border-slate-700 text-white"
-          placeholder="0.00"
+          placeholder={unit === '$' ? '0.00' : '0.00'}
         />
-        <span className="text-slate-400 text-sm">%</span>
+        <span className="text-slate-400 text-sm">{unit}</span>
         <Button size="sm" onClick={onSave}>
           <Save className="h-4 w-4 mr-1" /> Guardar
         </Button>

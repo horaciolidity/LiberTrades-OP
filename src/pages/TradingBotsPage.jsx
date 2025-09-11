@@ -1,3 +1,4 @@
+// src/pages/TradingBotsPage.jsx
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -34,6 +35,11 @@ const fmt = (n, dec = 2) => {
   const v = Number(n);
   return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
 };
+const fmtSign = (n, dec = 2) => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return (0).toFixed(dec);
+  return (v >= 0 ? '+' : '') + v.toFixed(dec);
+};
 const clamp = (v, a = 0, b = 100) => Math.min(b, Math.max(a, v));
 const parsePctRange = (txt) => {
   const m = String(txt || '').match(/(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*%/);
@@ -43,6 +49,7 @@ const parsePctRange = (txt) => {
   return { min: 0, max: 0 };
 };
 const normStatus = (s) => String(s || '').trim().toLowerCase();
+const pnlColor = (n) => (n > 0 ? 'text-emerald-400' : n < 0 ? 'text-rose-400' : 'text-slate-200');
 
 /* ========== Catálogo visible (marketing) ========== */
 const tradingBots = [
@@ -95,19 +102,44 @@ const TradingBotsPage = () => {
   // DataContext: RPCs y datos
   const {
     botActivations,
-    transactions,              // usamos transacciones para sumar bot_profit
     activateBot,
     pauseBot,
     resumeBot,
     cancelBot,
     refreshBotActivations,
     refreshTransactions,
+    settings,
+
+    // PnL derivado desde DataContext
+    getBotPnl,
+    totalBotProfit = 0, // bruto
+    totalBotFees = 0,   // fees
+    totalBotNet = 0,    // neto
   } = useData();
 
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
   const [busyActivate, setBusyActivate] = useState(false);
   const [busyById, setBusyById] = useState(() => new Map());
+  const [showNet, setShowNet] = useState(true);
+
+  // Fee cancelación (lee varias claves por compatibilidad)
+  const cancelFeePct = Number(
+    settings?.['trading.bot.cancel_fee_pct'] ??
+    settings?.['trading.cancel_fee_pct'] ??
+    settings?.botCancelFeePct ??
+    0
+  );
+  const cancelFeeUsd = Number(
+    settings?.['trading.bot.cancel_fee_usd'] ??
+    settings?.['trading.cancel_fee_usd'] ??
+    settings?.botCancelFeeUsd ??
+    0
+  );
+  const feeParts = [];
+  if (cancelFeePct > 0) feeParts.push(`${fmt(cancelFeePct, 2)}%`);
+  if (cancelFeeUsd > 0) feeParts.push(`$${fmt(cancelFeeUsd)}`);
+  const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + ')}` : null;
 
   const setRowBusy = useCallback((id, val) => {
     setBusyById((prev) => {
@@ -149,38 +181,11 @@ const TradingBotsPage = () => {
   const pctBotsUsd = clamp((botsAllocated / GOALS.botsUsd) * 100);
   const energyBots = clamp((pctBotsCount + pctBotsUsd) / 2);
 
-  /* ---- Ganancias reales de bots (desde wallet_transactions) ---- */
-  const botProfitTx = useMemo(
-    () =>
-      (transactions || []).filter(
-        (t) =>
-          String(t?.type || '').toLowerCase() === 'bot_profit' &&
-          String(t?.status || '').toLowerCase() === 'completed'
-      ),
-    [transactions]
-  );
-
-  const totalBotProfit = useMemo(
-    () => botProfitTx.reduce((s, t) => s + Number(t.amount || 0), 0),
-    [botProfitTx]
-  );
-
-  // Mapa: activation_id => ganancia acumulada
-  const profitByActivation = useMemo(() => {
-    const m = new Map();
-    for (const t of botProfitTx) {
-      const k = t.referenceId ?? t.reference_id; // DataContext normaliza ambas
-      if (!k) continue;
-      m.set(k, (m.get(k) || 0) + Number(t.amount || 0));
-    }
-    return m;
-  }, [botProfitTx]);
-
   /* ---- Refresh on mount / user change ---- */
   useEffect(() => {
     if (!user?.id) return;
     refreshBotActivations?.();
-    refreshTransactions?.();
+    refreshTransactions?.(); // el PnL deriva de transacciones
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
@@ -306,7 +311,7 @@ const TradingBotsPage = () => {
       const r = await cancelBot?.(id);
       if (r?.ok) {
         toast({ title: 'Bot cancelado' });
-        await refreshBotActivations?.();
+        await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
       } else {
         toast({ title: 'No se pudo cancelar', description: r?.msg || '', variant: 'destructive' });
       }
@@ -325,6 +330,10 @@ const TradingBotsPage = () => {
     return [...base, ...extra.filter((v) => !base.includes(v))];
   }, [availableUsd]);
 
+  // Valores para el toggle del resumen
+  const summaryPnlValue = showNet ? totalBotNet : totalBotProfit;
+  const summaryPnlLabel = showNet ? 'Ganancias (neto)' : 'Ganancias (bruto)';
+
   return (
     <>
       <div className="space-y-8">
@@ -334,10 +343,17 @@ const TradingBotsPage = () => {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
         >
-          <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
-            <BotIcon className="h-8 w-8 mr-3 text-purple-400" />
-            Bots de Trading Automatizado
-          </h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
+              <BotIcon className="h-8 w-8 mr-3 text-purple-400" />
+              Bots de Trading Automatizado
+            </h1>
+            {cancelFeeLabel && (
+              <span className="text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
+                {cancelFeeLabel}
+              </span>
+            )}
+          </div>
           <p className="text-slate-300">
             Maximizá tus ganancias con bots inteligentes conectados a tu saldo.
           </p>
@@ -346,13 +362,22 @@ const TradingBotsPage = () => {
         {/* Resumen / energía de bots */}
         <Card className="crypto-card">
           <CardHeader className="pb-2">
-            <CardTitle className="text-white flex items-center gap-2">
-              <Gauge className="h-5 w-5 text-emerald-400" />
-              Estado de tus Bots
-            </CardTitle>
-            <CardDescription className="text-slate-300">
-              Progreso hacia tus objetivos (cantidad y capital asignado).
-            </CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-white flex items-center gap-2">
+                  <Gauge className="h-5 w-5 text-emerald-400" />
+                  Estado de tus Bots
+                </CardTitle>
+                <CardDescription className="text-slate-300">
+                  Progreso hacia tus objetivos (cantidad y capital asignado).
+                </CardDescription>
+              </div>
+              {cancelFeeLabel && (
+                <span className="hidden md:inline text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
+                  {cancelFeeLabel}
+                </span>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -386,12 +411,43 @@ const TradingBotsPage = () => {
                   ${fmt(activeEstimated.min)} – ${fmt(activeEstimated.max)}
                 </div>
               </div>
+
+              {/* Ganancias con toggle Neto/Bruto */}
               <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
-                <div className="text-xs text-slate-400 flex items-center gap-2">
-                  <Coins className="w-4 h-4 text-green-300" />
-                  Ganancias acumuladas (reales)
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-slate-400 flex items-center gap-2">
+                    <Coins className="w-4 h-4 text-green-300" />
+                    {summaryPnlLabel}
+                  </div>
+                  <div className="flex gap-1">
+                    <Button
+                      size="sm"
+                      variant={showNet ? 'secondary' : 'outline'}
+                      className="h-6 px-2 text-[11px]"
+                      onClick={() => setShowNet(true)}
+                    >
+                      Neto
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={!showNet ? 'secondary' : 'outline'}
+                      className="h-6 px-2 text-[11px]"
+                      onClick={() => setShowNet(false)}
+                    >
+                      Bruto
+                    </Button>
+                  </div>
                 </div>
-                <div className="text-2xl text-white font-semibold">+${fmt(totalBotProfit)}</div>
+                <div className={`text-2xl font-semibold ${pnlColor(summaryPnlValue)}`}>
+                  {fmtSign(summaryPnlValue)}
+                </div>
+                <div className="text-xs text-slate-400 mt-1">
+                  {showNet ? (
+                    <>Bruto: +${fmt(totalBotProfit)} · fees ${fmt(totalBotFees)}</>
+                  ) : (
+                    <>Neto: {fmtSign(totalBotNet)} · fees ${fmt(totalBotFees)}</>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -504,11 +560,9 @@ const TradingBotsPage = () => {
                       onClick={() => {
                         playSound?.('click');
                         setSelectedBot(bot);
-                        const suggested = Math.min(
-                          Math.max(bot.minInvestment, 250),
-                          Math.max(availableUsd, bot.minInvestment)
-                        );
-                        setInvestmentAmount(String(suggested));
+                        // sugerencia: NUNCA mayor al saldo disponible
+                        const suggested = Math.min(availableUsd, Math.max(bot.minInvestment, 250));
+                        setInvestmentAmount(String(suggested > 0 ? suggested : bot.minInvestment));
                       }}
                       className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90`}
                     >
@@ -644,7 +698,15 @@ const TradingBotsPage = () => {
 
         {/* Mis bots (activaciones del usuario) */}
         <div className="space-y-4">
-          <h2 className="text-xl font-bold text-white">Mis Bots</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold text-white">Mis Bots</h2>
+            {cancelFeeLabel && (
+              <span className="text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
+                {cancelFeeLabel}
+              </span>
+            )}
+          </div>
+
           {!botActivations?.length ? (
             <div className="opacity-60">Sin activaciones.</div>
           ) : (
@@ -663,9 +725,9 @@ const TradingBotsPage = () => {
                 const createdAt =
                   a.createdAt || a.created_at || (a.created_at_ms ? new Date(a.created_at_ms) : null);
 
-                // Ganancia acumulada real por esta activación
-                const accProfit = Number(profitByActivation.get(a.id) || 0);
-                const roiPct = a.amountUsd > 0 ? (accProfit / Number(a.amountUsd)) * 100 : 0;
+                // PnL real por esta activación
+                const { profit: grossProfit = 0, fees = 0, net = 0 } = getBotPnl?.(a.id) || {};
+                const roiNet = a.amountUsd > 0 ? (net / Number(a.amountUsd)) * 100 : 0;
 
                 return (
                   <Card key={a.id} className="crypto-card">
@@ -703,12 +765,15 @@ const TradingBotsPage = () => {
                           </div>
                         </div>
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
-                          <div className="text-xs text-slate-400">Ganancia acumulada</div>
-                          <div className="text-white font-semibold">+${fmt(accProfit)}</div>
+                          <div className="text-xs text-slate-400">PnL neto</div>
+                          <div className={`font-semibold ${pnlColor(net)}`}>{fmtSign(net)}</div>
+                          <div className="text-[10px] text-slate-500 mt-1">
+                            Detalle: bruto +${fmt(grossProfit)} · fees ${fmt(fees)}
+                          </div>
                         </div>
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
-                          <div className="text-xs text-slate-400">ROI</div>
-                          <div className="text-white font-semibold">{fmt(roiPct)}%</div>
+                          <div className="text-xs text-slate-400">ROI neto</div>
+                          <div className={`font-semibold ${pnlColor(roiNet)}`}>{fmtSign(roiNet)}%</div>
                         </div>
                       </div>
 

@@ -42,11 +42,11 @@ export default function TradingPanel({
   const {
     pairOptions: pairsFromCtx = [],
     getPairInfo,
-    // 👇 importante para que el componente re-renderize con ticks del contexto
+    // 👇 importante para que el componente re-renderice con ticks del contexto
     cryptoPrices: ctxPrices = {},
   } = useData();
 
-  // (heartbeat) por si el provider muta objetos sin cambiar la ref
+  // Heartbeat suave para refrescar vista con los ticks (sin depender de refs externas)
   const [, bump] = useState(0);
   useEffect(() => {
     const id = setInterval(() => bump((x) => (x + 1) % 1e9), 1000);
@@ -209,7 +209,7 @@ export default function TradingPanel({
           />
           <div className="flex gap-2">
             {[50, 100, 250, 500].map((v) => (
-              <Button key={v} variant="secondary" size="xs" onClick={() => setTradeAmount(String(v))}>
+              <Button key={v} variant="secondary" size="sm" onClick={() => setTradeAmount(String(v))}>
                 {v}
               </Button>
             ))}

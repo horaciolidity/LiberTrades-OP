@@ -15,6 +15,15 @@ import { useData } from '@/contexts/DataContext';
 const safeArr = (a) => (Array.isArray(a) ? a : []);
 const num = (v, fb = 0) => (Number.isFinite(Number(v)) ? Number(v) : fb);
 
+// devuelve el primer valor numérico finito de la lista (o NaN)
+const firstFinite = (...vals) => {
+  for (const v of vals) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return NaN;
+};
+
 const fmt = (v, d = 2) =>
   (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : (0).toFixed(d));
 
@@ -58,14 +67,14 @@ const parseTsMs = (ts) => {
   if (ts == null) return NaN;
   if (typeof ts === 'number') return ts < 2e10 ? ts * 1000 : ts;
   if (typeof ts === 'string') {
-    const ms = Date.parse(ts);
-    if (Number.isFinite(ms)) return ms;
+    const ms1 = Date.parse(ts);
+    if (Number.isFinite(ms1)) return ms1;
     const n = Number(ts);
     if (Number.isFinite(n)) return n < 2e10 ? n * 1000 : n;
   }
   const d = new Date(ts);
-  const ms = d.getTime();
-  return Number.isFinite(ms) ? ms : NaN;
+  const ms2 = d.getTime();
+  return Number.isFinite(ms2) ? ms2 : NaN;
 };
 
 const fmtTime = (ts) => {
@@ -90,27 +99,24 @@ const fmtDuration = (seconds) => {
 
 /* --------------------- helpers de trading -------------------- */
 const getQty = (t) => {
-  const direct =
-    num(t?.qty, NaN) ??
-    num(t?.quantity, NaN) ??
-    num(t?.units, NaN) ??
-    num(t?.size, NaN);
+  // probar campos directos primero
+  const direct = firstFinite(t?.qty, t?.quantity, t?.units, t?.size);
   if (Number.isFinite(direct) && direct > 0) return direct;
 
+  // derivado: amount / entry
   const entry = num(t?.entry_price ?? t?.entryPrice ?? t?.price ?? t?.priceAtExecution, 0);
-
-  const amount =
-    num(t?.amountAtOpen ?? t?.amount_usd ?? t?.amount_usd_open ?? t?.notional_usd ?? t?.amount, 0);
-
-  if (entry > 0 && amount > 0) return amount / entry;
+  const amount = firstFinite(
+    t?.amountAtOpen, t?.amount_usd, t?.amount_usd_open, t?.notional_usd, t?.amount
+  );
+  if (entry > 0 && Number.isFinite(amount) && amount > 0) return amount / entry;
   return 0;
 };
 
 const getOpenNotional = (t) => {
   const entry = num(t?.entry_price ?? t?.entryPrice ?? t?.price ?? t?.priceAtExecution, 0);
-  const amountOpen =
-    num(t?.amountAtOpen ?? t?.amount_usd ?? t?.amount_usd_open ?? t?.notional_usd, NaN) ??
-    num(t?.amount, NaN);
+  const amountOpen = firstFinite(
+    t?.amountAtOpen, t?.amount_usd, t?.amount_usd_open, t?.notional_usd, t?.amount
+  );
   if (Number.isFinite(amountOpen) && amountOpen > 0) return amountOpen;
 
   const qty = getQty(t);
@@ -120,15 +126,18 @@ const getOpenNotional = (t) => {
 
 const remainingSeconds = (trade) => {
   if (!trade || String(trade.status || '').toLowerCase() !== 'open') return null;
+
   let closeAtMs = parseTsMs(trade.closeAt ?? trade.closeat);
   if (!Number.isFinite(closeAtMs)) {
-    const ts =
-      parseTsMs(trade.timestamp) ??
-      parseTsMs(trade.openedAt) ??
-      parseTsMs(trade.opened_at) ??
-      parseTsMs(trade.createdAt) ??
-      parseTsMs(trade.created_at) ??
-      Date.now();
+    let ts = firstFinite(
+      parseTsMs(trade.timestamp),
+      parseTsMs(trade.openedAt),
+      parseTsMs(trade.opened_at),
+      parseTsMs(trade.createdAt),
+      parseTsMs(trade.created_at)
+    );
+    if (!Number.isFinite(ts)) ts = Date.now();
+
     const durSec = num(trade.durationSeconds ?? trade.duration, 0);
     if (durSec > 0 && Number.isFinite(ts)) closeAtMs = ts + durSec * 1000;
   }
@@ -146,11 +155,12 @@ const useLivePriceGetter = (externalPrices) => {
       const base = baseFromPair(norm);
 
       // 1) props (si vienen)
-      const pExt =
-        externalPrices?.[norm]?.price ??
-        externalPrices?.[base]?.price ??
-        externalPrices?.[noSlash(norm)]?.price;
-      if (Number.isFinite(Number(pExt))) return Number(pExt);
+      const pExt = firstFinite(
+        externalPrices?.[norm]?.price,
+        externalPrices?.[base]?.price,
+        externalPrices?.[noSlash(norm)]?.price
+      );
+      if (Number.isFinite(pExt)) return pExt;
 
       // 2) helper del contexto
       if (typeof getPairInfo === 'function') {
@@ -171,17 +181,14 @@ const useLivePriceGetter = (externalPrices) => {
         ctxPrices?.[norm]?.history?.at?.(-1)?.value,
         ctxPrices?.[base]?.history?.at?.(-1)?.value,
       ];
-      for (const p of tries) {
-        if (Number.isFinite(Number(p))) return Number(p);
-      }
-      return NaN;
+      const p = firstFinite(...tries);
+      return p;
     },
     [externalPrices, ctxPrices, getPairInfo]
   );
 };
 
 /* ----------- helpers PnL persistido / cierre ----------- */
-// Ignorar null/undefined
 const realizedFromRow = (t) => {
   const cands = [
     t?.realized_pnl_usd,
@@ -192,12 +199,7 @@ const realizedFromRow = (t) => {
     t?.profit,
     t?.realized,
   ];
-  for (const v of cands) {
-    if (v === null || v === undefined) continue;
-    const n = Number(v);
-    if (Number.isFinite(n)) return n;
-  }
-  return NaN;
+  return firstFinite(...cands);
 };
 
 const sideOf = (t) => String(t?.type ?? t?.side ?? '').toLowerCase();
@@ -214,11 +216,12 @@ const calcUPnL = (trade, getLive) => {
 const inferClosePriceIfMissing = (trade, live, localHint) => {
   if (Number.isFinite(localHint)) return localHint;
 
-  const explicit =
-    trade.close_price ??
-    trade.closePrice ??
-    trade.closeprice;
-  if (explicit != null && Number.isFinite(Number(explicit))) return Number(explicit);
+  const explicit = firstFinite(
+    trade?.close_price,
+    trade?.closePrice,
+    trade?.closeprice
+  );
+  if (Number.isFinite(explicit)) return explicit;
 
   const entry = num(trade.entry_price ?? trade.entryPrice ?? trade.price ?? trade.priceAtExecution, NaN);
   const qty = getQty(trade);
@@ -269,8 +272,9 @@ const TradeRow = ({
   const mm = Number.isFinite(secs) ? Math.floor(secs / 60) : null;
   const ss = Number.isFinite(secs) ? String(secs % 60).padStart(2, '0') : null;
 
-  const amountForRow =
-    num(t.amountAtOpen ?? t.amount_usd ?? t.amount_usd_open ?? t.notional_usd ?? t.amount, NaN);
+  const amountForRow = firstFinite(
+    t?.amountAtOpen, t?.amount_usd, t?.amount_usd_open, t?.notional_usd, t?.amount
+  );
   const amountText = Number.isFinite(amountForRow)
     ? `$${fmt(amountForRow, 2)}`
     : (entry > 0 && getQty(t) > 0 ? `$${fmt(entry * getQty(t), 2)}` : '$0.00');
@@ -463,7 +467,7 @@ const TradesHistory = ({
         if (secs === 0 && !autoClosingSet.current.has(t.id)) {
           autoClosingSet.current.add(t.id);
           try {
-            const pair = t?.pair ?? (t?.symbol ? `${t.symbol}/${t?.quote || 'USDT'}` : '');
+            const pair = t?.pair ?? (t?.symbol ? `${t?.symbol}/${t?.quote || 'USDT'}` : '');
             const p = Number(getLive(pair));
             if (Number.isFinite(p)) setCloseHint(t.id, p);
             await callCloseRpc(t.id, p);
@@ -516,13 +520,13 @@ const TradesHistory = ({
     const denom = amountOpen > 0 ? amountOpen : (entry > 0 && qty > 0 ? entry * qty : 0);
     const pnlPct = denom ? (pnlShown / denom) * 100 : 0;
 
-    const tsOpen =
-      parseTsMs(selected.timestamp) ??
-      parseTsMs(selected.openedAt) ??
-      parseTsMs(selected.opened_at) ??
-      parseTsMs(selected.createdAt) ??
-      parseTsMs(selected.created_at) ??
-      NaN;
+    const tsOpen = firstFinite(
+      parseTsMs(selected.timestamp),
+      parseTsMs(selected.openedAt),
+      parseTsMs(selected.opened_at),
+      parseTsMs(selected.createdAt),
+      parseTsMs(selected.created_at)
+    );
 
     const tsClose = isOpen ? null : (parseTsMs(selected.closeat ?? selected.closeAt) || null);
     const secondsElapsed = Number.isFinite(tsOpen)

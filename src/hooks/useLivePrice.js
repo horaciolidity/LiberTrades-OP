@@ -14,11 +14,14 @@ function simulatePrice(inst, rules) {
   const dec  = Number(inst?.decimals ?? 2) || 2;
   const hour = new Date().getUTCHours();
 
+  const symU = String(inst?.symbol || '').toUpperCase();
   const hits = (rules || []).filter(
-    (r) =>
-      (r?.symbol || r?.asset_symbol) === inst.symbol &&
-      r?.active &&
-      inRangeUTC(hour, Number(r.start_hour ?? 0), Number(r.end_hour ?? 0))
+    (r) => {
+      const rSym = String(r?.symbol || r?.asset_symbol || '').toUpperCase();
+      return rSym === symU &&
+        r?.active &&
+        inRangeUTC(hour, Number(r.start_hour ?? 0), Number(r.end_hour ?? 0));
+    }
   );
 
   let mult = 1;
@@ -104,6 +107,9 @@ export function useLivePrice(inst, rules) {
           setQuote({ price: round(c), change: Number.isFinite(P) ? P : null });
         } catch {}
       };
+
+      // 🔧 si hay error, cerramos para que dispare onclose y el fallback REST
+      ws.onerror = () => { try { ws.close(); } catch {} };
 
       ws.onclose = () => {
         // fallback REST cada 5s (usa 24hr para traer %)

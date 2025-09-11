@@ -293,7 +293,6 @@ export default function TradingSimulator() {
     const base = parseBaseFromPair(trade?.pair || selectedPair);
     const current = Number(mergedPrices?.[base]?.price ?? 0);
     const entry = Number(trade?.price ?? trade?.priceAtExecution ?? 0);
-    // soporta distintos nombres para nocional en USD
     const amountUsd = Number(
       trade?.amountAtOpen ??
       trade?.amount_usd ??
@@ -343,7 +342,6 @@ export default function TradingSimulator() {
       amount: Number(tradeData.amount),
       price: Number(tradeData.price),
       status: 'open',
-      // timestamptz ⇒ ISO
       timestamp: new Date().toISOString(),
     };
 
@@ -380,8 +378,7 @@ export default function TradingSimulator() {
   //  - REAL: RPC close_trade vía DataContext (sin UPDATE a mano)
   const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) => {
     if (mode === 'demo') {
-      // El hook interpreta boolean en 2º arg como "manual"
-      tradingLogic.closeTrade(tradeId, true);
+      tradingLogic.closeTrade(tradeId, true); // el hook interpreta boolean como cierre manual
       return true;
     }
     if (!tradeId) return false;
@@ -396,8 +393,12 @@ export default function TradingSimulator() {
         closePrice = Number.isFinite(live) ? live : null;
       }
 
-      // RPC del server (si tu función en DB usa uuid, este tradeId (string) va bien)
-      const ok = await closeTradeRPC?.(String(tradeId), Number.isFinite(closePrice) ? closePrice : null, true);
+      // RPC del server
+      const ok = await closeTradeRPC?.(
+        String(tradeId),
+        Number.isFinite(closePrice) ? closePrice : null,
+        true
+      );
       await fetchRealData();
       if (ok) playSound?.('success');
       return !!ok;
@@ -430,23 +431,27 @@ export default function TradingSimulator() {
 
   // =================== Stats (con unrealized) ===================
   const demoRealized = useMemo(
-    () => safe(tradingLogic.trades).filter(t => (t.status || '').toLowerCase() === 'closed')
+    () => safe(tradingLogic.trades)
+      .filter(t => (t.status || '').toLowerCase() === 'closed')
       .reduce((s, t) => s + Number(t.profit || 0), 0),
     [tradingLogic.trades]
   );
   const demoUnrealized = useMemo(
-    () => demoTradesWithLive.filter(t => (t.status || '').toLowerCase() === 'open')
+    () => demoTradesWithLive
+      .filter(t => (t.status || '').toLowerCase() === 'open')
       .reduce((s, t) => s + Number(t.upnl || 0), 0),
     [demoTradesWithLive]
   );
 
   const realRealized = useMemo(
-    () => realTrades.filter(t => (t.status || '').toLowerCase() === 'closed')
+    () => realTrades
+      .filter(t => (t.status || '').toLowerCase() === 'closed')
       .reduce((s, t) => s + Number(t.profit || 0), 0),
     [realTrades]
   );
   const realUnrealized = useMemo(
-    () => realTradesWithLive.filter(t => (t.status || '').toLowerCase() === 'open')
+    () => realTradesWithLive
+      .filter(t => (t.status || '').toLowerCase() === 'open')
       .reduce((s, t) => s + Number(t.upnl || 0), 0),
     [realTradesWithLive]
   );

@@ -6,6 +6,7 @@ import React, {
   useState,
   useEffect,
   useRef,
+  useCallback,
 } from 'react';
 import dayjs from 'dayjs';
 import { supabase } from '@/lib/supabaseClient';
@@ -85,12 +86,15 @@ export function DataProvider({ children }) {
 
   const [cryptoPrices, setCryptoPrices] = useState({});
 
-  /* --------------- Admin settings (slippage) --------- */
+  /* --------------- Admin settings ------------------- */
   const [adminSettings, setAdminSettings] = useState({});
   const DEFAULT_SLIPPAGE = 0.2; // %
   const slippageMaxPct = Number(
     adminSettings['trading.slippage_pct_max'] ?? DEFAULT_SLIPPAGE
   );
+  // fees de cancelación de bots (expuestos a la UI)
+  const botCancelFeeUsd = Number(adminSettings['trading.bot_cancel_fee_usd'] ?? 0);
+  const botCancelFeePct = Number(adminSettings['trading.bot_cancel_fee_pct'] ?? 0);
 
   /* --------------- Refs / conexiones ---------------- */
   const wsRef = useRef(null);
@@ -514,7 +518,6 @@ export function DataProvider({ children }) {
       lastTickRef.current = t;
 
       const instrumentsCur = instrumentsRef.current;
-      const rulesCur = rulesRef.current;
       const quotesCur = quotesRef.current;
       const histCur = histRef.current;
       const liveMapCur = liveMapRef.current;
@@ -531,7 +534,6 @@ export function DataProvider({ children }) {
 
       for (const symU of symbolsSet) {
         const inst = instrumentsCur.find((i) => String(i.symbol || '').toUpperCase() === symU);
-        const src = String(inst?.source || '').toLowerCase();
         const decimals = Number(inst?.decimals ?? 2);
         const quoteU = String(inst?.quote || 'USDT').toUpperCase();
 
@@ -543,12 +545,8 @@ export function DataProvider({ children }) {
           base = Number.isFinite(lastKnown) ? lastKnown : Number(inst?.base_price ?? 0);
         }
 
-        let finalPrice =
-          (symU === 'USDT' || symU === 'USDC')
-            ? 1
-            : (src === 'manual' || src === 'simulated' || src === 'real')
-              ? base
-              : applyRulesForSymbol(symU, base, rulesCur, new Date());
+        // ⛔️ No re-aplicamos reglas aquí
+        let finalPrice = (symU === 'USDT' || symU === 'USDC') ? 1 : base;
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
           finalPrice = lastKnown;
@@ -866,7 +864,24 @@ export function DataProvider({ children }) {
   }
   async function pauseBot(id)  { return resumeLike('pause_trading_bot',  id); }
   async function resumeBot(id) { return resumeLike('resume_trading_bot', id); }
-  async function cancelBot(id) { return resumeLike('cancel_trading_bot', id); }
+
+  // usa la función con fee
+  async function cancelBot(id, feeUsd = 0) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    try {
+      const { data, error } = await supabase.rpc('cancel_trading_bot_with_fee', {
+        p_activation_id: id,
+        p_user_id: user.id,
+        p_fee_usd: Number(feeUsd) || 0,
+      });
+      if (error) return { ok: false, code: 'RPC_ERROR', error };
+      await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      return data ?? { ok: true };
+    } catch {
+      return { ok: false, code: 'RPC_NOT_FOUND' };
+    }
+  }
+
   async function creditBotProfit(activationId, amountUsd, note = null) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
@@ -884,23 +899,24 @@ export function DataProvider({ children }) {
     }
   }
 
-  /* ---------------- Trades: cierre (legacy RPC) -------------- */
-  async function closeTrade(tradeId, closePrice = null, force = true) {
+  /* ---------------- Trades (legacy): cerrar ---------------- */
+  async function closeTrade(tradeId, closePrice = null) {
     try {
-      const { data, error } = await supabase.rpc('close_trade_rpc', {
-        p_trade_id: String(tradeId),
-        p_close_price: Number.isFinite(Number(closePrice)) ? Number(closePrice) : null,
-        p_force: !!force,
+      const trade = trades.find((t) => t.id === tradeId);
+      if (!trade) throw new Error('Trade no encontrado');
+
+      const { data: res, error } = await supabase.rpc('close_trade', {
+        p_trade_id: tradeId,
+        p_close_price: closePrice, // null -> usa último precio
+        p_force: true,
       });
-      if (error) {
-        console.error('[close_trade_rpc]', error);
-        return null;
-      }
+      if (error) throw error;
+
       await refreshTrades();
-      return data || null;
+      return res;
     } catch (e) {
-      console.error('[close_trade_rpc] exception', e);
-      return null;
+      console.error(e);
+      throw e;
     }
   }
 
@@ -944,21 +960,73 @@ export function DataProvider({ children }) {
     if (error) throw error;
     return ensureArray(data);
   }
-  // Reemplazá SOLO esta función dentro del DataContext:
 
-function subscribeBotTrades(activationId, cb) {
-  const ch = supabase
-    .channel(`bot_trades_${activationId}`)
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'bot_trades', filter: `activation_id=eq.${activationId}` },
-      cb
-    )
-    .subscribe();
+  function subscribeBotTrades(activationId, cb) {
+    const ch = supabase
+      .channel(`bot_trades_${activationId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bot_trades', filter: `activation_id=eq.${activationId}` },
+        cb
+      )
+      .subscribe();
+    return ch; // podés luego hacer supabase.removeChannel(ch) o ch.unsubscribe()
+  }
 
-  return ch; // -> así podés hacer ch.unsubscribe() donde lo uses
-}
+  /* --------- PnL de Bots derivado desde transacciones --------- */
+  const {
+    botPnlByActivation,         // Map-like plain object { [activationId]: {profit, fees, refunds, net} }
+    totalBotProfit,             // suma de profits
+    totalBotFees,               // suma de fees
+    totalBotNet,                // profit - fees (global)
+  } = useMemo(() => {
+    const m = new Map();
+    let profitSum = 0;
+    let feesSum = 0;
 
+    for (const t of ensureArray(transactions)) {
+      // considerar solo completadas
+      if (String(t?.status || '').toLowerCase() !== 'completed') continue;
+
+      const kind = String(t?.type || '').toLowerCase(); // 'bot_profit' | 'bot_fee' | 'bot_refund' | ...
+      const aid = t?.referenceId;
+      if (!aid) continue;
+
+      if (!m.has(aid)) m.set(aid, { profit: 0, fees: 0, refunds: 0, net: 0 });
+
+      const amt = Number(t.amount || 0);
+
+      if (kind === 'bot_profit') {
+        m.get(aid).profit += amt;
+        profitSum += amt;
+      } else if (kind === 'bot_fee') {
+        m.get(aid).fees += amt;
+        feesSum += amt;
+      } else if (kind === 'bot_refund') {
+        m.get(aid).refunds += amt;
+      }
+    }
+
+    // net: profit - fees
+    for (const [k, v] of m.entries()) {
+      v.net = (Number(v.profit) || 0) - (Number(v.fees) || 0);
+      m.set(k, v);
+    }
+
+    const plain = {};
+    for (const [k, v] of m.entries()) plain[k] = v;
+
+    return {
+      botPnlByActivation: plain,
+      totalBotProfit: profitSum,
+      totalBotFees: feesSum,
+      totalBotNet: profitSum - feesSum,
+    };
+  }, [transactions]);
+
+  const getBotPnl = useCallback((activationId) => {
+    return botPnlByActivation[String(activationId)] || { profit: 0, fees: 0, refunds: 0, net: 0 };
+  }, [botPnlByActivation]);
 
   /* ---------------- Helpers UI ---------------- */
   const pairOptions = useMemo(() => {
@@ -1010,6 +1078,13 @@ function subscribeBotTrades(activationId, cb) {
     cancelBot,
     creditBotProfit,
 
+    // PnL bots (para UI)
+    botPnlByActivation,
+    getBotPnl,
+    totalBotProfit,
+    totalBotFees,
+    totalBotNet,
+
     // mercado/admin
     instruments,
     marketRules,
@@ -1038,6 +1113,8 @@ function subscribeBotTrades(activationId, cb) {
     // settings de admin
     settings: adminSettings,
     slippageMaxPct,
+    botCancelFeeUsd,
+    botCancelFeePct,
     refreshSettings: fetchAdminSettings,
 
     investmentPlans,
@@ -1045,6 +1122,8 @@ function subscribeBotTrades(activationId, cb) {
     investments, transactions, referrals, botActivations,
     instruments, marketRules, cryptoPrices, pairOptions, liveBinanceMap,
     adminSettings, slippageMaxPct, investmentPlans, trades,
+    botPnlByActivation, getBotPnl, totalBotProfit, totalBotFees, totalBotNet,
+    botCancelFeeUsd, botCancelFeePct,
   ]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
@@ -1074,6 +1153,13 @@ export function useData() {
     cancelBot: async () => ({ ok: false }),
     creditBotProfit: async () => ({ ok: false }),
 
+    // PnL bots
+    botPnlByActivation: {},
+    getBotPnl: () => ({ profit: 0, fees: 0, refunds: 0, net: 0 }),
+    totalBotProfit: 0,
+    totalBotFees: 0,
+    totalBotNet: 0,
+
     instruments: [],
     marketRules: [],
     refreshMarketInstruments: async () => {},
@@ -1100,6 +1186,8 @@ export function useData() {
     // settings
     settings: {},
     slippageMaxPct: 0.2,
+    botCancelFeeUsd: 0,
+    botCancelFeePct: 0,
     refreshSettings: async () => {},
 
     investmentPlans: [],

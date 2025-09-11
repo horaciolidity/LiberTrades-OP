@@ -50,6 +50,7 @@ export function useBinanceKlines(symbol, tfKey = '1m', limit = 200, opts = {}) {
           // Seed plano con último precio (sin 1m para no crear “velas gigantes”)
           const url = `https://data-api.binance.vision/api/v3/ticker/price?symbol=${symbol}`;
           const r = await fetch(url);
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
           const j = await r.json();
           const p = Number(j?.price);
           if (Number.isFinite(p)) {
@@ -73,7 +74,7 @@ export function useBinanceKlines(symbol, tfKey = '1m', limit = 200, opts = {}) {
           const res = await fetch(url);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const arr = await res.json();
-          const seeded = arr.map((k) => ({
+          const seeded = (Array.isArray(arr) ? arr : []).map((k) => ({
             time: Math.floor(k[0] / 1000),
             open: +k[1],
             high: +k[2],
@@ -84,7 +85,7 @@ export function useBinanceKlines(symbol, tfKey = '1m', limit = 200, opts = {}) {
           const base = cap(seeded, limit);
           setCandles(base);
           setPrice(base.length ? base[base.length - 1].close : undefined);
-          setStatus('live');
+          setStatus(base.length ? 'live' : 'error');
         }
       } catch (e) {
         console.warn('[useBinanceKlines seed]', e?.message || e);
@@ -127,8 +128,9 @@ export function useBinanceKlines(symbol, tfKey = '1m', limit = 200, opts = {}) {
 
           if (isTiny) {
             // miniTicker → agregamos en buckets 5s/15s
-            const p = Number(d?.c);
-            const tSec = Math.floor((Number(d?.E) || Date.now()) / 1000);
+            const p = Number(d?.c ?? d?.data?.c);
+            const evt = Number(d?.E ?? d?.data?.E) || Date.now();
+            const tSec = Math.floor(evt / 1000);
             if (!Number.isFinite(p)) return;
             setPrice(p);
 
@@ -155,8 +157,8 @@ export function useBinanceKlines(symbol, tfKey = '1m', limit = 200, opts = {}) {
             const arr = Array.from(buckets.values()).sort((a, b) => a.time - b.time);
             if (mountedRef.current) setCandles(cap(arr, limit));
           } else {
-            // kline en curso
-            const k = d?.k;
+            // kline en curso (tolerante a single/combined)
+            const k = d?.k ?? d?.data?.k;
             if (!k) return;
             const c = {
               time: Math.floor(k.t / 1000), // open time
@@ -197,3 +199,5 @@ export function useBinanceKlines(symbol, tfKey = '1m', limit = 200, opts = {}) {
 
   return { candles, price, status };
 }
+
+export default useBinanceKlines;
