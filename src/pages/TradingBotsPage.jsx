@@ -1,5 +1,5 @@
 // src/pages/TradingBotsPage.jsx
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter,
@@ -51,6 +51,7 @@ const parsePctRange = (txt) => {
 };
 const normStatus = (s) => String(s || '').trim().toLowerCase();
 const pnlColor = (n) => (n > 0 ? 'text-emerald-400' : n < 0 ? 'text-rose-400' : 'text-slate-200');
+const riskBase = (r) => (r === 'Alto' ? 65 : r === 'Medio' ? 45 : 25);
 
 /* ========== Catálogo visible (marketing) ========== */
 const tradingBots = [
@@ -100,7 +101,6 @@ const TradingBotsPage = () => {
   const { user, balances } = useAuth();
   const { playSound } = useSound();
 
-  // DataContext: RPCs y datos
   const {
     botActivations,
     activateBot,
@@ -111,11 +111,16 @@ const TradingBotsPage = () => {
     refreshTransactions,
     settings,
 
-    // PnL derivado desde DataContext
+    // PnL (desde transacciones)
     getBotPnl,
     totalBotProfit = 0, // bruto
     totalBotFees = 0,   // fees
     totalBotNet = 0,    // neto
+
+    // Trades live / precios
+    listBotTrades,
+    subscribeBotTrades,
+    getPairInfo,
   } = useData();
 
   const [selectedBot, setSelectedBot] = useState(null);
@@ -124,23 +129,28 @@ const TradingBotsPage = () => {
   const [busyById, setBusyById] = useState(() => new Map());
   const [showNet, setShowNet] = useState(true);
 
-  // Fee cancelación (lee varias claves por compatibilidad)
-  const cancelFeePct = Number(
-    settings?.['trading.bot.cancel_fee_pct'] ??
-    settings?.['trading.cancel_fee_pct'] ??
-    settings?.botCancelFeePct ??
-    0
-  );
-  const cancelFeeUsd = Number(
-    settings?.['trading.bot.cancel_fee_usd'] ??
-    settings?.['trading.cancel_fee_usd'] ??
-    settings?.botCancelFeeUsd ??
-    0
-  );
-  const feeParts = [];
-  if (cancelFeePct > 0) feeParts.push(`${fmt(cancelFeePct, 2)}%`);
-  if (cancelFeeUsd > 0) feeParts.push(`$${fmt(cancelFeeUsd)}`);
-  const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + ')}` : null;
+  // ====== Trades por activación (para PnL no realizado y par del minigráfico)
+  const [tradesByActivation, setTradesByActivation] = useState({});
+  const subsRef = useRef({});
+
+// Fees de cancelación (claves reales + fallbacks)
+const cancelFeePct = Number(
+  settings?.['trading.bot_cancel_fee_pct'] ??
+  settings?.['trading.bot_rent_fee_pct'] ?? // opcional: usar rent fee como fallback
+  settings?.['trading.cancel_fee_pct'] ??   // compatibilidad vieja (si existiera)
+  0
+);
+
+const cancelFeeUsd = Number(
+  settings?.['trading.bot_cancel_fee_usd'] ??
+  settings?.['trading.cancel_fee_usd'] ??   // compatibilidad vieja (si existiera)
+  0
+);
+
+const feeParts = [];
+if (cancelFeePct > 0) feeParts.push(`${fmt(cancelFeePct, 2)}%`);
+if (cancelFeeUsd > 0) feeParts.push(`$${fmt(cancelFeeUsd)}`);
+const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + ')}` : null;
 
   const setRowBusy = useCallback((id, val) => {
     setBusyById((prev) => {
@@ -191,6 +201,61 @@ const TradingBotsPage = () => {
   }, [user?.id]);
 
   const availableUsd = Number(balances?.usdc ?? 0);
+
+  /* ===== Carga & subscripción de trades por activación ===== */
+  const loadTrades = useCallback(async (activationId) => {
+    try {
+      const rows = await listBotTrades?.(activationId, 100);
+      setTradesByActivation((prev) => ({ ...prev, [activationId]: rows || [] }));
+    } catch {}
+  }, [listBotTrades]);
+
+  useEffect(() => {
+    (botActivations || []).forEach((a) => {
+      const id = a.id;
+      if (!id || subsRef.current[id]) return;
+
+      // Seed de trades
+      loadTrades(id);
+
+      // Subscribe live
+      const ch = subscribeBotTrades?.(id, () => loadTrades(id));
+      subsRef.current[id] = ch;
+    });
+
+    return () => {
+      Object.values(subsRef.current).forEach((ch) => {
+        try { ch?.unsubscribe?.(); } catch {}
+      });
+      subsRef.current = {};
+    };
+  }, [botActivations, subscribeBotTrades, loadTrades]);
+
+  /* ===== PnL no realizado + par principal por activación ===== */
+  const calcUnrealizedAndPair = useCallback((activationId, fallbackName) => {
+    const rows = tradesByActivation[activationId] || [];
+    let u = 0;
+    // Par principal: último trade abierto o primer par del catálogo del bot
+    const lastOpen = rows.find((r) => String(r.status).toLowerCase() === 'open');
+    let mainPair = lastOpen?.pair;
+    if (!mainPair) {
+      const cat = tradingBots.find((x) => x.name === fallbackName);
+      mainPair = cat?.pairs?.[0] || 'BTC/USDT';
+    }
+
+    for (const t of rows) {
+      if (String(t.status).toLowerCase() !== 'open') continue;
+      const info = getPairInfo?.(t.pair) || {};
+      const last = Number(info.price);
+      if (!Number.isFinite(last) || !Number.isFinite(Number(t.entry))) continue;
+
+      const sideMul = String(t.side).toLowerCase() === 'short' ? -1 : 1;
+      const pct = (last - Number(t.entry)) / Number(t.entry);
+      const pnlTrade = sideMul * pct * Number(t.leverage || 1) * Number(t.amount_usd || 0);
+      if (Number.isFinite(pnlTrade)) u += pnlTrade;
+    }
+    return { unrealized: u, mainPair };
+  }, [tradesByActivation, getPairInfo]);
 
   /* ========== Handlers ========== */
   const handleActivateBot = async () => {
@@ -258,7 +323,7 @@ const TradingBotsPage = () => {
       });
       setSelectedBot(null);
       setInvestmentAmount('');
-      await Promise.all([refreshBotActivations?.(), refreshTransactions?.()] );
+      await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
     } catch (e) {
       console.error('[handleActivateBot]', e);
       toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
@@ -725,9 +790,26 @@ const TradingBotsPage = () => {
                 const createdAt =
                   a.createdAt || a.created_at || (a.created_at_ms ? new Date(a.created_at_ms) : null);
 
-                // PnL real por esta activación
-                const { profit: grossProfit = 0, fees = 0, net = 0 } = getBotPnl?.(a.id) || {};
-                const roiNet = a.amountUsd > 0 ? (net / Number(a.amountUsd)) * 100 : 0;
+                // PnL realizado (transacciones)
+                const { profit: grossProfit = 0, fees = 0, net: realizedNet = 0 } = getBotPnl?.(a.id) || {};
+
+                // PnL no realizado + par principal (para minigráfico)
+                const { unrealized = 0, mainPair } = calcUnrealizedAndPair(a.id, a.botName);
+
+                // ROI con neto total (realizado + no realizado)
+                const totalNet = Number(realizedNet) + Number(unrealized);
+                const roiNet = a.amountUsd > 0 ? (totalNet / Number(a.amountUsd)) * 100 : 0;
+
+                // Exposición & riesgo
+                const open = (tradesByActivation[a.id] || []).filter(
+                  (t) => String(t.status).toLowerCase() === 'open'
+                );
+                const exposure = open.reduce(
+                  (s, t) => s + Number(t.amount_usd || 0) * Number(t.leverage || 1),
+                  0
+                );
+                const exposurePct = a.amountUsd > 0 ? clamp((exposure / a.amountUsd) * 100, 0, 200) : 0;
+                const riskPct = clamp(riskBase(cat?.risk) + Math.min(35, exposurePct / 2), 0, 100);
 
                 return (
                   <Card key={a.id} className="crypto-card">
@@ -749,16 +831,16 @@ const TradingBotsPage = () => {
                         </span>
                       </CardTitle>
                       <CardDescription className="text-slate-300">
-                        {a.strategy} · Capital: ${fmt(a.amountUsd)}
+                        {a.strategy} · Capital: ${fmt(a.amountUsd)} · Par: {mainPair}
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
-                      {/* Micro-gráfico del par asignado al bot */}
+                      {/* Micro-gráfico del par dinámico */}
                       <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                         <div className="text-xs text-slate-400 mb-1">
-                          Actividad del par ({a.pair || 'BTC/USDT'})
+                          Actividad del par ({mainPair})
                         </div>
-                        <MiniSparkline pair={a.pair || 'BTC/USDT'} />
+                        <MiniSparkline pair={mainPair} />
                       </div>
 
                       <div className="grid grid-cols-2 gap-2">
@@ -766,22 +848,52 @@ const TradingBotsPage = () => {
                           <div className="text-xs text-slate-400">Estimación mensual</div>
                           <div className="text-white font-semibold">+${fmt(estMin)} – +${fmt(estMax)}</div>
                         </div>
+
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                           <div className="text-xs text-slate-400">Creado</div>
                           <div className="text-white font-semibold">
                             {createdAt ? new Date(createdAt).toLocaleString() : '—'}
                           </div>
                         </div>
+
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
-                          <div className="text-xs text-slate-400">PnL neto</div>
-                          <div className={`font-semibold ${pnlColor(net)}`}>{fmtSign(net)}</div>
+                          <div className="text-xs text-slate-400">PnL realizado</div>
+                          <div className={`font-semibold ${pnlColor(realizedNet)}`}>{fmtSign(realizedNet)}</div>
                           <div className="text-[10px] text-slate-500 mt-1">
                             Detalle: bruto +${fmt(grossProfit)} · fees ${fmt(fees)}
                           </div>
                         </div>
+
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">PnL no realizado</div>
+                          <div className={`font-semibold ${pnlColor(unrealized)}`}>{fmtSign(unrealized)}</div>
+                          <div className="text-[10px] text-slate-500 mt-1">Suma de trades abiertos (MTM)</div>
+                        </div>
+
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                           <div className="text-xs text-slate-400">ROI neto</div>
                           <div className={`font-semibold ${pnlColor(roiNet)}`}>{fmtSign(roiNet)}%</div>
+                          <div className="text-[10px] text-slate-500 mt-1">Incluye PnL no realizado</div>
+                        </div>
+
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">Exposición</div>
+                          <div className="text-white font-semibold">{fmt(exposurePct, 0)}%</div>
+                          <div className="h-2 mt-2 bg-slate-800 rounded">
+                            <div className="h-2 bg-amber-400 rounded" style={{ width: `${clamp(exposurePct, 0, 100)}%` }} />
+                          </div>
+                          <div className="text-[10px] text-slate-500 mt-1">∑(monto × leverage) / capital</div>
+                        </div>
+
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3 col-span-2">
+                          <div className="flex items-center justify-between">
+                            <div className="text-xs text-slate-400">Riesgo</div>
+                            <div className="text-white font-semibold">{fmt(riskPct, 0)}%</div>
+                          </div>
+                          <div className="h-2 mt-2 bg-slate-800 rounded">
+                            <div className="h-2 bg-rose-400 rounded" style={{ width: `${riskPct}%` }} />
+                          </div>
+                          <div className="text-[10px] text-slate-500 mt-1">Riesgo base ± exposición</div>
                         </div>
                       </div>
 
