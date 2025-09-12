@@ -92,9 +92,18 @@ export function DataProvider({ children }) {
   const slippageMaxPct = Number(
     adminSettings['trading.slippage_pct_max'] ?? DEFAULT_SLIPPAGE
   );
+
   // fees de cancelación de bots (expuestos a la UI)
-  const botCancelFeeUsd = Number(adminSettings['trading.bot_cancel_fee_usd'] ?? 0);
-  const botCancelFeePct = Number(adminSettings['trading.bot_cancel_fee_pct'] ?? 0);
+  const botCancelFeeUsd = Number(
+    (adminSettings['trading.bot_cancel_fee_usd'] ??
+      adminSettings['trading.bot.cancel_fee_usd'] ??
+      adminSettings.botCancelFeeUsd) ?? 0
+  );
+  const botCancelFeePct = Number(
+    (adminSettings['trading.bot_cancel_fee_pct'] ??
+      adminSettings['trading.bot.cancel_fee_pct'] ??
+      adminSettings.botCancelFeePct) ?? 0
+  );
 
   /* --------------- Refs / conexiones ---------------- */
   const wsRef = useRef(null);
@@ -163,12 +172,24 @@ export function DataProvider({ children }) {
     try {
       const { data, error } = await supabase.rpc('get_admin_settings', { prefix: 'trading.' });
       if (error) throw error;
+
       const map = {};
       (data || []).forEach((row) => {
         const k = String(row.setting_key);
         const n = Number(row.setting_value);
         if (Number.isFinite(n)) map[k] = n;
       });
+
+      // Sinónimos para que la UI encuentre las keys
+      if (map['trading.bot_cancel_fee_pct'] != null)
+        map['trading.bot.cancel_fee_pct'] = map['trading.bot_cancel_fee_pct'];
+      if (map['trading.bot_cancel_fee_usd'] != null)
+        map['trading.bot.cancel_fee_usd'] = map['trading.bot_cancel_fee_usd'];
+
+      // Helpers planos
+      map.botCancelFeePct = map['trading.bot.cancel_fee_pct'] ?? 0;
+      map.botCancelFeeUsd = map['trading.bot.cancel_fee_usd'] ?? 0;
+
       setAdminSettings(map);
     } catch (e) {
       console.warn('[fetchAdminSettings] error:', e?.message || e);
@@ -849,6 +870,7 @@ export function DataProvider({ children }) {
       return { ok: false, code: 'RPC_NOT_FOUND' };
     }
   }
+
   async function resumeLike(fn, activationId) {
     try {
       const { data, error } = await supabase.rpc(fn, {
@@ -865,14 +887,33 @@ export function DataProvider({ children }) {
   async function pauseBot(id)  { return resumeLike('pause_trading_bot',  id); }
   async function resumeBot(id) { return resumeLike('resume_trading_bot', id); }
 
-  // usa la función con fee
-  async function cancelBot(id, feeUsd = 0) {
+  // Cancelación con fee (si no se pasa fee, lo calcula desde settings)
+  async function cancelBot(id, feeUsd = null) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
+      let fee = feeUsd;
+      if (fee == null) {
+        const pct = Number(botCancelFeePct || 0);
+        const usd = Number(botCancelFeeUsd || 0);
+
+        let amt = 0;
+        try {
+          const { data: row } = await supabase
+            .from('bot_activations')
+            .select('amount_usd')
+            .eq('id', id)
+            .single();
+          amt = Number(row?.amount_usd || 0);
+        } catch {}
+
+        const feePct = amt > 0 ? (pct / 100) * amt : 0;
+        fee = Math.max(usd, feePct);
+      }
+
       const { data, error } = await supabase.rpc('cancel_trading_bot_with_fee', {
         p_activation_id: id,
         p_user_id: user.id,
-        p_fee_usd: Number(feeUsd) || 0,
+        p_fee_usd: Number(fee) || 0,
       });
       if (error) return { ok: false, code: 'RPC_ERROR', error };
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
@@ -902,11 +943,10 @@ export function DataProvider({ children }) {
   /* ---------------- Trades (legacy): cerrar ---------------- */
   async function closeTrade(tradeId, closePrice = null) {
     try {
-      const trade = trades.find((t) => t.id === tradeId);
-      if (!trade) throw new Error('Trade no encontrado');
+      const id = typeof tradeId === 'number' ? tradeId : String(tradeId);
 
       const { data: res, error } = await supabase.rpc('close_trade', {
-        p_trade_id: tradeId,
+        p_trade_id: id,
         p_close_price: closePrice, // null -> usa último precio
         p_force: true,
       });
@@ -915,7 +955,7 @@ export function DataProvider({ children }) {
       await refreshTrades();
       return res;
     } catch (e) {
-      console.error(e);
+      console.error('[closeTrade]', e);
       throw e;
     }
   }
@@ -970,25 +1010,24 @@ export function DataProvider({ children }) {
         cb
       )
       .subscribe();
-    return ch; // podés luego hacer supabase.removeChannel(ch) o ch.unsubscribe()
+    return ch;
   }
 
   /* --------- PnL de Bots derivado desde transacciones --------- */
   const {
-    botPnlByActivation,         // Map-like plain object { [activationId]: {profit, fees, refunds, net} }
-    totalBotProfit,             // suma de profits
-    totalBotFees,               // suma de fees
-    totalBotNet,                // profit - fees (global)
+    botPnlByActivation,
+    totalBotProfit,
+    totalBotFees,
+    totalBotNet,
   } = useMemo(() => {
     const m = new Map();
     let profitSum = 0;
     let feesSum = 0;
 
     for (const t of ensureArray(transactions)) {
-      // considerar solo completadas
       if (String(t?.status || '').toLowerCase() !== 'completed') continue;
 
-      const kind = String(t?.type || '').toLowerCase(); // 'bot_profit' | 'bot_fee' | 'bot_refund' | ...
+      const kind = String(t?.type || '').toLowerCase();
       const aid = t?.referenceId;
       if (!aid) continue;
 
@@ -1007,7 +1046,6 @@ export function DataProvider({ children }) {
       }
     }
 
-    // net: profit - fees
     for (const [k, v] of m.entries()) {
       v.net = (Number(v.profit) || 0) - (Number(v.fees) || 0);
       m.set(k, v);

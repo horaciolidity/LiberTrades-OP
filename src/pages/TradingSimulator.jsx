@@ -17,6 +17,8 @@ import { Send, MessageSquare } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { useLivePrice } from '@/hooks/useLivePrice';
 
+
+
 const DEFAULT_PAIR = 'BTC/USDT';
 
 const countryFlags = {
@@ -376,37 +378,43 @@ export default function TradingSimulator() {
   // Cierra trade:
   //  - DEMO: usa tradingLogic local
   //  - REAL: RPC close_trade vía DataContext (sin UPDATE a mano)
-  const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) => {
-    if (mode === 'demo') {
-      tradingLogic.closeTrade(tradeId, true); // el hook interpreta boolean como cierre manual
+ const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) => {
+  if (mode === 'demo') { tradingLogic.closeTrade(tradeId, true); return true; }
+  if (!tradeId) return false;
+
+  try {
+    let closePrice = Number(maybeClosePrice);
+    if (!Number.isFinite(closePrice)) {
+      const tr = realTrades.find((x) => x.id === tradeId);
+      const base = parseBaseFromPair(tr?.pair || selectedPair);
+      const live = Number(mergedPrices?.[base]?.price);
+      closePrice = Number.isFinite(live) ? live : null;
+    }
+
+    const res = await closeTradeRPC?.(String(tradeId), Number.isFinite(closePrice) ? closePrice : null, true);
+
+    // closeTrade devuelve JSON: { ok, error?, already? }
+    const ok = (res === true) || (res?.ok === true) || (res?.already === true);
+    await fetchRealData();
+    if (ok) { playSound?.('success'); return true; }
+
+    // si vino “TRADE_NOT_FOUND” lo tratamos como ‘ya estaba cerrado’
+    if (String(res?.error || '').includes('TRADE_NOT_FOUND')) {
+      await fetchRealData(); 
       return true;
     }
-    if (!tradeId) return false;
-
-    try {
-      // Si no viene precio, inferir el live del par del trade
-      let closePrice = Number(maybeClosePrice);
-      if (!Number.isFinite(closePrice)) {
-        const tr = realTrades.find((x) => x.id === tradeId);
-        const base = parseBaseFromPair(tr?.pair || selectedPair);
-        const live = Number(mergedPrices?.[base]?.price);
-        closePrice = Number.isFinite(live) ? live : null;
-      }
-
-      // RPC del server
-      const ok = await closeTradeRPC?.(
-        String(tradeId),
-        Number.isFinite(closePrice) ? closePrice : null,
-        true
-      );
-      await fetchRealData();
-      if (ok) playSound?.('success');
-      return !!ok;
-    } catch (e) {
-      console.error('[handleCloseTrade RPC]', e);
-      return false;
+    return false;
+  } catch (e) {
+    // idem: si la API tira el texto, lo tratamos como éxito silencioso
+    if (String(e?.message || '').toUpperCase().includes('TRADE NO ENCONTRADO')) {
+      await fetchRealData(); 
+      return true;
     }
-  };
+    console.error('[handleCloseTrade RPC]', e);
+    return false;
+  }
+};
+
 
   // Bridge único para el Panel (demo/real)
   const onTradeFromPanel = async (payload) => {

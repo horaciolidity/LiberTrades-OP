@@ -29,6 +29,7 @@ import { useSound } from '@/contexts/SoundContext';
 import { toast } from '@/components/ui/use-toast';
 import { useData } from '@/contexts/DataContext';
 import { Link } from 'react-router-dom';
+import MiniSparkline from '@/components/bots/MiniSparkline';
 
 /* ========== Helpers ========== */
 const fmt = (n, dec = 2) => {
@@ -257,7 +258,7 @@ const TradingBotsPage = () => {
       });
       setSelectedBot(null);
       setInvestmentAmount('');
-      await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
+      await Promise.all([refreshBotActivations?.(), refreshTransactions?.()] );
     } catch (e) {
       console.error('[handleActivateBot]', e);
       toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
@@ -560,7 +561,6 @@ const TradingBotsPage = () => {
                       onClick={() => {
                         playSound?.('click');
                         setSelectedBot(bot);
-                        // sugerencia: NUNCA mayor al saldo disponible
                         const suggested = Math.min(availableUsd, Math.max(bot.minInvestment, 250));
                         setInvestmentAmount(String(suggested > 0 ? suggested : bot.minInvestment));
                       }}
@@ -753,6 +753,14 @@ const TradingBotsPage = () => {
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
+                      {/* Micro-gráfico del par asignado al bot */}
+                      <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                        <div className="text-xs text-slate-400 mb-1">
+                          Actividad del par ({a.pair || 'BTC/USDT'})
+                        </div>
+                        <MiniSparkline pair={a.pair || 'BTC/USDT'} />
+                      </div>
+
                       <div className="grid grid-cols-2 gap-2">
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                           <div className="text-xs text-slate-400">Estimación mensual</div>
