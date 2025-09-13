@@ -1,20 +1,29 @@
 // src/lib/supabaseClient.js
 import { createClient } from '@supabase/supabase-js';
 
+/* ================== ENVS (Vercel -> Vite) ================== */
 export const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL?.trim();
 export const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
+
+/* Flag para habilitar botón cliente del "cerebro" (Edge Function) */
+function parseBool(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'on' || s === 'yes';
+}
+export const BOT_BRAIN_CLIENT = parseBool(import.meta.env.VITE_BOT_BRAIN_CLIENT);
 
 /* Logs solo en dev (para chequear envs) */
 if (import.meta.env.DEV) {
   console.log('[Supabase] URL:', SUPABASE_URL);
   console.log('[Supabase] ANON presente:', !!SUPABASE_ANON_KEY);
+  console.log('[BotBrain] flag cliente:', BOT_BRAIN_CLIENT);
 }
 
 let supabase;
 
 /* ===================== MODO DEMO (faltan envs) ===================== */
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  console.warn('[WARN] Supabase no configurado. Corriendo en modo demo.');
+  console.warn('[WARN] Supabase no configurado. Corriendo en MODO DEMO.');
 
   const notConfigured = async () => ({
     data: null,
@@ -76,7 +85,7 @@ function normalizePath(path = '') {
   return `rest/v1/${p}`;
 }
 
-/** Headers listos por si los necesitás en algún fetch manual */
+/** Headers listos por si los necesitás en algún fetch manual ANÓNIMO */
 export function supabaseAuthHeaders() {
   return {
     apikey: SUPABASE_ANON_KEY,
@@ -84,18 +93,37 @@ export function supabaseAuthHeaders() {
   };
 }
 
-/** Llamar Edge Functions sin equivocarte con el endpoint */
+/**
+ * Llamar Edge Functions sin equivocarte con el endpoint.
+ * - Usa el access_token del usuario si existe; si no, usa ANON.
+ * - `init.body` debe ser string (JSON.stringify) si envías JSON.
+ */
 export async function callEdgeFunction(name, init = {}) {
   const url = `${SUPABASE_URL}/functions/v1/${name}`;
+
+  // Token del usuario si hay sesión, sino ANON
+  let bearer = SUPABASE_ANON_KEY;
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data?.session?.access_token;
+    if (token) bearer = token;
+  } catch {}
+
   const headers = {
-    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+    Authorization: `Bearer ${bearer}`,
     'Content-Type': 'application/json',
     ...(init.headers || {}),
   };
+
   const res = await fetch(url, { ...init, headers });
-  const isJson = (res.headers.get('content-type') || '').includes('application/json');
+  const ctype = res.headers.get('content-type') || '';
+  const isJson = ctype.includes('application/json');
   const body = isJson ? await res.json() : await res.text();
-  if (!res.ok) throw new Error(`Edge "${name}" ${res.status}: ${isJson ? JSON.stringify(body) : body}`);
+
+  if (!res.ok) {
+    const detail = isJson ? JSON.stringify(body) : String(body);
+    throw new Error(`Edge "${name}" ${res.status}: ${detail}`);
+  }
   return body;
 }
 
@@ -125,8 +153,20 @@ export async function rest(path, { method = 'GET', headers = {}, body, query } =
   }
 
   if (res.status === 204) return null;
-  const isJson = (res.headers.get('content-type') || '').includes('application/json');
+  const ctype = res.headers.get('content-type') || '';
+  const isJson = ctype.includes('application/json');
   return isJson ? res.json() : res.text();
+}
+
+/* ================ Bot Brain (helper de conveniencia) ================ */
+/**
+ * Ejecuta un ciclo del "cerebro" desde el cliente (si VITE_BOT_BRAIN_CLIENT=on).
+ * - payload opcional: { user_id?, activation_id?, ... }
+ * - Implementación esperada en Edge Function "bot-brain".
+ */
+export async function runBotBrainOnce(payload = {}) {
+  const body = JSON.stringify({ action: 'tick', ...payload });
+  return callEdgeFunction('bot-brain', { method: 'POST', body });
 }
 
 export { supabase };

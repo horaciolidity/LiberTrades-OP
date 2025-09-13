@@ -30,6 +30,7 @@ import { toast } from '@/components/ui/use-toast';
 import { useData } from '@/contexts/DataContext';
 import { Link } from 'react-router-dom';
 import MiniSparkline from '@/components/bots/MiniSparkline';
+import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 
 /* ========== Helpers ========== */
 const fmt = (n, dec = 2) => {
@@ -114,7 +115,7 @@ const TradingBotsPage = () => {
     // PnL (desde transacciones)
     getBotPnl,
     totalBotProfit = 0, // bruto
-    totalBotFees = 0,   // fees
+    totalBotFees = 0,   // fees (negativo si descuenta)
     totalBotNet = 0,    // neto
 
     // Trades live / precios
@@ -128,29 +129,28 @@ const TradingBotsPage = () => {
   const [busyActivate, setBusyActivate] = useState(false);
   const [busyById, setBusyById] = useState(() => new Map());
   const [showNet, setShowNet] = useState(true);
+  const [busyBrain, setBusyBrain] = useState(false);
 
   // ====== Trades por activación (para PnL no realizado y par del minigráfico)
   const [tradesByActivation, setTradesByActivation] = useState({});
   const subsRef = useRef({});
 
-// Fees de cancelación (claves reales + fallbacks)
-const cancelFeePct = Number(
-  settings?.['trading.bot_cancel_fee_pct'] ??
-  settings?.['trading.bot_rent_fee_pct'] ?? // opcional: usar rent fee como fallback
-  settings?.['trading.cancel_fee_pct'] ??   // compatibilidad vieja (si existiera)
-  0
-);
-
-const cancelFeeUsd = Number(
-  settings?.['trading.bot_cancel_fee_usd'] ??
-  settings?.['trading.cancel_fee_usd'] ??   // compatibilidad vieja (si existiera)
-  0
-);
-
-const feeParts = [];
-if (cancelFeePct > 0) feeParts.push(`${fmt(cancelFeePct, 2)}%`);
-if (cancelFeeUsd > 0) feeParts.push(`$${fmt(cancelFeeUsd)}`);
-const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + ')}` : null;
+  // Fees de cancelación (claves reales + fallbacks)
+  const cancelFeePct = Number(
+    settings?.['trading.bot_cancel_fee_pct'] ??
+    settings?.['trading.bot_rent_fee_pct'] ??
+    settings?.['trading.cancel_fee_pct'] ??
+    0
+  );
+  const cancelFeeUsd = Number(
+    settings?.['trading.bot_cancel_fee_usd'] ??
+    settings?.['trading.cancel_fee_usd'] ??
+    0
+  );
+  const feeParts = [];
+  if (cancelFeePct > 0) feeParts.push(`${fmt(cancelFeePct, 2)}%`);
+  if (cancelFeeUsd > 0) feeParts.push(`$${fmt(cancelFeeUsd)}`);
+  const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + ')}` : null;
 
   const setRowBusy = useCallback((id, val) => {
     setBusyById((prev) => {
@@ -389,6 +389,25 @@ const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + 
     }
   };
 
+  const runBrain = async () => {
+    if (!BOT_BRAIN_CLIENT) return;
+    setBusyBrain(true);
+    try {
+      await runBotBrainOnce();
+      toast({ title: 'Bots actualizados', description: 'Se ejecutó un ciclo del cerebro.' });
+      await Promise.all([
+        refreshBotActivations?.(),
+        refreshTransactions?.(),
+        ...(botActivations || []).map((a) => loadTrades(a.id)),
+      ]);
+    } catch (e) {
+      console.error('[bot-brain]', e);
+      toast({ title: 'Error', description: String(e?.message || e), variant: 'destructive' });
+    } finally {
+      setBusyBrain(false);
+    }
+  };
+
   /* ---- Cantidades rápidas ---- */
   const quickAmounts = useMemo(() => {
     const base = [250, 500, 1000, 2000];
@@ -409,20 +428,31 @@ const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + 
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
         >
-          <div className="flex items-center justify-between">
-            <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
-              <BotIcon className="h-8 w-8 mr-3 text-purple-400" />
-              Bots de Trading Automatizado
-            </h1>
-            {cancelFeeLabel && (
-              <span className="text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
-                {cancelFeeLabel}
-              </span>
-            )}
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
+                <BotIcon className="h-8 w-8 mr-3 text-purple-400" />
+                Bots de Trading Automatizado
+              </h1>
+              <p className="text-slate-300">
+                Maximizá tus ganancias con bots inteligentes conectados a tu saldo.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {cancelFeeLabel && (
+                <span className="text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
+                  {cancelFeeLabel}
+                </span>
+              )}
+              {BOT_BRAIN_CLIENT && (
+                <Button onClick={runBrain} variant="outline" disabled={busyBrain} className="shrink-0">
+                  <Zap className="w-4 h-4 mr-1" />
+                  {busyBrain ? 'Actualizando…' : 'Actualizar bots'}
+                </Button>
+              )}
+            </div>
           </div>
-          <p className="text-slate-300">
-            Maximizá tus ganancias con bots inteligentes conectados a tu saldo.
-          </p>
         </motion.div>
 
         {/* Resumen / energía de bots */}
@@ -860,7 +890,7 @@ const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + 
                           <div className="text-xs text-slate-400">PnL realizado</div>
                           <div className={`font-semibold ${pnlColor(realizedNet)}`}>{fmtSign(realizedNet)}</div>
                           <div className="text-[10px] text-slate-500 mt-1">
-                            Detalle: bruto +${fmt(grossProfit)} · fees ${fmt(fees)}
+                            Detalle: bruto {fmtSign(grossProfit)} · fees {fees < 0 ? `-$${fmt(Math.abs(fees))}` : fmtSign(fees)}
                           </div>
                         </div>
 
@@ -896,6 +926,29 @@ const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + 
                           <div className="text-[10px] text-slate-500 mt-1">Riesgo base ± exposición</div>
                         </div>
                       </div>
+
+                      {/* Últimos trades (compacto) */}
+                      {(tradesByActivation[a.id] || []).length > 0 && (
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400 mb-1">Últimos trades</div>
+                          <div className="space-y-1 max-h-36 overflow-auto">
+                            {(tradesByActivation[a.id] || []).slice(0, 6).map((t) => (
+                              <div key={t.id} className="flex items-center justify-between text-xs">
+                                <span className="text-slate-300">
+                                  {t.opened_at ? new Date(t.opened_at).toLocaleTimeString() : '—'} · {t.pair}
+                                </span>
+                                <span className={`uppercase ${String(t.side).toLowerCase() === 'short' ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                  {t.side}
+                                </span>
+                                <span className="text-slate-400">{t.status}</span>
+                                {Number.isFinite(Number(t.pnl)) && (
+                                  <span className={pnlColor(Number(t.pnl))}>{fmtSign(Number(t.pnl))}</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       <div className="flex flex-wrap gap-2">
                         {isActive && (
