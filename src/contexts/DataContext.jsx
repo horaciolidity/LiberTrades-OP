@@ -170,7 +170,9 @@ export function DataProvider({ children }) {
   /* ---------------- Admin settings fetch -------------- */
   const fetchAdminSettings = async () => {
     try {
-      const { data, error } = await supabase.rpc('get_admin_settings', { p_prefix: 'trading.' });       if (error) throw error;
+      // ✅ usar nombre correcto del parámetro p_prefix
+      const { data, error } = await supabase.rpc('get_admin_settings', { p_prefix: 'trading.' });
+      if (error) throw error;
 
       const map = {};
       (data || []).forEach((row) => {
@@ -191,7 +193,31 @@ export function DataProvider({ children }) {
 
       setAdminSettings(map);
     } catch (e) {
-      console.warn('[fetchAdminSettings] error:', e?.message || e);
+      // 🔁 Fallback directo a la tabla si la RPC no está en caché
+      try {
+        const { data } = await supabase
+          .from('admin_settings')
+          .select('setting_key, value_numeric, setting_value')
+          .like('setting_key', 'trading.%');
+        const map = {};
+        (data || []).forEach((r) => {
+          const raw = r.value_numeric ?? r.setting_value;
+          const num = Number(raw);
+          if (Number.isFinite(num)) map[r.setting_key] = num;
+        });
+
+        if (map['trading.bot_cancel_fee_pct'] != null)
+          map['trading.bot.cancel_fee_pct'] = map['trading.bot_cancel_fee_pct'];
+        if (map['trading.bot_cancel_fee_usd'] != null)
+          map['trading.bot.cancel_fee_usd'] = map['trading.bot_cancel_fee_usd'];
+
+        map.botCancelFeePct = map['trading.bot.cancel_fee_pct'] ?? 0;
+        map.botCancelFeeUsd = map['trading.bot.cancel_fee_usd'] ?? 0;
+
+        setAdminSettings(map);
+      } catch (e2) {
+        console.warn('[fetchAdminSettings] error:', e?.message || e2?.message || e);
+      }
     }
   };
   useEffect(() => { fetchAdminSettings(); }, []);
@@ -547,7 +573,7 @@ export function DataProvider({ children }) {
         .map((i) => String(i.symbol || '').toUpperCase());
 
       const liveSyms = Object.keys(liveMapCur);
-      const symbolsSet = new Set([...enabledSyms, ...liveSyms, 'USDT', 'USDC']);
+      const symbolsSet = new Set([...enabledSyms, ...liveSyms, 'USDT', 'USDC']); // ← FIX: sin backtick
 
       const nextHist = { ...histCur };
       const nextPrices = {};
@@ -660,18 +686,16 @@ export function DataProvider({ children }) {
       .order('created_at', { ascending: false });
     if (error) { console.error('[refreshTransactions] error:', error); setTransactions([]); return; }
 
+    // 🔧 Mapper: NO pisar tipos bot_* con reference_type
     const mapped = ensureArray(data).map((tx) => {
+      // base (normalizamos plan_purchase → investment)
       let base = String(tx.type || '').toLowerCase();
       if (base === 'plan_purchase') base = 'investment';
 
       const ref = String(tx.reference_type || '').toLowerCase();
       let displayType = base;
 
-      if (ref === 'bot_activation') displayType = 'bot_activation';
-      if (ref === 'bot_profit')     displayType = 'bot_profit';
-      if (ref === 'bot_refund')     displayType = 'bot_refund';
-      if (ref === 'bot_fee')        displayType = 'bot_fee';
-
+      // Unificamos cualquier payout de planes
       if (
         ref === 'plan_payout' ||
         ref === 'plan_profit' ||
@@ -689,7 +713,7 @@ export function DataProvider({ children }) {
         user_id: tx.user_id,
         userId: tx.user_id,
         id: tx.id,
-        type: displayType,
+        type: displayType,        // conserva bot_fee, bot_profit, bot_refund
         rawType: tx.type,
         status: String(tx.status || '').toLowerCase(),
         amount: Number(tx.amount || 0),
@@ -989,24 +1013,13 @@ export function DataProvider({ children }) {
     await refreshTransactions();
     return data; // { ok, pnl, close }
   }
-async function listBotTrades(activationId, limit = 50) {
-    if (!activationId) return [];
-    // 1) intento por la vista
-    let { data, error } = await supabase
+  async function listBotTrades(activationId, limit = 50) {
+    const { data, error } = await supabase
       .from('v_bot_trades')
       .select('*')
       .eq('activation_id', activationId)
       .order('opened_at', { ascending: false })
       .limit(limit);
-    // 2) fallback a la tabla si la vista no existe
-    if (error && /v_bot_trades/i.test(String(error?.message || ''))) {
-      ({ data, error } = await supabase
-        .from('bot_trades')
-        .select('*')
-        .eq('activation_id', activationId)
-        .order('opened_at', { ascending: false })
-        .limit(limit));
-    }
     if (error) throw error;
     return ensureArray(data);
   }
