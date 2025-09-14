@@ -170,7 +170,6 @@ export function DataProvider({ children }) {
   /* ---------------- Admin settings fetch -------------- */
   const fetchAdminSettings = async () => {
     try {
-      // ✅ usar nombre correcto del parámetro p_prefix
       const { data, error } = await supabase.rpc('get_admin_settings', { p_prefix: 'trading.' });
       if (error) throw error;
 
@@ -181,19 +180,16 @@ export function DataProvider({ children }) {
         if (Number.isFinite(n)) map[k] = n;
       });
 
-      // Sinónimos para que la UI encuentre las keys
       if (map['trading.bot_cancel_fee_pct'] != null)
         map['trading.bot.cancel_fee_pct'] = map['trading.bot_cancel_fee_pct'];
       if (map['trading.bot_cancel_fee_usd'] != null)
         map['trading.bot.cancel_fee_usd'] = map['trading.bot_cancel_fee_usd'];
 
-      // Helpers planos
       map.botCancelFeePct = map['trading.bot.cancel_fee_pct'] ?? 0;
       map.botCancelFeeUsd = map['trading.bot.cancel_fee_usd'] ?? 0;
 
       setAdminSettings(map);
     } catch (e) {
-      // 🔁 Fallback directo a la tabla si la RPC no está en caché
       try {
         const { data } = await supabase
           .from('admin_settings')
@@ -573,7 +569,7 @@ export function DataProvider({ children }) {
         .map((i) => String(i.symbol || '').toUpperCase());
 
       const liveSyms = Object.keys(liveMapCur);
-      const symbolsSet = new Set([...enabledSyms, ...liveSyms, 'USDT', 'USDC']); // ← FIX: sin backtick
+      const symbolsSet = new Set([...enabledSyms, ...liveSyms, 'USDT', 'USDC']);
 
       const nextHist = { ...histCur };
       const nextPrices = {};
@@ -876,15 +872,22 @@ export function DataProvider({ children }) {
   }
 
   /* ---------------- RPC Bots (activación/estado) --------------- */
+  // ✅ Paso ambos nombres de parámetros para evitar 400 por mismatch
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
       const { data, error } = await supabase.rpc('rent_trading_bot', {
+        // con prefijo p_
         p_user_id: user.id,
         p_bot_id: botId,
         p_bot_name: botName,
         p_strategy: strategy,
         p_amount_usd: Number(amountUsd),
+        // sin prefijo, por si la función del server usa estos
+        user_id: user.id,
+        bot_id: botId,
+        bot_name: botName,
+        amount_usd: Number(amountUsd),
       });
       if (error) return { ok: false, code: 'RPC_ERROR', error };
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
@@ -899,6 +902,8 @@ export function DataProvider({ children }) {
       const { data, error } = await supabase.rpc(fn, {
         p_activation_id: activationId,
         p_user_id: user?.id,
+        activation_id: activationId,
+        user_id: user?.id,
       });
       if (error) return { ok: false, code: 'RPC_ERROR', error };
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
@@ -937,6 +942,9 @@ export function DataProvider({ children }) {
         p_activation_id: id,
         p_user_id: user.id,
         p_fee_usd: Number(fee) || 0,
+        activation_id: id,
+        user_id: user.id,
+        fee_usd: Number(fee) || 0,
       });
       if (error) return { ok: false, code: 'RPC_ERROR', error };
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
@@ -946,6 +954,7 @@ export function DataProvider({ children }) {
     }
   }
 
+  // Acredita PnL realizado (impacta saldo y txns)
   async function creditBotProfit(activationId, amountUsd, note = null) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
@@ -954,6 +963,10 @@ export function DataProvider({ children }) {
         p_user_id: user.id,
         p_amount_usd: Number(amountUsd),
         p_note: note,
+        activation_id: activationId,
+        user_id: user.id,
+        amount_usd: Number(amountUsd),
+        note,
       });
       if (error) return { ok: false, code: 'RPC_ERROR', error };
       await refreshTransactions();
