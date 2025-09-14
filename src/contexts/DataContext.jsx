@@ -909,37 +909,46 @@ export function DataProvider({ children }) {
       return { ok: false, code: 'RPC_NOT_FOUND' };
     }
   }
-  async function pauseBot(id)  { return resumeLike('pause_trading_bot',  id); }
-  async function resumeBot(id) { return resumeLike('resume_trading_bot', id); }
-
-  // Cancelación con fee (si no se pasa fee, lo calcula backend)
-  async function cancelBot(id, feeUsd = null) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    try {
-      let res, error;
-
-      // intento principal (with fee)
-      ({ data: res, error } = await supabase.rpc('cancel_trading_bot_with_fee', {
-        p_activation_id: id,
-        p_user_id: user.id,
-        p_fee_usd: feeUsd
-      }));
-
-      // fallback si el endpoint no existiera todavía
-      if (error && String(error.message || '').includes('404')) {
-        ({ data: res, error } = await supabase.rpc('cancel_trading_bot', {
-          p_activation_id: id,
-          p_user_id: user.id
-        }));
-      }
-
-      if (error) return { ok: false, code: 'RPC_ERROR', error };
-      await Promise.all([refreshBotActivations(), refreshTransactions()]);
-      return res ?? { ok: true };
-    } catch (e) {
-      return { ok: false, code: 'RPC_NOT_FOUND', error: e };
-    }
+// Pausar
+async function pauseBot(id)  {
+  try {
+    const { data, error } = await supabase.rpc('pause_bot', { p_activation_id: id });
+    if (error) return { ok: false, code: 'RPC_ERROR', error };
+    await refreshBotActivations(); await refreshTransactions();
+    return data ?? { ok: true };
+  } catch (e) {
+    return { ok: false, code: 'RPC_NOT_FOUND', error: e };
   }
+}
+
+// Reanudar
+async function resumeBot(id) {
+  try {
+    const { data, error } = await supabase.rpc('resume_bot', { p_activation_id: id });
+    if (error) return { ok: false, code: 'RPC_ERROR', error };
+    await refreshBotActivations(); await refreshTransactions();
+    return data ?? { ok: true };
+  } catch (e) {
+    return { ok: false, code: 'RPC_NOT_FOUND', error: e };
+  }
+}
+
+// Cancelar (con fee opcional)
+async function cancelBot(id, feeUsd = null) {
+  try {
+    // llama al wrapper simple
+    const { data, error } = await supabase.rpc('cancel_bot', {
+      p_activation_id: id,
+      p_fee_usd: feeUsd, // puede ir null (el server calcula)
+    });
+    if (error) return { ok: false, code: 'RPC_ERROR', error };
+    await refreshBotActivations(); await refreshTransactions();
+    return data ?? { ok: true };
+  } catch (e) {
+    return { ok: false, code: 'RPC_NOT_FOUND', error: e };
+  }
+}
+
 
   // Acredita PnL realizado (impacta saldo y txns)
   async function creditBotProfit(activationId, amountUsd, note = null) {
