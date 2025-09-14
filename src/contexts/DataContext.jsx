@@ -933,22 +933,37 @@ async function resumeBot(id) {
   }
 }
 
-// Cancelar (con fee opcional)
+// Cancelación con fee (si no se pasa fee, lo calcula backend)
 async function cancelBot(id, feeUsd = null) {
+  if (!user?.id) return { ok: false, code: 'NO_AUTH' };
   try {
-    // llama al wrapper simple
-    const { data, error } = await supabase.rpc('cancel_bot', {
+    let res, error;
+
+    // intento principal (with fee) - mando nombres con y sin prefijo
+    ({ data: res, error } = await supabase.rpc('cancel_trading_bot_with_fee', {
       p_activation_id: id,
-      p_fee_usd: feeUsd, // puede ir null (el server calcula)
-    });
+      p_user_id: user.id,
+      p_fee_usd: feeUsd,
+      activation_id: id,
+      user_id: user.id,
+      fee_usd: feeUsd,
+    }));
+
+    // fallback a wrapper simple si el primero no existiera
+    if (error) {
+      ({ data: res, error } = await supabase.rpc('cancel_trading_bot', {
+        activation_id: id,
+        user_id: user.id,
+      }));
+    }
+
     if (error) return { ok: false, code: 'RPC_ERROR', error };
-    await refreshBotActivations(); await refreshTransactions();
-    return data ?? { ok: true };
+    await Promise.all([refreshBotActivations(), refreshTransactions()]);
+    return res ?? { ok: true };
   } catch (e) {
     return { ok: false, code: 'RPC_NOT_FOUND', error: e };
   }
 }
-
 
   // Acredita PnL realizado (impacta saldo y txns)
   async function creditBotProfit(activationId, amountUsd, note = null) {
