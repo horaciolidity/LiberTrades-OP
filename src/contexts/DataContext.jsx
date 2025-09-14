@@ -80,8 +80,8 @@ export function DataProvider({ children }) {
   });
 
   const [priceHistories, setPriceHistories] = useState({
-    USDT: [{ time: nowMs(), value: 1 }],
-    USDC: [{ time: nowMs(), value: 1 }],
+    USDT: [{ time: nowMs(), value: 1 } ],
+    USDC: [{ time: nowMs(), value: 1 } ],
   });
 
   const [cryptoPrices, setCryptoPrices] = useState({});
@@ -282,7 +282,7 @@ export function DataProvider({ children }) {
       teardown();
       const liveEntries = Object.entries(liveBinanceMap);
 
-      // Seed por REST
+      // seed por REST
       if (liveEntries.length) {
         try {
           const results = await Promise.all(
@@ -587,7 +587,7 @@ export function DataProvider({ children }) {
           base = Number.isFinite(lastKnown) ? lastKnown : Number(inst?.base_price ?? 0);
         }
 
-        // ⛔️ No re-aplicamos reglas aquí
+        // ⛔️ No re-aplicar reglas aquí
         let finalPrice = (symU === 'USDT' || symU === 'USDC') ? 1 : base;
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
@@ -872,18 +872,15 @@ export function DataProvider({ children }) {
   }
 
   /* ---------------- RPC Bots (activación/estado) --------------- */
-  // ✅ Paso ambos nombres de parámetros para evitar 400 por mismatch
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
       const { data, error } = await supabase.rpc('rent_trading_bot', {
-        // con prefijo p_
         p_user_id: user.id,
         p_bot_id: botId,
         p_bot_name: botName,
         p_strategy: strategy,
         p_amount_usd: Number(amountUsd),
-        // sin prefijo, por si la función del server usa estos
         user_id: user.id,
         bot_id: botId,
         bot_name: botName,
@@ -915,42 +912,32 @@ export function DataProvider({ children }) {
   async function pauseBot(id)  { return resumeLike('pause_trading_bot',  id); }
   async function resumeBot(id) { return resumeLike('resume_trading_bot', id); }
 
-  // Cancelación con fee (si no se pasa fee, lo calcula desde settings)
+  // Cancelación con fee (si no se pasa fee, lo calcula backend)
   async function cancelBot(id, feeUsd = null) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
     try {
-      let fee = feeUsd;
-      if (fee == null) {
-        const pct = Number(botCancelFeePct || 0);
-        const usd = Number(botCancelFeeUsd || 0);
+      let res, error;
 
-        let amt = 0;
-        try {
-          const { data: row } = await supabase
-            .from('bot_activations')
-            .select('amount_usd')
-            .eq('id', id)
-            .single();
-          amt = Number(row?.amount_usd || 0);
-        } catch {}
-
-        const feePct = amt > 0 ? (pct / 100) * amt : 0;
-        fee = Math.max(usd, feePct);
-      }
-
-      const { data, error } = await supabase.rpc('cancel_trading_bot_with_fee', {
+      // intento principal (with fee)
+      ({ data: res, error } = await supabase.rpc('cancel_trading_bot_with_fee', {
         p_activation_id: id,
         p_user_id: user.id,
-        p_fee_usd: Number(fee) || 0,
-        activation_id: id,
-        user_id: user.id,
-        fee_usd: Number(fee) || 0,
-      });
+        p_fee_usd: feeUsd
+      }));
+
+      // fallback si el endpoint no existiera todavía
+      if (error && String(error.message || '').includes('404')) {
+        ({ data: res, error } = await supabase.rpc('cancel_trading_bot', {
+          p_activation_id: id,
+          p_user_id: user.id
+        }));
+      }
+
       if (error) return { ok: false, code: 'RPC_ERROR', error };
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
-      return data ?? { ok: true };
-    } catch {
-      return { ok: false, code: 'RPC_NOT_FOUND' };
+      return res ?? { ok: true };
+    } catch (e) {
+      return { ok: false, code: 'RPC_NOT_FOUND', error: e };
     }
   }
 
