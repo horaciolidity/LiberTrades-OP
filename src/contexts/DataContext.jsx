@@ -193,7 +193,7 @@ export function DataProvider({ children }) {
       try {
         const { data } = await supabase
           .from('admin_settings')
-          .select('setting_key, value_numeric, setting_value')
+          .select('setting_key, setting_value')
           .like('setting_key', 'trading.%');
         const map = {};
         (data || []).forEach((r) => {
