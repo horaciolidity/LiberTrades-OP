@@ -1,6 +1,6 @@
 // src/pages/TradingBotsPage.jsx
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter,
 } from '@/components/ui/card';
@@ -23,6 +23,8 @@ import {
   PlayCircle,
   XCircle,
   Coins,
+  History,
+  Clock,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSound } from '@/contexts/SoundContext';
@@ -103,7 +105,10 @@ const TradingBotsPage = () => {
   const { playSound } = useSound();
 
   const {
+    // datos + acciones
     botActivations,
+    activeBots,
+    canceledBots,
     activateBot,
     pauseBot,
     resumeBot,
@@ -115,13 +120,17 @@ const TradingBotsPage = () => {
     // PnL (desde transacciones)
     getBotPnl,
     totalBotProfit = 0, // bruto
-    totalBotFees = 0,   // fees (negativo si descuenta)
+    totalBotFees = 0,   // fees (valor absoluto en DataContext)
     totalBotNet = 0,    // neto
 
     // Trades live / precios
     listBotTrades,
     subscribeBotTrades,
     getPairInfo,
+
+    // Eventos (timeline)
+    listBotEvents,
+    subscribeBotEvents,
   } = useData();
 
   const [selectedBot, setSelectedBot] = useState(null);
@@ -134,6 +143,10 @@ const TradingBotsPage = () => {
   // ====== Trades por activación (para PnL no realizado y par del minigráfico)
   const [tradesByActivation, setTradesByActivation] = useState({});
   const subsRef = useRef({});
+
+  // ====== Eventos por activación (timeline)
+  const [eventsByActivation, setEventsByActivation] = useState({});
+  const eventsSubsRef = useRef({});
 
   // Fees de cancelación (claves reales + fallbacks)
   const cancelFeePct = Number(
@@ -161,18 +174,24 @@ const TradingBotsPage = () => {
     });
   }, []);
 
-  /* ---- Derivados: mis bots ---- */
-  const myActiveBots = useMemo(
-    () => (botActivations || []).filter((b) => normStatus(b?.status) === 'active'),
-    [botActivations]
-  );
+  /* ---- Derivados: mis listas ---- */
+  const myActiveBots = useMemo(() => {
+    if (Array.isArray(activeBots)) return activeBots;
+    return (botActivations || []).filter((b) => ['active', 'paused'].includes(normStatus(b?.status)));
+  }, [activeBots, botActivations]);
+
+  const myCanceledBots = useMemo(() => {
+    if (Array.isArray(canceledBots)) return canceledBots;
+    return (botActivations || []).filter((b) => ['canceled', 'cancelled'].includes(normStatus(b?.status)));
+  }, [canceledBots, botActivations]);
+
   const botsAllocated = useMemo(
     () => myActiveBots.reduce((a, b) => a + Number(b?.amountUsd || 0), 0),
     [myActiveBots]
   );
   const botsCount = myActiveBots.length;
 
-  // Estimación mensual de todos los bots activos
+  // Estimación mensual de los bots activos
   const activeEstimated = useMemo(() => {
     let minSum = 0;
     let maxSum = 0;
@@ -200,7 +219,7 @@ const TradingBotsPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  const availableUsd = Number(balances?.usdc ?? 0);
+  const availableUsd = Number(balances?.USDC ?? balances?.usdc ?? 0);
 
   /* ===== Carga & subscripción de trades por activación ===== */
   const loadTrades = useCallback(async (activationId) => {
@@ -231,6 +250,35 @@ const TradingBotsPage = () => {
     };
   }, [botActivations, subscribeBotTrades, loadTrades]);
 
+  /* ===== Carga & subscripción de eventos por activación ===== */
+  const loadEvents = useCallback(async (activationId) => {
+    try {
+      const rows = await listBotEvents?.(activationId, 100);
+      setEventsByActivation((prev) => ({ ...prev, [activationId]: rows || [] }));
+    } catch {}
+  }, [listBotEvents]);
+
+  useEffect(() => {
+    (botActivations || []).forEach((a) => {
+      const id = a.id;
+      if (!id || eventsSubsRef.current[id]) return;
+
+      // Seed de eventos
+      loadEvents(id);
+
+      // Subscribe live
+      const ch = subscribeBotEvents?.(id, () => loadEvents(id));
+      eventsSubsRef.current[id] = ch;
+    });
+
+    return () => {
+      Object.values(eventsSubsRef.current).forEach((ch) => {
+        try { ch?.unsubscribe?.(); } catch {}
+      });
+      eventsSubsRef.current = {};
+    };
+  }, [botActivations, subscribeBotEvents, loadEvents]);
+
   /* ===== PnL no realizado + par principal por activación ===== */
   const calcUnrealizedAndPair = useCallback((activationId, fallbackName) => {
     const rows = tradesByActivation[activationId] || [];
@@ -256,6 +304,60 @@ const TradingBotsPage = () => {
     }
     return { unrealized: u, mainPair };
   }, [tradesByActivation, getPairInfo]);
+
+  /* ========== Timeline de eventos ========== */
+  const EventRow = ({ ev }) => {
+    const kind = String(ev.kind || '').toLowerCase();
+    const at = ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : '—';
+    const p = ev.payload || {};
+    const pnl = Number(p?.pnl);
+    const pair = p?.pair || p?.symbol || p?.pair_symbol || '';
+    const reason = p?.reason || '';
+
+    const Icon =
+      kind === 'open' ? Activity :
+      kind === 'close' ? CheckCircle :
+      kind === 'pause' ? PauseCircle :
+      kind === 'resume' ? PlayCircle :
+      kind === 'cancel' ? XCircle :
+      Clock;
+
+    const color =
+      kind === 'open' ? 'text-sky-300' :
+      kind === 'close' ? 'text-emerald-300' :
+      kind === 'pause' ? 'text-amber-300' :
+      kind === 'resume' ? 'text-emerald-300' :
+      kind === 'cancel' ? 'text-rose-300' : 'text-slate-300';
+
+    return (
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-slate-400">{at}</span>
+        <div className="flex items-center gap-2">
+          <Icon className={`w-3.5 h-3.5 ${color}`} />
+          <span className="text-slate-200 capitalize">{kind}</span>
+          {pair && <span className="text-slate-400">{pair}</span>}
+          {reason && <span className="text-slate-500">({reason})</span>}
+        </div>
+        {Number.isFinite(pnl) && (
+          <span className={pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+            {pnl >= 0 ? `+${fmt(pnl)}` : `${fmt(pnl)}`}
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const EventTimeline = ({ list = [] }) => {
+    if (!list?.length) return null;
+    return (
+      <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+        <div className="text-xs text-slate-400 mb-1">Actividad</div>
+        <div className="space-y-1 max-h-36 overflow-auto">
+          {list.slice(0, 8).map((ev) => (<EventRow key={ev.id} ev={ev} />))}
+        </div>
+      </div>
+    );
+  };
 
   /* ========== Handlers ========== */
   const handleActivateBot = async () => {
@@ -399,6 +501,7 @@ const TradingBotsPage = () => {
         refreshBotActivations?.(),
         refreshTransactions?.(),
         ...(botActivations || []).map((a) => loadTrades(a.id)),
+        ...(botActivations || []).map((a) => loadEvents(a.id)),
       ]);
     } catch (e) {
       console.error('[bot-brain]', e);
@@ -633,7 +736,7 @@ const TradingBotsPage = () => {
                       Pares: <span className="font-semibold text-white">{bot.pairs.join(', ')}</span>
                     </div>
 
-                    {/* Ejemplo de rendimiento con un monto razonable */}
+                    {/* Ejemplo de rendimiento */}
                     <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3 text-sm">
                       <div className="text-slate-400">Ej. con ${fmt(exAmount, 0)}:</div>
                       <div className="text-slate-100 font-semibold">+${fmt(estMin)} – +${fmt(estMax)} / mes</div>
@@ -676,122 +779,126 @@ const TradingBotsPage = () => {
         </div>
 
         {/* Modal de activación */}
-        {selectedBot && (() => {
-          const ModalIcon = selectedBot.icon;
-          const gradient =
-            selectedBot.bgColor.includes('blue')
-              ? 'from-blue-500 to-cyan-500'
-              : selectedBot.bgColor.includes('red')
-              ? 'from-red-500 to-pink-500'
-              : 'from-green-500 to-teal-500';
+        <AnimatePresence>
+          {selectedBot && (() => {
+            const ModalIcon = selectedBot.icon;
+            const gradient =
+              selectedBot.bgColor.includes('blue')
+                ? 'from-blue-500 to-cyan-500'
+                : selectedBot.bgColor.includes('red')
+                ? 'from-red-500 to-pink-500'
+                : 'from-green-500 to-teal-500';
 
-          const { min, max } = parsePctRange(selectedBot.monthlyReturn);
-          const amountNum = Number(investmentAmount || 0);
-          const estMin = (min / 100) * amountNum;
-          const estMax = (max / 100) * amountNum;
+            const { min, max } = parsePctRange(selectedBot.monthlyReturn);
+            const amountNum = Number(investmentAmount || 0);
+            const estMin = (min / 100) * amountNum;
+            const estMax = (max / 100) * amountNum;
 
-          const disabled =
-            busyActivate ||
-            !amountNum ||
-            amountNum < selectedBot.minInvestment ||
-            amountNum > availableUsd ||
-            amountNum <= 0;
+            const disabled =
+              busyActivate ||
+              !amountNum ||
+              amountNum < selectedBot.minInvestment ||
+              amountNum > availableUsd ||
+              amountNum <= 0;
 
-          return (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.3 }}
-              className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-              onClick={() => setSelectedBot(null)}
-            >
-              <Card className="crypto-card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-                <CardHeader>
-                  <div className="flex items-center space-x-3 mb-2">
-                    <div className={`p-2 rounded-lg ${selectedBot.bgColor}`}>
-                      <ModalIcon className={`h-6 w-6 ${selectedBot.color}`} />
+            return (
+              <motion.div
+                key="activate-modal"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.25 }}
+                className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+                onClick={() => setSelectedBot(null)}
+              >
+                <Card className="crypto-card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+                  <CardHeader>
+                    <div className="flex items-center space-x-3 mb-2">
+                      <div className={`p-2 rounded-lg ${selectedBot.bgColor}`}>
+                        <ModalIcon className={`h-6 w-6 ${selectedBot.color}`} />
+                      </div>
+                      <CardTitle className={`text-xl ${selectedBot.color}`}>{selectedBot.name}</CardTitle>
                     </div>
-                    <CardTitle className={`text-xl ${selectedBot.color}`}>{selectedBot.name}</CardTitle>
-                  </div>
-                  <CardDescription className="text-slate-300">{selectedBot.strategy}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid grid-cols-2 gap-2">
+                    <CardDescription className="text-slate-300">{selectedBot.strategy}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                        <div className="text-xs text-slate-400">Rango mensual</div>
+                        <div className="text-white font-semibold">{selectedBot.monthlyReturn}</div>
+                      </div>
+                      <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                        <div className="text-xs text-slate-400">Mínimo</div>
+                        <div className="text-white font-semibold">${fmt(selectedBot.minInvestment, 0)}</div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-white">Monto a invertir (USD)</Label>
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={selectedBot.minInvestment}
+                        step="0.01"
+                        value={investmentAmount}
+                        onChange={(e) => setInvestmentAmount(e.target.value)}
+                        placeholder={`Mínimo $${selectedBot.minInvestment}, Disponible: $${fmt(availableUsd)}`}
+                        className="bg-slate-800 border-slate-600 text-white"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        {quickAmounts.map((v) => (
+                          <Button key={v} size="sm" variant="secondary" onClick={() => setInvestmentAmount(String(v))}>
+                            ${fmt(v, 0)}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Estimación en vivo */}
                     <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
-                      <div className="text-xs text-slate-400">Rango mensual</div>
-                      <div className="text-white font-semibold">{selectedBot.monthlyReturn}</div>
+                      <div className="text-xs text-slate-400">Estimación mensual (según monto ingresado)</div>
+                      <div className="text-white font-semibold">
+                        {amountNum > 0 ? (
+                          <>+${fmt(estMin)} – +${fmt(estMax)}</>
+                        ) : (
+                          '—'
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-1">
+                        Estimación teórica basada en el rango del bot. No garantiza resultados.
+                      </div>
                     </div>
-                    <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
-                      <div className="text-xs text-slate-400">Mínimo</div>
-                      <div className="text-white font-semibold">${fmt(selectedBot.minInvestment, 0)}</div>
-                    </div>
-                  </div>
 
-                  <div className="space-y-2">
-                    <Label className="text-white">Monto a invertir (USD)</Label>
-                    <Input
-                      type="number"
-                      inputMode="decimal"
-                      min={selectedBot.minInvestment}
-                      step="0.01"
-                      value={investmentAmount}
-                      onChange={(e) => setInvestmentAmount(e.target.value)}
-                      placeholder={`Mínimo $${selectedBot.minInvestment}, Disponible: $${fmt(availableUsd)}`}
-                      className="bg-slate-800 border-slate-600 text-white"
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      {quickAmounts.map((v) => (
-                        <Button key={v} size="sm" variant="secondary" onClick={() => setInvestmentAmount(String(v))}>
-                          ${fmt(v, 0)}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
+                    {/* Validaciones */}
+                    {amountNum > availableUsd && (
+                      <div className="text-xs text-rose-400 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4" /> Monto supera tu saldo USDC (${fmt(availableUsd)}).
+                      </div>
+                    )}
+                    {amountNum > 0 && amountNum < selectedBot.minInvestment && (
+                      <div className="text-xs text-amber-400 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4" /> Debe ser ≥ ${fmt(selectedBot.minInvestment, 0)}.
+                      </div>
+                    )}
 
-                  {/* Estimación en vivo */}
-                  <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
-                    <div className="text-xs text-slate-400">Estimación mensual (según monto ingresado)</div>
-                    <div className="text-white font-semibold">
-                      {amountNum > 0 ? (
-                        <>+${fmt(estMin)} – +${fmt(estMax)}</>
-                      ) : (
-                        '—'
-                      )}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-1">
-                      Estimación teórica basada en el rango del bot. No garantiza resultados.
-                    </div>
-                  </div>
+                    <Button
+                      onClick={handleActivateBot}
+                      disabled={disabled}
+                      className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90 disabled:opacity-60`}
+                    >
+                      {busyActivate ? 'Activando...' : `Activar ${selectedBot.name}`}
+                    </Button>
+                    <Button variant="outline" onClick={() => setSelectedBot(null)} className="w-full">
+                      Cancelar
+                    </Button>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            );
+          })()}
+        </AnimatePresence>
 
-                  {/* Validaciones */}
-                  {amountNum > availableUsd && (
-                    <div className="text-xs text-rose-400 flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4" /> Monto supera tu saldo USDC (${fmt(availableUsd)}).
-                    </div>
-                  )}
-                  {amountNum > 0 && amountNum < selectedBot.minInvestment && (
-                    <div className="text-xs text-amber-400 flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4" /> Debe ser ≥ ${fmt(selectedBot.minInvestment, 0)}.
-                    </div>
-                  )}
-
-                  <Button
-                    onClick={handleActivateBot}
-                    disabled={disabled}
-                    className={`w-full bg-gradient-to-r ${gradient} hover:opacity-90 disabled:opacity-60`}
-                  >
-                    {busyActivate ? 'Activando...' : `Activar ${selectedBot.name}`}
-                  </Button>
-                  <Button variant="outline" onClick={() => setSelectedBot(null)} className="w-full">
-                    Cancelar
-                  </Button>
-                </CardContent>
-              </Card>
-            </motion.div>
-          );
-        })()}
-
-        {/* Mis bots (activaciones del usuario) */}
+        {/* Mis bots (ACTIVOS/PAUSADOS) */}
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold text-white">Mis Bots</h2>
@@ -802,11 +909,11 @@ const TradingBotsPage = () => {
             )}
           </div>
 
-          {!botActivations?.length ? (
-            <div className="opacity-60">Sin activaciones.</div>
+          {!myActiveBots?.length ? (
+            <div className="opacity-60">No tenés bots activos. Activá uno desde el catálogo.</div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {botActivations.map((a) => {
+              {myActiveBots.map((a) => {
                 const status = normStatus(a.status);
                 const cat = tradingBots.find((x) => x.name === a.botName);
                 const { min, max } = parsePctRange(cat?.monthlyReturn);
@@ -814,7 +921,6 @@ const TradingBotsPage = () => {
                 const estMax = (max / 100) * Number(a.amountUsd || 0);
                 const isActive = status === 'active';
                 const isPaused = status === 'paused';
-                const isCanceled = status === 'canceled' || status === 'cancelled';
                 const rowBusy = busyById.get(a.id);
 
                 const createdAt =
@@ -852,8 +958,6 @@ const TradingBotsPage = () => {
                               ? 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10'
                               : isPaused
                               ? 'text-amber-300 border-amber-500/30 bg-amber-500/10'
-                              : isCanceled
-                              ? 'text-rose-300 border-rose-500/30 bg-rose-500/10'
                               : 'text-slate-300 border-slate-600 bg-slate-700/30'
                           }`}
                         >
@@ -890,7 +994,7 @@ const TradingBotsPage = () => {
                           <div className="text-xs text-slate-400">PnL realizado</div>
                           <div className={`font-semibold ${pnlColor(realizedNet)}`}>{fmtSign(realizedNet)}</div>
                           <div className="text-[10px] text-slate-500 mt-1">
-                            Detalle: bruto {fmtSign(grossProfit)} · fees {fees < 0 ? `-$${fmt(Math.abs(fees))}` : fmtSign(fees)}
+                            Detalle: bruto {fmtSign(grossProfit)} · fees ${fmt(fees)}
                           </div>
                         </div>
 
@@ -926,6 +1030,9 @@ const TradingBotsPage = () => {
                           <div className="text-[10px] text-slate-500 mt-1">Riesgo base ± exposición</div>
                         </div>
                       </div>
+
+                      {/* Timeline de eventos */}
+                      <EventTimeline list={eventsByActivation[a.id]} />
 
                       {/* Últimos trades (compacto) */}
                       {(tradesByActivation[a.id] || []).length > 0 && (
@@ -970,17 +1077,71 @@ const TradingBotsPage = () => {
                             {rowBusy ? 'Reanudando…' : 'Reanudar'}
                           </Button>
                         )}
-                        {!isCanceled && (
-                          <Button
-                            variant="destructive"
-                            onClick={() => doCancel(a.id)}
-                            disabled={rowBusy}
-                          >
-                            <XCircle className="w-4 h-4 mr-1" />
-                            {rowBusy ? 'Cancelando…' : 'Cancelar'}
-                          </Button>
-                        )}
+                        <Button
+                          variant="destructive"
+                          onClick={() => doCancel(a.id)}
+                          disabled={rowBusy}
+                        >
+                          <XCircle className="w-4 h-4 mr-1" />
+                          {rowBusy ? 'Cancelando…' : 'Cancelar'}
+                        </Button>
                       </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* HISTORIAL (cancelados) */}
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <History className="w-5 h-5 text-slate-300" />
+            <h3 className="text-lg font-semibold text-white">Historial de Bots Cancelados</h3>
+          </div>
+
+          {!myCanceledBots?.length ? (
+            <div className="text-slate-400 text-sm">Aún no tenés cancelaciones.</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {myCanceledBots.map((a) => {
+                const { profit = 0, fees = 0, net = 0, refunds = 0 } = getBotPnl?.(a.id) || {};
+                return (
+                  <Card key={a.id} className="crypto-card border-l-4 border-rose-500/40">
+                    <CardHeader>
+                      <CardTitle className="text-white flex items-center justify-between">
+                        <span>{a.botName}</span>
+                        <span className="text-xs px-2 py-1 rounded-md border text-rose-300 border-rose-500/30 bg-rose-500/10">
+                          {a.status}
+                        </span>
+                      </CardTitle>
+                      <CardDescription className="text-slate-300">
+                        Capital original: ${fmt(a.amountUsd)} · PnL neto: <span className={pnlColor(net)}>{fmtSign(net)}</span>
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">Bruto acumulado</div>
+                          <div className={`font-semibold ${pnlColor(profit)}`}>{fmtSign(profit)}</div>
+                        </div>
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">Fees totales</div>
+                          <div className="font-semibold text-slate-200">${fmt(fees)}</div>
+                        </div>
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">Refund capital</div>
+                          <div className="font-semibold text-slate-200">${fmt(refunds)}</div>
+                        </div>
+                        <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+                          <div className="text-xs text-slate-400">Resultado neto</div>
+                          <div className={`font-semibold ${pnlColor(net)}`}>{fmtSign(net)}</div>
+                        </div>
+                      </div>
+
+                      {/* Timeline de eventos (histórico) */}
+                      <EventTimeline list={eventsByActivation[a.id]} />
                     </CardContent>
                   </Card>
                 );

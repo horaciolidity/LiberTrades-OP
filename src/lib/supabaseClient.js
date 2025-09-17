@@ -1,9 +1,12 @@
 // src/lib/supabaseClient.js
 import { createClient } from '@supabase/supabase-js';
+// src/lib/supabaseClient.js
+export { runBotBrainOnce, BOT_BRAIN_CLIENT } from './botBrainSim';
 
 /* ================== ENVS (Vercel -> Vite) ================== */
 export const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL?.trim();
 export const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
+
 
 function parseBool(v) {
   const s = String(v ?? '').trim().toLowerCase();
