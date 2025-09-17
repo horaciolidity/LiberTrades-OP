@@ -9,7 +9,16 @@ import React, {
   useCallback,
 } from 'react';
 import dayjs from 'dayjs';
-import { supabase } from '@/lib/supabaseClient';
+import {
+  supabase,
+  // helpers robustos a nombres/firmas de RPC:
+  rpcActivateBot,
+  rpcPauseBot,
+  rpcResumeBot,
+  rpcCancelBot,
+  // opcional si luego querés usar precio simulado persistido:
+  // getSimPairPrice,
+} from '@/lib/supabaseClient';
 import { useAuth } from '@/contexts/AuthContext';
 
 const DataContext = createContext(null);
@@ -872,98 +881,45 @@ export function DataProvider({ children }) {
   }
 
   /* ---------------- RPC Bots (activación/estado) --------------- */
+
+  // Activar bot (usa wrapper que prueba nombres/firmas)
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    try {
-      const { data, error } = await supabase.rpc('rent_trading_bot', {
-        p_user_id: user.id,
-        p_bot_id: botId,
-        p_bot_name: botName,
-        p_strategy: strategy,
-        p_amount_usd: Number(amountUsd),
-        user_id: user.id,
-        bot_id: botId,
-        bot_name: botName,
-        amount_usd: Number(amountUsd),
-      });
-      if (error) return { ok: false, code: 'RPC_ERROR', error };
-      await Promise.all([refreshBotActivations(), refreshTransactions()]);
-      return data ?? { ok: true };
-    } catch {
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
-
-  async function resumeLike(fn, activationId) {
-    try {
-      const { data, error } = await supabase.rpc(fn, {
-        p_activation_id: activationId,
-        p_user_id: user?.id,
-        activation_id: activationId,
-        user_id: user?.id,
-      });
-      if (error) return { ok: false, code: 'RPC_ERROR', error };
-      await Promise.all([refreshBotActivations(), refreshTransactions()]);
-      return data ?? { ok: true };
-    } catch {
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
-// Pausar
-async function pauseBot(id)  {
-  try {
-    const { data, error } = await supabase.rpc('pause_bot', { p_activation_id: id });
-    if (error) return { ok: false, code: 'RPC_ERROR', error };
-    await refreshBotActivations(); await refreshTransactions();
-    return data ?? { ok: true };
-  } catch (e) {
-    return { ok: false, code: 'RPC_NOT_FOUND', error: e };
-  }
-}
-
-// Reanudar
-async function resumeBot(id) {
-  try {
-    const { data, error } = await supabase.rpc('resume_bot', { p_activation_id: id });
-    if (error) return { ok: false, code: 'RPC_ERROR', error };
-    await refreshBotActivations(); await refreshTransactions();
-    return data ?? { ok: true };
-  } catch (e) {
-    return { ok: false, code: 'RPC_NOT_FOUND', error: e };
-  }
-}
-
-// Cancelación con fee (si no se pasa fee, lo calcula backend)
-async function cancelBot(id, feeUsd = null) {
-  if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-  try {
-    let res, error;
-
-    // intento principal (with fee) - mando nombres con y sin prefijo
-    ({ data: res, error } = await supabase.rpc('cancel_trading_bot_with_fee', {
-      p_activation_id: id,
-      p_user_id: user.id,
-      p_fee_usd: feeUsd,
-      activation_id: id,
-      user_id: user.id,
-      fee_usd: feeUsd,
-    }));
-
-    // fallback a wrapper simple si el primero no existiera
-    if (error) {
-      ({ data: res, error } = await supabase.rpc('cancel_trading_bot', {
-        activation_id: id,
-        user_id: user.id,
-      }));
-    }
-
+    const { data, error } = await rpcActivateBot({
+      bot_id: botId,
+      bot_name: botName,
+      strategy,
+      amount_usd: Number(amountUsd),
+    });
     if (error) return { ok: false, code: 'RPC_ERROR', error };
     await Promise.all([refreshBotActivations(), refreshTransactions()]);
-    return res ?? { ok: true };
-  } catch (e) {
-    return { ok: false, code: 'RPC_NOT_FOUND', error: e };
+    return data ?? { ok: true };
   }
-}
+
+  // Pausar
+  async function pauseBot(id)  {
+    const { data, error } = await rpcPauseBot(id);
+    if (error) return { ok: false, code: 'RPC_ERROR', error };
+    await Promise.all([refreshBotActivations(), refreshTransactions()]);
+    return data ?? { ok: true };
+  }
+
+  // Reanudar
+  async function resumeBot(id) {
+    const { data, error } = await rpcResumeBot(id);
+    if (error) return { ok: false, code: 'RPC_ERROR', error };
+    await Promise.all([refreshBotActivations(), refreshTransactions()]);
+    return data ?? { ok: true };
+  }
+
+  // Cancelación con fee → vuelve saldo a wallet (RPC robusta)
+  async function cancelBot(id, feeUsd = null) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    const { data, error } = await rpcCancelBot(id);
+    if (error) return { ok: false, code: 'RPC_ERROR', error };
+    await Promise.all([refreshBotActivations(), refreshTransactions()]);
+    return data ?? { ok: true };
+  }
 
   // Acredita PnL realizado (impacta saldo y txns)
   async function creditBotProfit(activationId, amountUsd, note = null) {
@@ -979,7 +935,17 @@ async function cancelBot(id, feeUsd = null) {
         amount_usd: Number(amountUsd),
         note,
       });
-      if (error) return { ok: false, code: 'RPC_ERROR', error };
+      if (error) {
+        // Fallback: escribir transacción directa si la RPC no existe
+        const txn = await addTransaction({
+          amount: Number(amountUsd),
+          type: 'bot_profit',
+          description: note || 'Realized PnL',
+          referenceType: 'bot_profit',
+          referenceId: activationId,
+        });
+        return { ok: !!txn, via: 'fallback' };
+      }
       await refreshTransactions();
       return data ?? { ok: true };
     } catch {
@@ -1037,15 +1003,44 @@ async function cancelBot(id, feeUsd = null) {
     await refreshTransactions();
     return data; // { ok, pnl, close }
   }
+
+  // ✅ Ahora tolera ausencia de vista v_bot_trades
   async function listBotTrades(activationId, limit = 50) {
-    const { data, error } = await supabase
+    // 1) intento con la vista
+    const tryView = await supabase
       .from('v_bot_trades')
       .select('*')
       .eq('activation_id', activationId)
       .order('opened_at', { ascending: false })
       .limit(limit);
+
+    if (!tryView.error) return ensureArray(tryView.data);
+
+    // 2) fallback: tabla directa
+    const { data, error } = await supabase
+      .from('bot_trades')
+      .select('*')
+      .eq('activation_id', activationId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
     if (error) throw error;
-    return ensureArray(data);
+
+    // mapeo mínimo para UI
+    return ensureArray(data).map((t) => ({
+      id: t.id,
+      activation_id: t.activation_id,
+      pair: t.pair,
+      side: t.side,
+      status: t.status,
+      amount_usd: Number(t.amount_usd || 0),
+      leverage: Number(t.leverage || 1),
+      entry: Number(t.entry || t.entry_price || 0),
+      exit: Number(t.exit || t.exit_price || 0),
+      pnl: Number(t.pnl || 0),
+      opened_at: t.opened_at || t.created_at || null,
+      closed_at: t.closed_at || null,
+    }));
   }
 
   function subscribeBotTrades(activationId, cb) {

@@ -5,14 +5,14 @@ import { createClient } from '@supabase/supabase-js';
 export const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL?.trim();
 export const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
 
-/* Flag para habilitar botón cliente del "cerebro" (Edge Function) */
 function parseBool(v) {
   const s = String(v ?? '').trim().toLowerCase();
   return s === '1' || s === 'true' || s === 'on' || s === 'yes';
 }
+/** Flag para mostrar el botón “Actualizar bots” en el cliente */
 export const BOT_BRAIN_CLIENT = parseBool(import.meta.env.VITE_BOT_BRAIN_CLIENT);
 
-/* Logs solo en dev (para chequear envs) */
+/* Logs solo en dev */
 if (import.meta.env.DEV) {
   console.log('[Supabase] URL:', SUPABASE_URL);
   console.log('[Supabase] ANON presente:', !!SUPABASE_ANON_KEY);
@@ -21,7 +21,7 @@ if (import.meta.env.DEV) {
 
 let supabase;
 
-/* ===================== MODO DEMO (faltan envs) ===================== */
+/* ===================== MODO DEMO (faltan ENVs) ===================== */
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.warn('[WARN] Supabase no configurado. Corriendo en MODO DEMO.');
 
@@ -76,16 +76,15 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   });
 }
 
-/* ========================= HELPERS ========================= */
+/* ========================= HELPERS GENÉRICOS ========================= */
 
 function normalizePath(path = '') {
-  const p = String(path).replace(/^\/+/, ''); // sin leading slashes
-  // si ya viene con rest/v1 o functions/v1, lo dejamos tal cual
+  const p = String(path).replace(/^\/+/, '');
   if (/^(rest|functions)\/v1\//.test(p)) return p;
   return `rest/v1/${p}`;
 }
 
-/** Headers listos por si los necesitás en algún fetch manual ANÓNIMO */
+/** Headers para fetch manual anónimo (PostgREST / Storage, etc.) */
 export function supabaseAuthHeaders() {
   return {
     apikey: SUPABASE_ANON_KEY,
@@ -93,15 +92,11 @@ export function supabaseAuthHeaders() {
   };
 }
 
-/**
- * Llamar Edge Functions sin equivocarte con el endpoint.
- * - Usa el access_token del usuario si existe; si no, usa ANON.
- * - `init.body` debe ser string (JSON.stringify) si envías JSON.
- */
+/** Llamar Edge Functions (usa access_token de usuario si hay sesión) */
 export async function callEdgeFunction(name, init = {}) {
   const url = `${SUPABASE_URL}/functions/v1/${name}`;
 
-  // Token del usuario si hay sesión, sino ANON
+  // Token del usuario si hay sesión; si no, ANON
   let bearer = SUPABASE_ANON_KEY;
   try {
     const { data } = await supabase.auth.getSession();
@@ -127,12 +122,7 @@ export async function callEdgeFunction(name, init = {}) {
   return body;
 }
 
-/**
- * PostgREST directo.
- * - path: tabla o vista (ej: "wallet_transactions?select=*&user_id=eq.123")
- *         o rpc (ej: "rpc/get_admin_settings")
- * - Podés pasar `query: "select=*&..."`
- */
+/** PostgREST directo por path (tablas/vistas o rpc) */
 export async function rest(path, { method = 'GET', headers = {}, body, query } = {}) {
   const norm = normalizePath(path);
   const url = `${SUPABASE_URL}/${norm}${query ? (norm.includes('?') ? '' : '?') + query : ''}`;
@@ -158,15 +148,97 @@ export async function rest(path, { method = 'GET', headers = {}, body, query } =
   return isJson ? res.json() : res.text();
 }
 
-/* ================ Bot Brain (helper de conveniencia) ================ */
-/**
- * Ejecuta un ciclo del "cerebro" desde el cliente (si VITE_BOT_BRAIN_CLIENT=on).
- * - payload opcional: { user_id?, activation_id?, ... }
- * - Implementación esperada en Edge Function "bot-brain".
- */
+/* ================= RPC UTILITIES (tolerantes a nombres) ================= */
+
+/** Algunos proyectos tienen funciones con nombres levemente distintos.
+ *  rpcTry prueba varias y devuelve la primera que exista. */
+async function rpcTry(names, params) {
+  let lastError = null;
+  for (const name of names) {
+    const { data, error } = await supabase.rpc(name, params);
+    if (!error) return { data, error: null, fn: name };
+    // errores típicos cuando la función no existe:
+    const code = error?.code || '';
+    const msg = String(error?.message || '').toLowerCase();
+    const notExists = code === 'PGRST302' || code === '42883' || msg.includes('function') && msg.includes('does not exist');
+    if (!notExists) return { data: null, error, fn: name }; // error real (no seguir probando)
+    lastError = error;
+  }
+  return { data: null, error: lastError, fn: names[names.length - 1] };
+}
+
+/* =================== BOT BRAIN (RPC primero, Edge fallback) =================== */
+/** Ejecuta un ciclo del cerebro:
+ *  - Primero intenta RPC `run_bot_brain_once`
+ *  - Si no existe, cae a Edge Function `bot-brain` (payload.action='tick') */
 export async function runBotBrainOnce(payload = {}) {
+  // 1) RPC
+  try {
+    const { data, error } = await supabase.rpc('run_bot_brain_once', payload);
+    if (!error) return data;
+    const code = error?.code || '';
+    const msg = String(error?.message || '').toLowerCase();
+    const notExists = code === 'PGRST302' || code === '42883' || msg.includes('does not exist');
+    if (!notExists) throw error; // error real de la RPC
+  } catch (e) {
+    // si la RPC arrojó otro error que no sea "no existe", relanzamos
+    if (e?.code && e.code !== 'PGRST302' && e.code !== '42883') throw e;
+  }
+
+  // 2) Edge fallback (misma semántica)
   const body = JSON.stringify({ action: 'tick', ...payload });
   return callEdgeFunction('bot-brain', { method: 'POST', body });
+}
+
+/* ============== PRECIOS SIMULADOS PERSISTENTES (sim_pairs) ============== */
+export async function getSimPairPrice(pair) {
+  // RPC estable creada en la DB: sim_get_pair(p_pair text)
+  const { data, error } = await supabase.rpc('sim_get_pair', { p_pair: pair });
+  if (error) return {};
+  if (Array.isArray(data) && data.length) return { price: data[0]?.price, updated_at: data[0]?.updated_at };
+  return {};
+}
+
+/* ================== RPCs de bots (robustos a nombres) ================== */
+/** Activar bot (cuando quieras permitirlo de nuevo) */
+export async function rpcActivateBot({ bot_id, bot_name, strategy, amount_usd }) {
+  // nombres canónicos: activate_trading_bot
+  const { data, error } = await rpcTry(['activate_trading_bot'], { bot_id, bot_name, strategy, amount_usd });
+  return { data, error };
+}
+
+/** Pausar / Reanudar / Cancelar (prueba varios nombres comunes) */
+export async function rpcPauseBot(activation_id) {
+  const { data, error } = await rpcTry(['pause_trading_bot'], { activation_id });
+  return { data, error };
+}
+
+export async function rpcResumeBot(activation_id) {
+  const { data, error } = await rpcTry(['resume_trading_bot'], { activation_id });
+  return { data, error };
+}
+
+export async function rpcCancelBot(activation_id) {
+  // intentamos primero con el alias “with_fee”, luego la simulada y por último la genérica
+  const { data, error } = await rpcTry(
+    ['cancel_trading_bot_with_fee', 'sim_cancel_bot', 'cancel_trading_bot'],
+    { activation_id }
+  );
+  return { data, error };
+}
+
+/* ============== Suscripción a trades por activación (opcional) ============== */
+export function subscribeTradesByActivation(activation_id, onChange) {
+  // Realtime por tabla bot_trades para una activación
+  const channel = supabase
+    .channel(`trades_${activation_id}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'bot_trades', filter: `activation_id=eq.${activation_id}` },
+      () => { try { onChange?.(); } catch {} }
+    )
+    .subscribe();
+  return channel;
 }
 
 export { supabase };
