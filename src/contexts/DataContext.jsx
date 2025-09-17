@@ -101,7 +101,7 @@ async function rpcCancelBotRobust({ activation_id, user_id }) {
   return tryManyRPC(names2, payloads);
 }
 
-/** Balance robusto (RPCs + tablas + fallback por transacciones) */
+/** Balance robusto */
 async function rpcGetBalanceRobust({ user_id, currency }) {
   const names = [
     'get_user_balance',
@@ -810,12 +810,13 @@ export function DataProvider({ children }) {
       strategy: b.strategy,
       amountUsd: Number(b.amount_usd || 0),
       status: b.status,
+      hidden: !!b.hidden,
       createdAt: b.created_at,
     }));
     setBotActivations(mapped);
   }
 
-  /* ---- Realtime bot_activations (para ocultar al cancelar) ---- */
+  /* ---- Realtime bot_activations (refresca ante cambios) ---- */
   useEffect(() => {
     if (!user?.id) return;
     const ch = supabase
@@ -840,7 +841,7 @@ export function DataProvider({ children }) {
     if (!error) setTrades(ensureArray(data));
   }
 
-  // ✅ closeTrade (legacy) — vuelve para evitar ReferenceError
+  // ✅ closeTrade (legacy) — presente para evitar ReferenceError
   async function closeTrade(tradeId, closePrice = null) {
     try {
       const id = typeof tradeId === 'number' ? tradeId : String(tradeId);
@@ -945,6 +946,12 @@ export function DataProvider({ children }) {
     if (!user?.id) return;
     try { await supabase.rpc('recalc_user_balances', { p_user_id: user.id }); } catch {}
     try { refreshBalances?.(); } catch {}
+  }
+
+  async function canActivateBot(amountUsd, currency = 'USDC') {
+    const avail = await getAvailableBalance(currency);
+    const need = Number(amountUsd || 0);
+    return { ok: avail >= need, available: avail, needed: Math.max(0, need - avail) };
   }
 
   /* ---------------- Mutaciones negocio --------------- */
@@ -1183,6 +1190,51 @@ export function DataProvider({ children }) {
     }
   }
 
+  // Reactivar un bot cancelado (nueva activación con mismo capital)
+  async function reactivateCanceledBot(activationId) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    const { data: act, error } = await supabase
+      .from('bot_activations')
+      .select('*')
+      .eq('id', activationId)
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (error || !act) return { ok: false, code: 'NOT_FOUND' };
+    return activateBot({
+      botId: act.bot_id,
+      botName: act.bot_name,
+      strategy: act.strategy || 'default',
+      amountUsd: Number(act.amount_usd || 0),
+    });
+  }
+
+  // Archivar / ocultar un cancelado (para que no estorbe en la UI)
+  async function archiveCanceledBot(activationId) {
+    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+    // primero probamos hidden=true; si falla, usamos status='archived'
+    let ok = false;
+    try {
+      const { error } = await supabase
+        .from('bot_activations')
+        .update({ hidden: true })
+        .eq('id', activationId)
+        .eq('user_id', user.id);
+      if (!error) ok = true;
+    } catch {}
+    if (!ok) {
+      try {
+        const { error } = await supabase
+          .from('bot_activations')
+          .update({ status: 'archived' })
+          .eq('id', activationId)
+          .eq('user_id', user.id);
+        if (!error) ok = true;
+      } catch {}
+    }
+    await refreshBotActivations();
+    return { ok };
+  }
+
   // Acredita PnL realizado (impacta saldo y txns)
   async function creditBotProfit(activationId, amountUsd, note = null) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
@@ -1377,13 +1429,15 @@ export function DataProvider({ children }) {
     return { price: undefined, change: undefined, history: [] };
   };
 
-  // Derivados UI: activos vs. cancelados
+  // Derivados UI: activos vs. cancelados (ocultando archived/hidden)
   const activeBots = useMemo(
-    () => ensureArray(botActivations).filter((b) => ACTIVE_STATUSES.has(normStatus(b.status))),
+    () => ensureArray(botActivations).filter((b) => ACTIVE_STATUSES.has(normStatus(b.status)) && !b.hidden),
     [botActivations]
   );
   const canceledBots = useMemo(
-    () => ensureArray(botActivations).filter((b) => CANCELLED_STATUSES.has(normStatus(b.status))),
+    () => ensureArray(botActivations).filter((b) =>
+      CANCELLED_STATUSES.has(normStatus(b.status)) && !b.hidden && normStatus(b.status) !== 'archived'
+    ),
     [botActivations]
   );
 
@@ -1411,6 +1465,8 @@ export function DataProvider({ children }) {
     resumeBot,
     cancelBot,
     creditBotProfit,
+    reactivateCanceledBot,
+    archiveCanceledBot,
 
     // PnL bots (para UI)
     botPnlByActivation,
@@ -1453,6 +1509,7 @@ export function DataProvider({ children }) {
 
     // saldos
     getAvailableBalance,
+    canActivateBot,
 
     investmentPlans,
   }), [
@@ -1462,7 +1519,7 @@ export function DataProvider({ children }) {
     adminSettings, slippageMaxPct, investmentPlans, trades,
     botPnlByActivation, getBotPnl, totalBotProfit, totalBotFees, totalBotNet,
     botCancelFeeUsd, botCancelFeePct,
-    closeTrade, // 💡 importante para evitar stale refs
+    closeTrade, // evita stale refs
   ]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
@@ -1493,6 +1550,8 @@ export function useData() {
     resumeBot: async () => ({ ok: false }),
     cancelBot: async () => ({ ok: false }),
     creditBotProfit: async () => ({ ok: false }),
+    reactivateCanceledBot: async () => ({ ok: false }),
+    archiveCanceledBot: async () => ({ ok: false }),
 
     // PnL bots
     botPnlByActivation: {},
@@ -1533,6 +1592,7 @@ export function useData() {
 
     // saldos
     getAvailableBalance: async () => 0,
+    canActivateBot: async () => ({ ok: false, available: 0, needed: 0 }),
 
     investmentPlans: [],
   };
