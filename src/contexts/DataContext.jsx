@@ -31,13 +31,7 @@ const TICK_MS = 1000;
 
 const ACTIVE_STATUSES = new Set(['active', 'paused']);
 const CANCELLED_STATUSES = new Set([
-  'canceled',
-  'cancelled',
-  'inactive',
-  'stopped',
-  'ended',
-  'closed',
-  'terminated',
+  'canceled', 'cancelled', 'inactive', 'stopped', 'ended', 'closed', 'terminated',
 ]);
 
 /* =======================================================
@@ -107,7 +101,7 @@ async function rpcCancelBotRobust({ activation_id, user_id }) {
   return tryManyRPC(names2, payloads);
 }
 
-/** Balance robusto */
+/** Balance robusto (RPCs + tablas + fallback por transacciones) */
 async function rpcGetBalanceRobust({ user_id, currency }) {
   const names = [
     'get_user_balance',
@@ -816,13 +810,12 @@ export function DataProvider({ children }) {
       strategy: b.strategy,
       amountUsd: Number(b.amount_usd || 0),
       status: b.status,
-      hidden: !!b.hidden,
       createdAt: b.created_at,
     }));
     setBotActivations(mapped);
   }
 
-  /* ---- Realtime bot_activations (para reflejar cancel/archived) ---- */
+  /* ---- Realtime bot_activations (para ocultar al cancelar) ---- */
   useEffect(() => {
     if (!user?.id) return;
     const ch = supabase
@@ -847,46 +840,21 @@ export function DataProvider({ children }) {
     if (!error) setTrades(ensureArray(data));
   }
 
-  /* ---- Trades (legacy) helpers: FIX para closeTrade ---- */
-  async function closeTrade(tradeId, opts = {}) {
-    // 1) intentar RPCs conocidas
-    const rpcNames = ['close_trade', 'trade_close', 'close_manual_trade'];
-    for (const fn of rpcNames) {
-      try {
-        const { data, error } = await supabase.rpc(fn, {
-          p_trade_id: tradeId,
-          trade_id: tradeId,
-          ...opts, // por si tu RPC acepta razón, close_price, pnl, etc.
-        });
-        if (!error) {
-          await refreshTrades();
-          return data ?? { ok: true };
-        }
-      } catch {
-        /* probamos siguiente */
-      }
-    }
-
-    // 2) fallback directo a la tabla
+  // ✅ closeTrade (legacy) — vuelve para evitar ReferenceError
+  async function closeTrade(tradeId, closePrice = null) {
     try {
-      const payload = { status: 'closed' };
-      if (opts.pnl != null) payload.pnl = Number(opts.pnl);
-      if (opts.close_price != null) payload.close_price = Number(opts.close_price);
-
-      const { data, error } = await supabase
-        .from('trades')
-        .update(payload)
-        .eq('id', tradeId)
-        .eq('user_id', user?.id)
-        .select('*')
-        .single();
-
+      const id = typeof tradeId === 'number' ? tradeId : String(tradeId);
+      const { data: res, error } = await supabase.rpc('close_trade', {
+        p_trade_id: id,
+        p_close_price: closePrice, // null -> usa último precio
+        p_force: true,
+      });
       if (error) throw error;
       await refreshTrades();
-      return { ok: true, via: 'fallback', trade: data };
+      return res;
     } catch (e) {
-      console.warn('[closeTrade] fallback error:', e?.message || e);
-      return { ok: false, error: e };
+      console.error('[closeTrade]', e);
+      throw e;
     }
   }
 
@@ -931,7 +899,7 @@ export function DataProvider({ children }) {
       }
     } catch {}
 
-    // 2) wallet_balances / balances
+    // 2) Tabla “wallet_balances” / “balances”
     try {
       const { data } = await supabase
         .from('wallet_balances')
@@ -979,10 +947,84 @@ export function DataProvider({ children }) {
     try { refreshBalances?.(); } catch {}
   }
 
-  async function canActivateBot(amountUsd, currency = 'USDC') {
-    const avail = await getAvailableBalance(currency);
-    const need = Number(amountUsd || 0);
-    return { ok: avail >= need, available: avail, needed: Math.max(0, need - avail) };
+  /* ---------------- Mutaciones negocio --------------- */
+  async function addInvestment({ planName, amount, dailyReturn, duration, currency = 'USDC' }) {
+    if (!user?.id) return null;
+    const payload = {
+      user_id: user.id,
+      plan_name: planName,
+      amount: Number(amount),
+      daily_return: Number(dailyReturn),
+      duration: Number(duration),
+      status: 'active',
+      currency_input: currency,
+    };
+    const { data, error } = await supabase
+      .from('investments')
+      .insert(payload)
+      .select('*')
+      .single();
+    if (error) { console.error('[addInvestment] error:', error); return null; }
+
+    await refreshInvestments();
+    return {
+      user_id: data.user_id,
+      userId: data.user_id,
+      id: data.id,
+      planName: data.plan_name,
+      amount: Number(data.amount || 0),
+      dailyReturn: Number(data.daily_return || 0),
+      duration: Number(data.duration || 0),
+      createdAt: data.created_at,
+      status: data.status,
+      currency: data.currency_input,
+      daysElapsed: 0,
+      earnings: 0,
+    };
+  }
+
+  async function addTransaction({
+    amount, type, currency = 'USDC', description = '',
+    referenceType = null, referenceId = null, status = 'completed',
+  }) {
+    if (!user?.id) return null;
+    const payload = {
+      user_id: user.id,
+      amount: Number(amount),
+      type,
+      status,
+      currency,
+      description,
+      reference_type: referenceType,
+      reference_id: referenceId,
+    };
+    const { data, error } = await supabase
+      .from('wallet_transactions')
+      .insert(payload)
+      .select('*')
+      .single();
+    if (error) { console.error('[addTransaction] error:', error); return null; }
+
+    await refreshTransactions();
+    try {
+      await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
+    } catch {}
+    try { refreshBalances?.(); } catch {}
+    let mappedType = data.type;
+    if (mappedType === 'plan_purchase') mappedType = 'investment';
+    return {
+      user_id: data.user_id,
+      userId: data.user_id,
+      id: data.id,
+      type: mappedType,
+      status: data.status,
+      amount: Number(data.amount || 0),
+      currency: data.currency || 'USDC',
+      description: data.description || '',
+      createdAt: data.created_at,
+      referenceType: data.reference_type,
+      referenceId: data.reference_id,
+    };
   }
 
   /* ---------------- RPC Bots (activar/estado) --------------- */
@@ -1139,51 +1181,6 @@ export function DataProvider({ children }) {
     } catch (e) {
       return { ok: false, code: 'RPC_ERROR', error: e };
     }
-  }
-
-  // Reactivar un bot cancelado (crea una nueva activación con mismo capital)
-  async function reactivateCanceledBot(activationId) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    const { data: act, error } = await supabase
-      .from('bot_activations')
-      .select('*')
-      .eq('id', activationId)
-      .eq('user_id', user.id)
-      .maybeSingle();
-    if (error || !act) return { ok: false, code: 'NOT_FOUND' };
-    return activateBot({
-      botId: act.bot_id,
-      botName: act.bot_name,
-      strategy: act.strategy || 'default',
-      amountUsd: Number(act.amount_usd || 0),
-    });
-  }
-
-  // Archivar / ocultar un cancelado (para que no estorbe en la UI)
-  async function archiveCanceledBot(activationId) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    // primero probamos hidden=true; si falla, usamos status='archived'
-    let ok = false;
-    try {
-      const { error } = await supabase
-        .from('bot_activations')
-        .update({ hidden: true })
-        .eq('id', activationId)
-        .eq('user_id', user.id);
-      if (!error) ok = true;
-    } catch {}
-    if (!ok) {
-      try {
-        const { error } = await supabase
-          .from('bot_activations')
-          .update({ status: 'archived' })
-          .eq('id', activationId)
-          .eq('user_id', user.id);
-        if (!error) ok = true;
-      } catch {}
-    }
-    await refreshBotActivations();
-    return { ok };
   }
 
   // Acredita PnL realizado (impacta saldo y txns)
@@ -1380,13 +1377,13 @@ export function DataProvider({ children }) {
     return { price: undefined, change: undefined, history: [] };
   };
 
-  // Derivados UI: activos vs. cancelados (ocultando archived/hidden)
+  // Derivados UI: activos vs. cancelados
   const activeBots = useMemo(
-    () => ensureArray(botActivations).filter((b) => ACTIVE_STATUSES.has(normStatus(b.status)) && !b.hidden),
+    () => ensureArray(botActivations).filter((b) => ACTIVE_STATUSES.has(normStatus(b.status))),
     [botActivations]
   );
   const canceledBots = useMemo(
-    () => ensureArray(botActivations).filter((b) => CANCELLED_STATUSES.has(normStatus(b.status)) && !b.hidden && normStatus(b.status) !== 'archived'),
+    () => ensureArray(botActivations).filter((b) => CANCELLED_STATUSES.has(normStatus(b.status))),
     [botActivations]
   );
 
@@ -1413,8 +1410,6 @@ export function DataProvider({ children }) {
     pauseBot,
     resumeBot,
     cancelBot,
-    reactivateCanceledBot,
-    archiveCanceledBot,
     creditBotProfit,
 
     // PnL bots (para UI)
@@ -1458,7 +1453,6 @@ export function DataProvider({ children }) {
 
     // saldos
     getAvailableBalance,
-    canActivateBot,
 
     investmentPlans,
   }), [
@@ -1468,6 +1462,7 @@ export function DataProvider({ children }) {
     adminSettings, slippageMaxPct, investmentPlans, trades,
     botPnlByActivation, getBotPnl, totalBotProfit, totalBotFees, totalBotNet,
     botCancelFeeUsd, botCancelFeePct,
+    closeTrade, // 💡 importante para evitar stale refs
   ]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
@@ -1497,8 +1492,6 @@ export function useData() {
     pauseBot: async () => ({ ok: false }),
     resumeBot: async () => ({ ok: false }),
     cancelBot: async () => ({ ok: false }),
-    reactivateCanceledBot: async () => ({ ok: false }),
-    archiveCanceledBot: async () => ({ ok: false }),
     creditBotProfit: async () => ({ ok: false }),
 
     // PnL bots
@@ -1540,7 +1533,6 @@ export function useData() {
 
     // saldos
     getAvailableBalance: async () => 0,
-    canActivateBot: async () => ({ ok: false, available: 0, needed: 0 }),
 
     investmentPlans: [],
   };
