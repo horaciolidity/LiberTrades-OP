@@ -1214,9 +1214,7 @@ export function DataProvider({ children }) {
 
     if (error) throw error;
 
-    return ensureArray(data).map((t) => ([
-      'id','activation_id','pair','side','status','amount_usd','leverage','entry','exit','pnl','opened_at','closed_at'
-    ].reduce((acc, k) => acc, {
+    return ensureArray(data).map((t) => ({
       id: t.id,
       activation_id: t.activation_id,
       pair: t.pair,
@@ -1229,7 +1227,7 @@ export function DataProvider({ children }) {
       pnl: Number(t.pnl || 0),
       opened_at: t.opened_at || t.created_at || null,
       closed_at: t.closed_at || null,
-    })));
+    }));
   }
 
   function subscribeBotTrades(activationId, cb) {
