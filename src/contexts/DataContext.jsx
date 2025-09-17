@@ -17,6 +17,7 @@ const DataContext = createContext(null);
 /* ----------------------- Utils ----------------------- */
 const ensureArray = (v) => (Array.isArray(v) ? v : []);
 const nowMs = () => Date.now();
+const normStatus = (s) => String(s ?? '').trim().toLowerCase();
 
 const DEFAULT_BINANCE_MAP = {
   BTC: 'BTCUSDT',
@@ -28,40 +29,15 @@ const DEFAULT_BINANCE_MAP = {
 const HISTORY_MAX = 600;
 const TICK_MS = 1000;
 
-/* --------------- Reglas por hora (UTC) --------------- */
-const inWindowUTC = (hour, start, end) =>
-  (start < end && hour >= start && hour < end) ||
-  (start > end && (hour >= start || hour < end)) ||
-  (start === end);
-
-const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
-  if (!Number.isFinite(basePrice)) return basePrice;
-  const hour = now.getUTCHours();
-  let price = basePrice;
-  const symU = String(symbol || '').toUpperCase();
-
-  for (const r of ensureArray(rules)) {
-    if (!r?.active) continue;
-    const rSym = String(r.symbol || r.asset_symbol || '').toUpperCase();
-    if (rSym !== symU) continue;
-
-    const sh = Number(r.start_hour ?? 0);
-    const eh = Number(r.end_hour ?? 0);
-    if (!inWindowUTC(hour, sh, eh)) continue;
-
-    const type = String(r.type || '').toLowerCase();
-    const v = Number(r.value ?? 0);
-    if (type === 'percent') price *= 1 + v / 100;
-    else price += v;
-  }
-  return price;
-};
+const ACTIVE_STATUSES = new Set(['active', 'paused']);
+const CANCELLED_STATUSES = new Set([
+  'canceled', 'cancelled', 'inactive', 'stopped', 'ended', 'closed', 'terminated',
+]);
 
 /* =======================================================
    RPC WRAPPERS (tolerantes a nombres/firmas) + FALLBACKS
    ======================================================= */
 
-// Helper invoca una lista de posibles nombres + payloads alternativos
 async function tryManyRPC(names = [], payloads = []) {
   let lastError = null;
   for (const fn of names) {
@@ -70,7 +46,6 @@ async function tryManyRPC(names = [], payloads = []) {
         const { data, error } = await supabase.rpc(fn, body);
         if (!error) return { data, error: null, fn, body };
         lastError = error;
-        // 404 y 400 se siguen probando con otros nombres/firmas
       } catch (e) {
         lastError = e;
       }
@@ -81,22 +56,17 @@ async function tryManyRPC(names = [], payloads = []) {
 
 /** Activar bot */
 async function rpcActivateBotRobust({ user_id, bot_id, bot_name, strategy, amount_usd }) {
-  const names = [
-    'activate_trading_bot',
-    'rent_trading_bot',
-    'start_trading_bot',
-  ];
+  const names = ['activate_trading_bot', 'rent_trading_bot', 'start_trading_bot'];
   const payloads = [
     { bot_id, bot_name, strategy, amount_usd },
     { p_bot_id: bot_id, p_bot_name: bot_name, p_strategy: strategy, p_amount_usd: amount_usd },
-    // algunas variantes incluyen user_id
     { bot_id, bot_name, strategy, amount_usd, user_id },
     { p_user_id: user_id, p_bot_id: bot_id, p_bot_name: bot_name, p_strategy: strategy, p_amount_usd: amount_usd },
   ];
   return tryManyRPC(names, payloads);
 }
 
-/** Pausar / Reanudar / Cancelar (con / sin fee) */
+/** Pausar / Reanudar / Cancelar */
 async function rpcPauseBotRobust({ activation_id, user_id }) {
   const names = ['pause_trading_bot', 'pause_bot'];
   const payloads = [
@@ -118,9 +88,8 @@ async function rpcResumeBotRobust({ activation_id, user_id }) {
   return tryManyRPC(names, payloads);
 }
 async function rpcCancelBotRobust({ activation_id, user_id }) {
-  // primero with_fee, luego simple
-  const names1 = ['cancel_trading_bot_with_fee'];
-  const names2 = ['cancel_trading_bot'];
+  const names1 = ['cancel_trading_bot_with_fee', 'bot_cancel_with_fee'];
+  const names2 = ['cancel_trading_bot', 'cancel_bot', 'bot_cancel'];
   const payloads = [
     { p_activation_id: activation_id, p_user_id: user_id },
     { activation_id, user_id },
@@ -132,9 +101,26 @@ async function rpcCancelBotRobust({ activation_id, user_id }) {
   return tryManyRPC(names2, payloads);
 }
 
+/** Balance robusto */
+async function rpcGetBalanceRobust({ user_id, currency }) {
+  const names = [
+    'get_user_balance',
+    'wallet_get_balance',
+    'get_balance',
+    'get_balance_by_currency',
+  ];
+  const payloads = [
+    { p_user_id: user_id, p_currency: currency },
+    { user_id, currency },
+    { p_user: user_id, p_currency_code: currency },
+    { p_user_id: user_id, currency },
+  ];
+  return tryManyRPC(names, payloads);
+}
+
 /* ===================== PROVIDER ===================== */
 export function DataProvider({ children }) {
-  const { user } = useAuth();
+  const { user, balances, refreshBalances } = useAuth?.() || {};
 
   /* ---------------- Estado negocio ---------------- */
   const [investments, setInvestments] = useState([]);
@@ -205,20 +191,20 @@ export function DataProvider({ children }) {
 
   /* ------- Fetch + realtime instrumentos/reglas ------ */
   const refreshMarketInstruments = async () => {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('market_instruments')
       .select('*')
       .order('symbol', { ascending: true });
-    if (!error) setInstruments(ensureArray(data));
+    setInstruments(ensureArray(data));
   };
 
   const refreshMarketRules = async () => {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('market_rules')
       .select('*')
       .eq('active', true)
       .order('start_hour', { ascending: true });
-    if (!error) setMarketRules(ensureArray(data));
+    setMarketRules(ensureArray(data));
   };
 
   const forceRefreshMarket = async () => {
@@ -283,7 +269,7 @@ export function DataProvider({ children }) {
         if (map['trading.bot_cancel_fee_usd'] != null)
           map['trading.bot.cancel_fee_usd'] = map['trading.bot_cancel_fee_usd'];
 
-        map.botCancelFeePct = map['trading.bot.cancel_fee_pct'] ?? 0;
+        map.botCancelFeePct = map['trading.bot_cancel_fee_pct'] ?? 0;
         map.botCancelFeeUsd = map['trading.bot_cancel_fee_usd'] ?? 0;
 
         setAdminSettings(map);
@@ -521,11 +507,10 @@ export function DataProvider({ children }) {
 
       const poll = async () => {
         try {
-          const { data, error } = await supabase
+          const { data } = await supabase
             .from('market_state')
             .select('symbol, price, ref_24h')
             .in('symbol', syms);
-          if (error) return;
           const next = {};
           for (const r of ensureArray(data)) {
             const symU = String(r.symbol || '').toUpperCase();
@@ -663,7 +648,6 @@ export function DataProvider({ children }) {
           base = Number.isFinite(lastKnown) ? lastKnown : Number(inst?.base_price ?? 0);
         }
 
-        // ⛔️ No re-aplicar reglas aquí
         let finalPrice = (symU === 'USDT' || symU === 'USDC') ? 1 : base;
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
@@ -758,7 +742,6 @@ export function DataProvider({ children }) {
       .order('created_at', { ascending: false });
     if (error) { console.error('[refreshTransactions] error:', error); setTransactions([]); return; }
 
-    // Mapper (conserva bot_* y normaliza "plan_payout")
     const mapped = ensureArray(data).map((tx) => {
       let base = String(tx.type || '').toLowerCase();
       if (base === 'plan_purchase') base = 'investment';
@@ -832,6 +815,20 @@ export function DataProvider({ children }) {
     setBotActivations(mapped);
   }
 
+  /* ---- Realtime bot_activations (para ocultar al cancelar) ---- */
+  useEffect(() => {
+    if (!user?.id) return;
+    const ch = supabase
+      .channel('bot_activations_rt')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bot_activations', filter: `user_id=eq.${user.id}` },
+        () => refreshBotActivations()
+      )
+      .subscribe();
+    return () => { try { supabase.removeChannel(ch); } catch {} };
+  }, [user?.id]);
+
   /* ---------------- Trades (legacy) ---------------- */
   async function refreshTrades() {
     if (!user?.id) { setTrades([]); return; }
@@ -868,6 +865,69 @@ export function DataProvider({ children }) {
       return () => { try { supabase.removeChannel(ch); } catch {} };
     }
   }, [user?.id]);
+
+  /* ---------------- Helpers de saldo ---------------- */
+  async function getAvailableBalance(currency = 'USDC') {
+    if (!user?.id) return 0;
+
+    // 1) RPCs clásicos
+    try {
+      const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency });
+      if (data != null) {
+        const v = Number(
+          data?.balance ?? data?.available ?? data?.amount ?? data?.[currency] ?? data
+        );
+        if (Number.isFinite(v)) return v;
+      }
+    } catch {}
+
+    // 2) Tabla “wallet_balances” / “balances”
+    try {
+      const { data } = await supabase
+        .from('wallet_balances')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('currency', currency)
+        .maybeSingle();
+      if (data) {
+        const v = Number(data.available ?? data.balance ?? data.amount);
+        if (Number.isFinite(v)) return v;
+      }
+    } catch {}
+    try {
+      const { data } = await supabase
+        .from('balances')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('currency', currency)
+        .maybeSingle();
+      if (data) {
+        const v = Number(data.available ?? data.balance ?? data.amount);
+        if (Number.isFinite(v)) return v;
+      }
+    } catch {}
+
+    // 3) Fallback: suma de transacciones completadas
+    try {
+      const { data } = await supabase
+        .from('wallet_transactions')
+        .select('amount, status, currency')
+        .eq('user_id', user.id)
+        .eq('currency', currency)
+        .eq('status', 'completed');
+
+      const total = ensureArray(data).reduce((s, r) => s + Number(r.amount || 0), 0);
+      return Number.isFinite(total) ? total : 0;
+    } catch {}
+
+    return 0;
+  }
+
+  async function recalcAndRefreshBalances() {
+    if (!user?.id) return;
+    try { await supabase.rpc('recalc_user_balances', { p_user_id: user.id }); } catch {}
+    try { refreshBalances?.(); } catch {}
+  }
 
   /* ---------------- Mutaciones negocio --------------- */
   async function addInvestment({ planName, amount, dailyReturn, duration, currency = 'USDC' }) {
@@ -928,6 +988,10 @@ export function DataProvider({ children }) {
     if (error) { console.error('[addTransaction] error:', error); return null; }
 
     await refreshTransactions();
+    try {
+      await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
+    } catch {}
+    try { refreshBalances?.(); } catch {}
     let mappedType = data.type;
     if (mappedType === 'plan_purchase') mappedType = 'investment';
     return {
@@ -962,11 +1026,19 @@ export function DataProvider({ children }) {
 
     if (!error) {
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      await recalcAndRefreshBalances();
       return data ?? { ok: true };
     }
 
-    // 2) FALLBACK: inserción directa + lock de saldo
+    // 2) FALLBACK manual con validación de saldo real
     try {
+      const need = Number(amountUsd || 0);
+      const avail = await getAvailableBalance('USDC');
+
+      if (Number.isFinite(avail) && need > avail) {
+        return { ok: false, code: 'INSUFFICIENT_FUNDS', needed: need - avail };
+      }
+
       const { data: act, error: e1 } = await supabase
         .from('bot_activations')
         .insert({
@@ -991,6 +1063,7 @@ export function DataProvider({ children }) {
       });
 
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      await recalcAndRefreshBalances();
       return { ok: true, via: 'fallback', activation_id: act.id };
     } catch (e) {
       return { ok: false, code: 'RPC_ERROR', error: e };
@@ -1004,7 +1077,6 @@ export function DataProvider({ children }) {
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
       return r.data ?? { ok: true };
     }
-    // Fallback: update simple
     const { error } = await supabase.from('bot_activations')
       .update({ status: 'paused' }).eq('id', id).eq('user_id', user?.id);
     if (error) return { ok: false, code: 'RPC_ERROR', error };
@@ -1019,7 +1091,6 @@ export function DataProvider({ children }) {
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
       return r.data ?? { ok: true };
     }
-    // Fallback: update simple
     const { error } = await supabase.from('bot_activations')
       .update({ status: 'active' }).eq('id', id).eq('user_id', user?.id);
     if (error) return { ok: false, code: 'RPC_ERROR', error };
@@ -1034,10 +1105,11 @@ export function DataProvider({ children }) {
     const r = await rpcCancelBotRobust({ activation_id: id, user_id: user.id });
     if (!r.error) {
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      await recalcAndRefreshBalances();
       return r.data ?? { ok: true };
     }
 
-    // Fallback manual: calcular fee y generar refund/fee
+    // Fallback manual
     try {
       const { data: act, error: e1 } = await supabase
         .from('bot_activations')
@@ -1047,7 +1119,6 @@ export function DataProvider({ children }) {
         .maybeSingle();
       if (e1 || !act) throw e1 || new Error('activation not found');
 
-      // fee = fijo + % sobre capital (cap a amount)
       const amt = Number(act.amount_usd || 0);
       const feePctPart = Math.max(0, (botCancelFeePct || 0) / 100) * amt;
       const feeFixed = Math.max(0, botCancelFeeUsd || 0);
@@ -1064,7 +1135,7 @@ export function DataProvider({ children }) {
         .eq('user_id', user.id);
       if (e2) throw e2;
 
-      // 2) refund positivo (aumenta saldo)
+      // 2) refund positivo
       if (refund > 0) {
         await addTransaction({
           amount: refund,
@@ -1075,7 +1146,7 @@ export function DataProvider({ children }) {
         });
       }
 
-      // 3) fee negativo (disminuye saldo)
+      // 3) fee negativo
       if (fee > 0) {
         await addTransaction({
           amount: -fee,
@@ -1087,6 +1158,7 @@ export function DataProvider({ children }) {
       }
 
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      await recalcAndRefreshBalances();
       return { ok: true, via: 'fallback', refund, fee };
     } catch (e) {
       return { ok: false, code: 'RPC_ERROR', error: e };
@@ -1108,7 +1180,6 @@ export function DataProvider({ children }) {
         note,
       });
       if (error) {
-        // Fallback: transacción directa (positivo → aumenta saldo)
         const txn = await addTransaction({
           amount: Number(amountUsd),
           type: 'bot_profit',
@@ -1116,32 +1187,14 @@ export function DataProvider({ children }) {
           referenceType: 'bot_profit',
           referenceId: activationId,
         });
+        await recalcAndRefreshBalances();
         return { ok: !!txn, via: 'fallback' };
       }
       await refreshTransactions();
+      await recalcAndRefreshBalances();
       return data ?? { ok: true };
     } catch {
       return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
-
-  /* ---------------- Trades (legacy): cerrar ---------------- */
-  async function closeTrade(tradeId, closePrice = null) {
-    try {
-      const id = typeof tradeId === 'number' ? tradeId : String(tradeId);
-
-      const { data: res, error } = await supabase.rpc('close_trade', {
-        p_trade_id: id,
-        p_close_price: closePrice, // null -> usa último precio
-        p_force: true,
-      });
-      if (error) throw error;
-
-      await refreshTrades();
-      return res;
-    } catch (e) {
-      console.error('[closeTrade]', e);
-      throw e;
     }
   }
 
@@ -1173,6 +1226,7 @@ export function DataProvider({ children }) {
     });
     if (error) throw error;
     await refreshTransactions();
+    await recalcAndRefreshBalances();
     return data;
   }
 
@@ -1247,14 +1301,14 @@ export function DataProvider({ children }) {
       const amt = Number(t.amount || 0);
 
       if (kind === 'bot_profit') {
-        m.get(aid).profit += amt;         // esperado positivo
+        m.get(aid).profit += amt;
         profitSum += amt;
       } else if (kind === 'bot_fee') {
-        const feeAbs = Math.abs(amt);     // ← fee puede venir negativo (reduce saldo)
+        const feeAbs = Math.abs(amt);
         m.get(aid).fees += feeAbs;
         feesSum += feeAbs;
       } else if (kind === 'bot_refund') {
-        m.get(aid).refunds += amt;        // positivo
+        m.get(aid).refunds += amt;
       }
     }
 
@@ -1269,7 +1323,7 @@ export function DataProvider({ children }) {
     return {
       botPnlByActivation: plain,
       totalBotProfit: profitSum,
-      totalBotFees: feesSum,         // suma de absolutos
+      totalBotFees: feesSum,
       totalBotNet: profitSum - feesSum,
     };
   }, [transactions]);
@@ -1305,12 +1359,24 @@ export function DataProvider({ children }) {
     return { price: undefined, change: undefined, history: [] };
   };
 
+  // Derivados UI: activos vs. cancelados
+  const activeBots = useMemo(
+    () => ensureArray(botActivations).filter((b) => ACTIVE_STATUSES.has(normStatus(b.status))),
+    [botActivations]
+  );
+  const canceledBots = useMemo(
+    () => ensureArray(botActivations).filter((b) => CANCELLED_STATUSES.has(normStatus(b.status))),
+    [botActivations]
+  );
+
   const value = useMemo(() => ({
     // negocio
     investments,
     transactions,
     referrals,
     botActivations,
+    activeBots,
+    canceledBots,
     getInvestments: () => investments,
     getTransactions: () => transactions,
     getReferrals: () => referrals,
@@ -1367,9 +1433,13 @@ export function DataProvider({ children }) {
     botCancelFeePct,
     refreshSettings: fetchAdminSettings,
 
+    // saldos
+    getAvailableBalance,
+
     investmentPlans,
   }), [
     investments, transactions, referrals, botActivations,
+    activeBots, canceledBots,
     instruments, marketRules, cryptoPrices, pairOptions, liveBinanceMap,
     adminSettings, slippageMaxPct, investmentPlans, trades,
     botPnlByActivation, getBotPnl, totalBotProfit, totalBotFees, totalBotNet,
@@ -1387,6 +1457,8 @@ export function useData() {
     transactions: [],
     referrals: [],
     botActivations: [],
+    activeBots: [],
+    canceledBots: [],
     getInvestments: () => [],
     getTransactions: () => [],
     getReferrals: () => [],
@@ -1439,6 +1511,9 @@ export function useData() {
     botCancelFeeUsd: 0,
     botCancelFeePct: 0,
     refreshSettings: async () => {},
+
+    // saldos
+    getAvailableBalance: async () => 0,
 
     investmentPlans: [],
   };

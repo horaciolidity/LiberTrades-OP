@@ -1,12 +1,9 @@
 // src/lib/supabaseClient.js
 import { createClient } from '@supabase/supabase-js';
-// src/lib/supabaseClient.js
-export { runBotBrainOnce, BOT_BRAIN_CLIENT } from './botBrainSim';
 
 /* ================== ENVS (Vercel -> Vite) ================== */
 export const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL?.trim();
 export const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
-
 
 function parseBool(v) {
   const s = String(v ?? '').trim().toLowerCase();
@@ -67,6 +64,7 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     rpc: notConfigured,
     channel() { return channelStub; },
     removeChannel() {},
+    functions: { invoke: notConfigured },
   };
 } else {
   /* ===================== CLIENTE REAL ===================== */
@@ -153,27 +151,26 @@ export async function rest(path, { method = 'GET', headers = {}, body, query } =
 
 /* ================= RPC UTILITIES (tolerantes a nombres) ================= */
 
-/** Algunos proyectos tienen funciones con nombres levemente distintos.
- *  rpcTry prueba varias y devuelve la primera que exista. */
+/** rpcTry prueba varias funciones y devuelve la primera válida. */
 async function rpcTry(names, params) {
   let lastError = null;
   for (const name of names) {
     const { data, error } = await supabase.rpc(name, params);
     if (!error) return { data, error: null, fn: name };
-    // errores típicos cuando la función no existe:
+    // “no existe”
     const code = error?.code || '';
     const msg = String(error?.message || '').toLowerCase();
-    const notExists = code === 'PGRST302' || code === '42883' || msg.includes('function') && msg.includes('does not exist');
-    if (!notExists) return { data: null, error, fn: name }; // error real (no seguir probando)
+    const notExists = code === 'PGRST302' || code === '42883' || (msg.includes('function') && msg.includes('does not exist'));
+    if (!notExists) return { data: null, error, fn: name }; // error real
     lastError = error;
   }
   return { data: null, error: lastError, fn: names[names.length - 1] };
 }
 
 /* =================== BOT BRAIN (RPC primero, Edge fallback) =================== */
-/** Ejecuta un ciclo del cerebro:
- *  - Primero intenta RPC `run_bot_brain_once`
- *  - Si no existe, cae a Edge Function `bot-brain` (payload.action='tick') */
+/** Ejecuta un ciclo del “cerebro”.
+ *  1) RPC `run_bot_brain_once`
+ *  2) Fallback a Edge Function `bot-brain` con {action:'tick'} */
 export async function runBotBrainOnce(payload = {}) {
   // 1) RPC
   try {
@@ -184,11 +181,10 @@ export async function runBotBrainOnce(payload = {}) {
     const notExists = code === 'PGRST302' || code === '42883' || msg.includes('does not exist');
     if (!notExists) throw error; // error real de la RPC
   } catch (e) {
-    // si la RPC arrojó otro error que no sea "no existe", relanzamos
     if (e?.code && e.code !== 'PGRST302' && e.code !== '42883') throw e;
   }
 
-  // 2) Edge fallback (misma semántica)
+  // 2) Edge fallback
   const body = JSON.stringify({ action: 'tick', ...payload });
   return callEdgeFunction('bot-brain', { method: 'POST', body });
 }
@@ -198,19 +194,19 @@ export async function getSimPairPrice(pair) {
   // RPC estable creada en la DB: sim_get_pair(p_pair text)
   const { data, error } = await supabase.rpc('sim_get_pair', { p_pair: pair });
   if (error) return {};
-  if (Array.isArray(data) && data.length) return { price: data[0]?.price, updated_at: data[0]?.updated_at };
+  if (Array.isArray(data) && data.length) {
+    return { price: data[0]?.price, updated_at: data[0]?.updated_at };
+  }
   return {};
 }
 
 /* ================== RPCs de bots (robustos a nombres) ================== */
-/** Activar bot (cuando quieras permitirlo de nuevo) */
 export async function rpcActivateBot({ bot_id, bot_name, strategy, amount_usd }) {
-  // nombres canónicos: activate_trading_bot
+  // nombre canónico
   const { data, error } = await rpcTry(['activate_trading_bot'], { bot_id, bot_name, strategy, amount_usd });
   return { data, error };
 }
 
-/** Pausar / Reanudar / Cancelar (prueba varios nombres comunes) */
 export async function rpcPauseBot(activation_id) {
   const { data, error } = await rpcTry(['pause_trading_bot'], { activation_id });
   return { data, error };
@@ -222,7 +218,7 @@ export async function rpcResumeBot(activation_id) {
 }
 
 export async function rpcCancelBot(activation_id) {
-  // intentamos primero con el alias “with_fee”, luego la simulada y por último la genérica
+  // probamos with_fee -> simulada -> genérica
   const { data, error } = await rpcTry(
     ['cancel_trading_bot_with_fee', 'sim_cancel_bot', 'cancel_trading_bot'],
     { activation_id }
@@ -232,7 +228,6 @@ export async function rpcCancelBot(activation_id) {
 
 /* ============== Suscripción a trades por activación (opcional) ============== */
 export function subscribeTradesByActivation(activation_id, onChange) {
-  // Realtime por tabla bot_trades para una activación
   const channel = supabase
     .channel(`trades_${activation_id}`)
     .on(
