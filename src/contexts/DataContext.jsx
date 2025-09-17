@@ -31,7 +31,7 @@ const TICK_MS = 1000;
 
 const ACTIVE_STATUSES = new Set(['active', 'paused']);
 const CANCELLED_STATUSES = new Set([
-  'canceled', 'cancelled', 'inactive', 'stopped', 'ended', 'closed', 'terminated',
+  'canceled', 'cancelled', 'inactive', 'stopped', 'ended', 'closed', 'terminated', 'archived',
 ]);
 
 /* =======================================================
@@ -101,7 +101,7 @@ async function rpcCancelBotRobust({ activation_id, user_id }) {
   return tryManyRPC(names2, payloads);
 }
 
-/** Balance robusto (RPC + tablas) */
+/** Balance robusto (RPCs + tablas) */
 async function rpcGetBalanceRobust({ user_id, currency }) {
   const names = [
     'get_user_balance',
@@ -155,7 +155,6 @@ export function DataProvider({ children }) {
     adminSettings['trading.slippage_pct_max'] ?? DEFAULT_SLIPPAGE
   );
 
-  // fees cancelación bots (expuestos a la UI)
   const botCancelFeeUsd = Number(
     (adminSettings['trading.bot_cancel_fee_usd'] ??
       adminSettings['trading.bot.cancel_fee_usd'] ??
@@ -173,7 +172,6 @@ export function DataProvider({ children }) {
   const statePollRef = useRef(null);
 
   const instrumentsRef = useRef([]);
-  const rulesRef = useRef([]);
   const quotesRef = useRef({});
   const histRef = useRef({});
   const liveMapRef = useRef({});
@@ -185,7 +183,6 @@ export function DataProvider({ children }) {
   const lastTickRef = useRef(0);
 
   useEffect(() => { instrumentsRef.current = instruments; }, [instruments]);
-  useEffect(() => { rulesRef.current = marketRules; }, [marketRules]);
   useEffect(() => { quotesRef.current = realQuotes; }, [realQuotes]);
   useEffect(() => { histRef.current = priceHistories; }, [priceHistories]);
 
@@ -610,7 +607,7 @@ export function DataProvider({ children }) {
       timer = setInterval(drive, TICK_MS);
     })();
 
-    return () => { alive = false; clearInterval(timer); };
+    return () => { clearInterval(timer); };
   }, [instruments]);
 
   /* --------- Consolidación → cryptoPrices + histories --------- */
@@ -847,7 +844,7 @@ export function DataProvider({ children }) {
       const id = typeof tradeId === 'number' ? tradeId : String(tradeId);
       const { data: res, error } = await supabase.rpc('close_trade', {
         p_trade_id: id,
-        p_close_price: closePrice,
+        p_close_price: closePrice, // null -> usa último precio
         p_force: true,
       });
       if (error) throw error;
@@ -886,87 +883,112 @@ export function DataProvider({ children }) {
   }, [user?.id]);
 
   /* ---------------- Helpers de saldo ---------------- */
+
+  // Lee balances expuestos por AuthContext con múltiples formatos
+  function pickAuthAvailable(currency = 'USDC') {
+    const c = String(currency).toUpperCase();
+    const b = balances || {};
+    const candidates = [
+      b?.available?.[c],
+      b?.[c]?.available,
+      b?.[c]?.balance,
+      b?.[c]?.free,
+      b?.[c]?.amount,
+      b?.[c],
+      b?.available,
+      b?.balance,
+      b?.free,
+      b?.amount,
+    ];
+    for (const v of candidates) {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  }
+
+  // Busca balance por alias: USDC/USDT/USD y toma el mayor (evita falsos "insuficiente")
   async function getAvailableBalance(currency = 'USDC') {
-    // 0) Primero, lo que expone AuthContext (lo que la UI muestra como “Saldo App”)
-    try {
-      const b = balances ?? {};
-      const byCur =
-        b?.[currency] ??
-        b?.[currency?.toUpperCase?.()] ??
-        b?.[currency?.toLowerCase?.()];
+    const C = String(currency || 'USDC').toUpperCase();
+    const aliases = C === 'USDC'
+      ? ['USDC', 'USD', 'USDT']
+      : C === 'USDT'
+        ? ['USDT', 'USD', 'USDC']
+        : C === 'USD'
+          ? ['USD', 'USDC', 'USDT']
+          : [C, 'USDC', 'USD', 'USDT'];
 
-      const candidates = [
-        byCur?.available, byCur?.balance, byCur?.amount, byCur,
-        b?.available, b?.balance, b?.total, b?.amount,
-      ];
-
-      if (Array.isArray(b)) {
-        const item = b.find(
-          (r) => String(r?.currency || r?.code || '')
-            .toUpperCase() === String(currency).toUpperCase()
-        );
-        if (item) candidates.push(item.available, item.balance, item.amount);
+    // 0) Primero, lo que ya trae AuthContext
+    let best = -Infinity;
+    for (const cur of aliases) {
+      const fromAuth = pickAuthAvailable(cur);
+      if (fromAuth != null && Number.isFinite(Number(fromAuth))) {
+        best = Math.max(best, Number(fromAuth));
       }
-
-      for (const c of candidates) {
-        const n = Number(c);
-        if (Number.isFinite(n)) return n;
-      }
-    } catch {}
+    }
+    if (Number.isFinite(best) && best >= 0) return best;
 
     if (!user?.id) return 0;
 
-    // 1) RPCs clásicos
-    try {
-      const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency });
-      if (data != null) {
-        const v = Number(
-          data?.balance ?? data?.available ?? data?.amount ?? data?.[currency] ?? data
-        );
-        if (Number.isFinite(v)) return v;
-      }
-    } catch {}
+    // 1) RPCs clásicas
+    for (const cur of aliases) {
+      try {
+        const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency: cur });
+        if (data != null) {
+          const v = Number(
+            data?.available ?? data?.balance ?? data?.amount ?? data?.[cur] ?? data
+          );
+          if (Number.isFinite(v)) best = Math.max(best, v);
+        }
+      } catch {}
+    }
+    if (Number.isFinite(best) && best >= 0) return best;
 
-    // 2) Tabla “wallet_balances” / “balances”
-    try {
-      const { data } = await supabase
-        .from('wallet_balances')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('currency', currency)
-        .maybeSingle();
-      if (data) {
-        const v = Number(data.available ?? data.balance ?? data.amount);
-        if (Number.isFinite(v)) return v;
-      }
-    } catch {}
-    try {
-      const { data } = await supabase
-        .from('balances')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('currency', currency)
-        .maybeSingle();
-      if (data) {
-        const v = Number(data.available ?? data.balance ?? data.amount);
-        if (Number.isFinite(v)) return v;
-      }
-    } catch {}
+    // 2) Tablas wallet_balances / balances
+    for (const cur of aliases) {
+      try {
+        const { data } = await supabase
+          .from('wallet_balances')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('currency', cur)
+          .maybeSingle();
+        if (data) {
+          const v = Number(data.available ?? data.balance ?? data.amount);
+          if (Number.isFinite(v)) best = Math.max(best, v);
+        }
+      } catch {}
+      try {
+        const { data } = await supabase
+          .from('balances')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('currency', cur)
+          .maybeSingle();
+        if (data) {
+          const v = Number(data.available ?? data.balance ?? data.amount);
+          if (Number.isFinite(v)) best = Math.max(best, v);
+        }
+      } catch {}
+    }
+    if (Number.isFinite(best) && best >= 0) return best;
 
-    // 3) Fallback: suma de transacciones completadas
-    try {
-      const { data } = await supabase
-        .from('wallet_transactions')
-        .select('amount, status, currency')
-        .eq('user_id', user.id)
-        .eq('currency', currency)
-        .eq('status', 'completed');
+    // 3) Fallback: suma de transacciones completadas (por moneda)
+    for (const cur of aliases) {
+      try {
+        const { data } = await supabase
+          .from('wallet_transactions')
+          .select('amount, status, currency')
+          .eq('user_id', user.id)
+          .eq('currency', cur)
+          .eq('status', 'completed');
 
-      const total = ensureArray(data).reduce((s, r) => s + Number(r.amount || 0), 0);
-      return Number.isFinite(total) ? total : 0;
-    } catch {}
+        const total = ensureArray(data).reduce((s, r) => s + Number(r.amount || 0), 0);
+        if (Number.isFinite(total)) best = Math.max(best, total);
+      } catch {}
+    }
 
-    return 0;
+    return Number.isFinite(best) && best >= 0 ? best : 0;
   }
 
   async function recalcAndRefreshBalances() {
@@ -1040,9 +1062,7 @@ export function DataProvider({ children }) {
     if (error) { console.error('[addTransaction] error:', error); return null; }
 
     await refreshTransactions();
-    try {
-      await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
-    } catch {}
+    try { await supabase.rpc('recalc_user_balances', { p_user_id: user.id }); } catch {}
     try { refreshBalances?.(); } catch {}
     let mappedType = data.type;
     if (mappedType === 'plan_purchase') mappedType = 'investment';
@@ -1088,7 +1108,7 @@ export function DataProvider({ children }) {
       const avail = await getAvailableBalance('USDC');
 
       if (Number.isFinite(avail) && need > avail) {
-        return { ok: false, code: 'INSUFFICIENT_FUNDS', needed: need - avail };
+        return { ok: false, code: 'INSUFFICIENT_FUNDS', needed: need - avail, available: avail };
       }
 
       const { data: act, error: e1 } = await supabase
@@ -1235,10 +1255,9 @@ export function DataProvider({ children }) {
     });
   }
 
-  // Archivar / ocultar un cancelado (para que no estorbe en la UI)
+  // Archivar / ocultar un cancelado
   async function archiveCanceledBot(activationId) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    // primero probamos hidden=true; si falla, usamos status='archived'
     let ok = false;
     try {
       const { error } = await supabase
@@ -1447,7 +1466,7 @@ export function DataProvider({ children }) {
       k,
       k.includes('/') ? k.replace('/', '') : k, // BTCUSDT
       k.split('/')[0],                          // BTC
-      k.includes('/') ? k : `${k}/USDT`,       // normaliza "BTC" -> "BTC/USDT"
+      k.includes('/') ? k : `${k}/USDT`,       // "BTC" -> "BTC/USDT"
     ];
     for (const key of keys) {
       const val = cryptoPrices[key];
@@ -1456,15 +1475,16 @@ export function DataProvider({ children }) {
     return { price: undefined, change: undefined, history: [] };
   };
 
-  // Derivados UI: activos vs. cancelados (ocultando archived/hidden)
+  // Derivados UI (oculta hidden/archived en cancelados)
   const activeBots = useMemo(
     () => ensureArray(botActivations).filter((b) => ACTIVE_STATUSES.has(normStatus(b.status)) && !b.hidden),
     [botActivations]
   );
   const canceledBots = useMemo(
-    () => ensureArray(botActivations).filter((b) =>
-      CANCELLED_STATUSES.has(normStatus(b.status)) && !b.hidden && normStatus(b.status) !== 'archived'
-    ),
+    () => ensureArray(botActivations).filter((b) => {
+      const s = normStatus(b.status);
+      return CANCELLED_STATUSES.has(s) && !b.hidden && s !== 'archived';
+    }),
     [botActivations]
   );
 
@@ -1546,7 +1566,7 @@ export function DataProvider({ children }) {
     adminSettings, slippageMaxPct, investmentPlans, trades,
     botPnlByActivation, getBotPnl, totalBotProfit, totalBotFees, totalBotNet,
     botCancelFeeUsd, botCancelFeePct,
-    closeTrade, // evita stale refs
+    closeTrade,
   ]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
