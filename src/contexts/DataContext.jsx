@@ -101,7 +101,7 @@ async function rpcCancelBotRobust({ activation_id, user_id }) {
   return tryManyRPC(names2, payloads);
 }
 
-/** Balance robusto */
+/** Balance robusto (RPCs + tablas + fallback por transacciones) */
 async function rpcGetBalanceRobust({ user_id, currency }) {
   const names = [
     'get_user_balance',
@@ -840,6 +840,24 @@ export function DataProvider({ children }) {
     if (!error) setTrades(ensureArray(data));
   }
 
+  // ✅ closeTrade (legacy) — vuelve para evitar ReferenceError
+  async function closeTrade(tradeId, closePrice = null) {
+    try {
+      const id = typeof tradeId === 'number' ? tradeId : String(tradeId);
+      const { data: res, error } = await supabase.rpc('close_trade', {
+        p_trade_id: id,
+        p_close_price: closePrice, // null -> usa último precio
+        p_force: true,
+      });
+      if (error) throw error;
+      await refreshTrades();
+      return res;
+    } catch (e) {
+      console.error('[closeTrade]', e);
+      throw e;
+    }
+  }
+
   useEffect(() => {
     setInvestments([]);
     setTransactions([]);
@@ -1444,6 +1462,7 @@ export function DataProvider({ children }) {
     adminSettings, slippageMaxPct, investmentPlans, trades,
     botPnlByActivation, getBotPnl, totalBotProfit, totalBotFees, totalBotNet,
     botCancelFeeUsd, botCancelFeePct,
+    closeTrade, // 💡 importante para evitar stale refs
   ]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
