@@ -847,6 +847,49 @@ export function DataProvider({ children }) {
     if (!error) setTrades(ensureArray(data));
   }
 
+  /* ---- Trades (legacy) helpers: FIX para closeTrade ---- */
+  async function closeTrade(tradeId, opts = {}) {
+    // 1) intentar RPCs conocidas
+    const rpcNames = ['close_trade', 'trade_close', 'close_manual_trade'];
+    for (const fn of rpcNames) {
+      try {
+        const { data, error } = await supabase.rpc(fn, {
+          p_trade_id: tradeId,
+          trade_id: tradeId,
+          ...opts, // por si tu RPC acepta razón, close_price, pnl, etc.
+        });
+        if (!error) {
+          await refreshTrades();
+          return data ?? { ok: true };
+        }
+      } catch {
+        /* probamos siguiente */
+      }
+    }
+
+    // 2) fallback directo a la tabla
+    try {
+      const payload = { status: 'closed' };
+      if (opts.pnl != null) payload.pnl = Number(opts.pnl);
+      if (opts.close_price != null) payload.close_price = Number(opts.close_price);
+
+      const { data, error } = await supabase
+        .from('trades')
+        .update(payload)
+        .eq('id', tradeId)
+        .eq('user_id', user?.id)
+        .select('*')
+        .single();
+
+      if (error) throw error;
+      await refreshTrades();
+      return { ok: true, via: 'fallback', trade: data };
+    } catch (e) {
+      console.warn('[closeTrade] fallback error:', e?.message || e);
+      return { ok: false, error: e };
+    }
+  }
+
   useEffect(() => {
     setInvestments([]);
     setTransactions([]);
@@ -940,86 +983,6 @@ export function DataProvider({ children }) {
     const avail = await getAvailableBalance(currency);
     const need = Number(amountUsd || 0);
     return { ok: avail >= need, available: avail, needed: Math.max(0, need - avail) };
-  }
-
-  /* ---------------- Mutaciones negocio --------------- */
-  async function addInvestment({ planName, amount, dailyReturn, duration, currency = 'USDC' }) {
-    if (!user?.id) return null;
-    const payload = {
-      user_id: user.id,
-      plan_name: planName,
-      amount: Number(amount),
-      daily_return: Number(dailyReturn),
-      duration: Number(duration),
-      status: 'active',
-      currency_input: currency,
-    };
-    const { data, error } = await supabase
-      .from('investments')
-      .insert(payload)
-      .select('*')
-      .single();
-    if (error) { console.error('[addInvestment] error:', error); return null; }
-
-    await refreshInvestments();
-    return {
-      user_id: data.user_id,
-      userId: data.user_id,
-      id: data.id,
-      planName: data.plan_name,
-      amount: Number(data.amount || 0),
-      dailyReturn: Number(data.daily_return || 0),
-      duration: Number(data.duration || 0),
-      createdAt: data.created_at,
-      status: data.status,
-      currency: data.currency_input,
-      daysElapsed: 0,
-      earnings: 0,
-    };
-  }
-
-  async function addTransaction({
-    amount, type, currency = 'USDC', description = '',
-    referenceType = null, referenceId = null, status = 'completed',
-  }) {
-    if (!user?.id) return null;
-    const payload = {
-      user_id: user.id,
-      amount: Number(amount),
-      type,
-      status,
-      currency,
-      description,
-      reference_type: referenceType,
-      reference_id: referenceId,
-    };
-    const { data, error } = await supabase
-      .from('wallet_transactions')
-      .insert(payload)
-      .select('*')
-      .single();
-    if (error) { console.error('[addTransaction] error:', error); return null; }
-
-    await refreshTransactions();
-    try {
-      await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
-    } catch {}
-    try { refreshBalances?.(); } catch {}
-    let mappedType = data.type;
-    if (mappedType === 'plan_purchase') mappedType = 'investment';
-    return {
-      user_id: data.user_id,
-      userId: data.user_id,
-      id: data.id,
-      type: mappedType,
-      status: data.status,
-      amount: Number(data.amount || 0),
-      currency: data.currency || 'USDC',
-      description: data.description || '',
-      createdAt: data.created_at,
-      referenceType: data.reference_type,
-      referenceId: data.reference_id,
-    };
   }
 
   /* ---------------- RPC Bots (activar/estado) --------------- */
