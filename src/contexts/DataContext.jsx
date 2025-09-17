@@ -101,7 +101,7 @@ async function rpcCancelBotRobust({ activation_id, user_id }) {
   return tryManyRPC(names2, payloads);
 }
 
-/** Balance robusto */
+/** Balance robusto (RPC + tablas) */
 async function rpcGetBalanceRobust({ user_id, currency }) {
   const names = [
     'get_user_balance',
@@ -841,13 +841,13 @@ export function DataProvider({ children }) {
     if (!error) setTrades(ensureArray(data));
   }
 
-  // ✅ closeTrade (legacy) — presente para evitar ReferenceError
+  // ✅ closeTrade (legacy)
   async function closeTrade(tradeId, closePrice = null) {
     try {
       const id = typeof tradeId === 'number' ? tradeId : String(tradeId);
       const { data: res, error } = await supabase.rpc('close_trade', {
         p_trade_id: id,
-        p_close_price: closePrice, // null -> usa último precio
+        p_close_price: closePrice,
         p_force: true,
       });
       if (error) throw error;
@@ -887,6 +887,33 @@ export function DataProvider({ children }) {
 
   /* ---------------- Helpers de saldo ---------------- */
   async function getAvailableBalance(currency = 'USDC') {
+    // 0) Primero, lo que expone AuthContext (lo que la UI muestra como “Saldo App”)
+    try {
+      const b = balances ?? {};
+      const byCur =
+        b?.[currency] ??
+        b?.[currency?.toUpperCase?.()] ??
+        b?.[currency?.toLowerCase?.()];
+
+      const candidates = [
+        byCur?.available, byCur?.balance, byCur?.amount, byCur,
+        b?.available, b?.balance, b?.total, b?.amount,
+      ];
+
+      if (Array.isArray(b)) {
+        const item = b.find(
+          (r) => String(r?.currency || r?.code || '')
+            .toUpperCase() === String(currency).toUpperCase()
+        );
+        if (item) candidates.push(item.available, item.balance, item.amount);
+      }
+
+      for (const c of candidates) {
+        const n = Number(c);
+        if (Number.isFinite(n)) return n;
+      }
+    } catch {}
+
     if (!user?.id) return 0;
 
     // 1) RPCs clásicos
