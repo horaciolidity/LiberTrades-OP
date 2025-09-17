@@ -9,16 +9,7 @@ import React, {
   useCallback,
 } from 'react';
 import dayjs from 'dayjs';
-import {
-  supabase,
-  // helpers robustos a nombres/firmas de RPC:
-  rpcActivateBot,
-  rpcPauseBot,
-  rpcResumeBot,
-  rpcCancelBot,
-  // opcional si luego querés usar precio simulado persistido:
-  // getSimPairPrice,
-} from '@/lib/supabaseClient';
+import { supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/contexts/AuthContext';
 
 const DataContext = createContext(null);
@@ -66,6 +57,82 @@ const applyRulesForSymbol = (symbol, basePrice, rules, now = new Date()) => {
   return price;
 };
 
+/* =======================================================
+   RPC WRAPPERS (tolerantes a nombres/firmas) + FALLBACKS
+   ======================================================= */
+
+// Helper invoca una lista de posibles nombres + payloads alternativos
+async function tryManyRPC(names = [], payloads = []) {
+  let lastError = null;
+  for (const fn of names) {
+    for (const body of payloads) {
+      try {
+        const { data, error } = await supabase.rpc(fn, body);
+        if (!error) return { data, error: null, fn, body };
+        lastError = error;
+        // 404 y 400 se siguen probando con otros nombres/firmas
+      } catch (e) {
+        lastError = e;
+      }
+    }
+  }
+  return { data: null, error: lastError };
+}
+
+/** Activar bot */
+async function rpcActivateBotRobust({ user_id, bot_id, bot_name, strategy, amount_usd }) {
+  const names = [
+    'activate_trading_bot',
+    'rent_trading_bot',
+    'start_trading_bot',
+  ];
+  const payloads = [
+    { bot_id, bot_name, strategy, amount_usd },
+    { p_bot_id: bot_id, p_bot_name: bot_name, p_strategy: strategy, p_amount_usd: amount_usd },
+    // algunas variantes incluyen user_id
+    { bot_id, bot_name, strategy, amount_usd, user_id },
+    { p_user_id: user_id, p_bot_id: bot_id, p_bot_name: bot_name, p_strategy: strategy, p_amount_usd: amount_usd },
+  ];
+  return tryManyRPC(names, payloads);
+}
+
+/** Pausar / Reanudar / Cancelar (con / sin fee) */
+async function rpcPauseBotRobust({ activation_id, user_id }) {
+  const names = ['pause_trading_bot', 'pause_bot'];
+  const payloads = [
+    { p_activation_id: activation_id, p_user_id: user_id },
+    { activation_id, user_id },
+    { p_activation_id: activation_id },
+    { id: activation_id },
+  ];
+  return tryManyRPC(names, payloads);
+}
+async function rpcResumeBotRobust({ activation_id, user_id }) {
+  const names = ['resume_trading_bot', 'resume_bot'];
+  const payloads = [
+    { p_activation_id: activation_id, p_user_id: user_id },
+    { activation_id, user_id },
+    { p_activation_id: activation_id },
+    { id: activation_id },
+  ];
+  return tryManyRPC(names, payloads);
+}
+async function rpcCancelBotRobust({ activation_id, user_id }) {
+  // primero with_fee, luego simple
+  const names1 = ['cancel_trading_bot_with_fee'];
+  const names2 = ['cancel_trading_bot'];
+  const payloads = [
+    { p_activation_id: activation_id, p_user_id: user_id },
+    { activation_id, user_id },
+    { p_activation_id: activation_id },
+    { id: activation_id },
+  ];
+  const r1 = await tryManyRPC(names1, payloads);
+  if (!r1.error) return r1;
+  return tryManyRPC(names2, payloads);
+}
+
+/* ===================== PROVIDER ===================== */
 export function DataProvider({ children }) {
   const { user } = useAuth();
 
@@ -89,8 +156,8 @@ export function DataProvider({ children }) {
   });
 
   const [priceHistories, setPriceHistories] = useState({
-    USDT: [{ time: nowMs(), value: 1 } ],
-    USDC: [{ time: nowMs(), value: 1 } ],
+    USDT: [{ time: nowMs(), value: 1 }],
+    USDC: [{ time: nowMs(), value: 1 }],
   });
 
   const [cryptoPrices, setCryptoPrices] = useState({});
@@ -102,7 +169,7 @@ export function DataProvider({ children }) {
     adminSettings['trading.slippage_pct_max'] ?? DEFAULT_SLIPPAGE
   );
 
-  // fees de cancelación de bots (expuestos a la UI)
+  // fees cancelación bots (expuestos a la UI)
   const botCancelFeeUsd = Number(
     (adminSettings['trading.bot_cancel_fee_usd'] ??
       adminSettings['trading.bot.cancel_fee_usd'] ??
@@ -217,7 +284,7 @@ export function DataProvider({ children }) {
           map['trading.bot.cancel_fee_usd'] = map['trading.bot_cancel_fee_usd'];
 
         map.botCancelFeePct = map['trading.bot.cancel_fee_pct'] ?? 0;
-        map.botCancelFeeUsd = map['trading.bot.cancel_fee_usd'] ?? 0;
+        map.botCancelFeeUsd = map['trading.bot_cancel_fee_usd'] ?? 0;
 
         setAdminSettings(map);
       } catch (e2) {
@@ -691,16 +758,14 @@ export function DataProvider({ children }) {
       .order('created_at', { ascending: false });
     if (error) { console.error('[refreshTransactions] error:', error); setTransactions([]); return; }
 
-    // 🔧 Mapper: NO pisar tipos bot_* con reference_type
+    // Mapper (conserva bot_* y normaliza "plan_payout")
     const mapped = ensureArray(data).map((tx) => {
-      // base (normalizamos plan_purchase → investment)
       let base = String(tx.type || '').toLowerCase();
       if (base === 'plan_purchase') base = 'investment';
 
       const ref = String(tx.reference_type || '').toLowerCase();
       let displayType = base;
 
-      // Unificamos cualquier payout de planes
       if (
         ref === 'plan_payout' ||
         ref === 'plan_profit' ||
@@ -718,7 +783,7 @@ export function DataProvider({ children }) {
         user_id: tx.user_id,
         userId: tx.user_id,
         id: tx.id,
-        type: displayType,        // conserva bot_fee, bot_profit, bot_refund
+        type: displayType,
         rawType: tx.type,
         status: String(tx.status || '').toLowerCase(),
         amount: Number(tx.amount || 0),
@@ -880,45 +945,152 @@ export function DataProvider({ children }) {
     };
   }
 
-  /* ---------------- RPC Bots (activación/estado) --------------- */
+  /* ---------------- RPC Bots (activar/estado) --------------- */
 
-  // Activar bot (usa wrapper que prueba nombres/firmas)
+  // Activar bot (robusto + fallback manual con lock de capital)
   async function activateBot({ botId, botName, strategy = 'default', amountUsd }) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    const { data, error } = await rpcActivateBot({
+
+    // 1) intentar RPCs conocidas
+    const { data, error } = await rpcActivateBotRobust({
+      user_id: user.id,
       bot_id: botId,
       bot_name: botName,
       strategy,
       amount_usd: Number(amountUsd),
     });
-    if (error) return { ok: false, code: 'RPC_ERROR', error };
-    await Promise.all([refreshBotActivations(), refreshTransactions()]);
-    return data ?? { ok: true };
+
+    if (!error) {
+      await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      return data ?? { ok: true };
+    }
+
+    // 2) FALLBACK: inserción directa + lock de saldo
+    try {
+      const { data: act, error: e1 } = await supabase
+        .from('bot_activations')
+        .insert({
+          user_id: user.id,
+          bot_id: botId,
+          bot_name: botName,
+          strategy,
+          amount_usd: Number(amountUsd),
+          status: 'active',
+        })
+        .select('*')
+        .single();
+      if (e1) throw e1;
+
+      // lock de capital (monto negativo reduce saldo)
+      await addTransaction({
+        amount: -Number(amountUsd),
+        type: 'bot_lock',
+        description: `Capital asignado a ${botName}`,
+        referenceType: 'bot_activation',
+        referenceId: act.id,
+      });
+
+      await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      return { ok: true, via: 'fallback', activation_id: act.id };
+    } catch (e) {
+      return { ok: false, code: 'RPC_ERROR', error: e };
+    }
   }
 
   // Pausar
   async function pauseBot(id)  {
-    const { data, error } = await rpcPauseBot(id);
+    const r = await rpcPauseBotRobust({ activation_id: id, user_id: user?.id });
+    if (!r.error) {
+      await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      return r.data ?? { ok: true };
+    }
+    // Fallback: update simple
+    const { error } = await supabase.from('bot_activations')
+      .update({ status: 'paused' }).eq('id', id).eq('user_id', user?.id);
     if (error) return { ok: false, code: 'RPC_ERROR', error };
-    await Promise.all([refreshBotActivations(), refreshTransactions()]);
-    return data ?? { ok: true };
+    await refreshBotActivations();
+    return { ok: true, via: 'fallback' };
   }
 
   // Reanudar
   async function resumeBot(id) {
-    const { data, error } = await rpcResumeBot(id);
+    const r = await rpcResumeBotRobust({ activation_id: id, user_id: user?.id });
+    if (!r.error) {
+      await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      return r.data ?? { ok: true };
+    }
+    // Fallback: update simple
+    const { error } = await supabase.from('bot_activations')
+      .update({ status: 'active' }).eq('id', id).eq('user_id', user?.id);
     if (error) return { ok: false, code: 'RPC_ERROR', error };
-    await Promise.all([refreshBotActivations(), refreshTransactions()]);
-    return data ?? { ok: true };
+    await refreshBotActivations();
+    return { ok: true, via: 'fallback' };
   }
 
-  // Cancelación con fee → vuelve saldo a wallet (RPC robusta)
-  async function cancelBot(id, feeUsd = null) {
+  // Cancelar (con fee y refund → afecta saldo)
+  async function cancelBot(id) {
     if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    const { data, error } = await rpcCancelBot(id);
-    if (error) return { ok: false, code: 'RPC_ERROR', error };
-    await Promise.all([refreshBotActivations(), refreshTransactions()]);
-    return data ?? { ok: true };
+
+    const r = await rpcCancelBotRobust({ activation_id: id, user_id: user.id });
+    if (!r.error) {
+      await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      return r.data ?? { ok: true };
+    }
+
+    // Fallback manual: calcular fee y generar refund/fee
+    try {
+      const { data: act, error: e1 } = await supabase
+        .from('bot_activations')
+        .select('*')
+        .eq('id', id)
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (e1 || !act) throw e1 || new Error('activation not found');
+
+      // fee = fijo + % sobre capital (cap a amount)
+      const amt = Number(act.amount_usd || 0);
+      const feePctPart = Math.max(0, (botCancelFeePct || 0) / 100) * amt;
+      const feeFixed = Math.max(0, botCancelFeeUsd || 0);
+      let fee = Number((feePctPart + feeFixed).toFixed(2));
+      if (fee > amt) fee = amt;
+
+      const refund = Number((amt - fee).toFixed(2));
+
+      // 1) actualizar estado
+      const { error: e2 } = await supabase
+        .from('bot_activations')
+        .update({ status: 'canceled' })
+        .eq('id', id)
+        .eq('user_id', user.id);
+      if (e2) throw e2;
+
+      // 2) refund positivo (aumenta saldo)
+      if (refund > 0) {
+        await addTransaction({
+          amount: refund,
+          type: 'bot_refund',
+          description: `Devolución capital ${act.bot_name}`,
+          referenceType: 'bot_refund',
+          referenceId: id,
+        });
+      }
+
+      // 3) fee negativo (disminuye saldo)
+      if (fee > 0) {
+        await addTransaction({
+          amount: -fee,
+          type: 'bot_fee',
+          description: `Fee cancelación ${act.bot_name}`,
+          referenceType: 'bot_fee',
+          referenceId: id,
+        });
+      }
+
+      await Promise.all([refreshBotActivations(), refreshTransactions()]);
+      return { ok: true, via: 'fallback', refund, fee };
+    } catch (e) {
+      return { ok: false, code: 'RPC_ERROR', error: e };
+    }
   }
 
   // Acredita PnL realizado (impacta saldo y txns)
@@ -936,7 +1108,7 @@ export function DataProvider({ children }) {
         note,
       });
       if (error) {
-        // Fallback: escribir transacción directa si la RPC no existe
+        // Fallback: transacción directa (positivo → aumenta saldo)
         const txn = await addTransaction({
           amount: Number(amountUsd),
           type: 'bot_profit',
@@ -986,12 +1158,12 @@ export function DataProvider({ children }) {
       p_entry: entry,
     });
     if (error) throw error;
-    return data; // { ok, id, entry, liq }
+    return data;
   }
   async function mtmBotTrade(tradeId) {
     const { data, error } = await supabase.rpc('bot_trade_mtm', { p_trade_id: tradeId });
     if (error) throw error;
-    return data; // { ok, last }
+    return data;
   }
   async function closeBotTrade(tradeId, reason = 'manual', closePrice = null) {
     const { data, error } = await supabase.rpc('bot_trade_close', {
@@ -1001,12 +1173,11 @@ export function DataProvider({ children }) {
     });
     if (error) throw error;
     await refreshTransactions();
-    return data; // { ok, pnl, close }
+    return data;
   }
 
-  // ✅ Ahora tolera ausencia de vista v_bot_trades
+  // ✅ Lista trades (vista o tabla)
   async function listBotTrades(activationId, limit = 50) {
-    // 1) intento con la vista
     const tryView = await supabase
       .from('v_bot_trades')
       .select('*')
@@ -1016,7 +1187,6 @@ export function DataProvider({ children }) {
 
     if (!tryView.error) return ensureArray(tryView.data);
 
-    // 2) fallback: tabla directa
     const { data, error } = await supabase
       .from('bot_trades')
       .select('*')
@@ -1026,7 +1196,6 @@ export function DataProvider({ children }) {
 
     if (error) throw error;
 
-    // mapeo mínimo para UI
     return ensureArray(data).map((t) => ({
       id: t.id,
       activation_id: t.activation_id,
@@ -1055,7 +1224,7 @@ export function DataProvider({ children }) {
     return ch;
   }
 
-  /* --------- PnL de Bots derivado desde transacciones --------- */
+  /* --------- PnL de Bots (desde transacciones) --------- */
   const {
     botPnlByActivation,
     totalBotProfit,
@@ -1078,13 +1247,14 @@ export function DataProvider({ children }) {
       const amt = Number(t.amount || 0);
 
       if (kind === 'bot_profit') {
-        m.get(aid).profit += amt;
+        m.get(aid).profit += amt;         // esperado positivo
         profitSum += amt;
       } else if (kind === 'bot_fee') {
-        m.get(aid).fees += amt;
-        feesSum += amt;
+        const feeAbs = Math.abs(amt);     // ← fee puede venir negativo (reduce saldo)
+        m.get(aid).fees += feeAbs;
+        feesSum += feeAbs;
       } else if (kind === 'bot_refund') {
-        m.get(aid).refunds += amt;
+        m.get(aid).refunds += amt;        // positivo
       }
     }
 
@@ -1099,7 +1269,7 @@ export function DataProvider({ children }) {
     return {
       botPnlByActivation: plain,
       totalBotProfit: profitSum,
-      totalBotFees: feesSum,
+      totalBotFees: feesSum,         // suma de absolutos
       totalBotNet: profitSum - feesSum,
     };
   }, [transactions]);
