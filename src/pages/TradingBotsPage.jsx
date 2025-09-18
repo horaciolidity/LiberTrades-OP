@@ -137,9 +137,7 @@ function ConfirmModal({
                 <CardDescription className="text-slate-300">{description}</CardDescription>
               )}
             </CardHeader>
-            <CardContent className="space-y-3">
-              {children}
-            </CardContent>
+            <CardContent className="space-y-3">{children}</CardContent>
             <CardFooter className="flex gap-2 justify-end">
               <Button variant="outline" onClick={onCancel}>{cancelText}</Button>
               <Button variant={destructive ? 'destructive' : 'default'} onClick={onConfirm}>
@@ -173,18 +171,21 @@ const TradingBotsPage = () => {
 
     // PnL (desde transacciones)
     getBotPnl,
-    totalBotProfit = 0, // bruto
-    totalBotFees = 0,   // fees (valor absoluto en DataContext)
-    totalBotNet = 0,    // neto
+    totalBotProfit = 0,
+    totalBotFees = 0,
+    totalBotNet = 0,
 
     // Trades live / precios
     listBotTrades,
     subscribeBotTrades,
     getPairInfo,
 
-    // Eventos (timeline) — opcionales
+    // Eventos (timeline)
     listBotEvents,
     subscribeBotEvents,
+
+    // 🔑 saldo robusto
+    getAvailableBalance,
   } = useData();
 
   const [selectedBot, setSelectedBot] = useState(null);
@@ -195,17 +196,17 @@ const TradingBotsPage = () => {
   const [busyBrain, setBusyBrain] = useState(false);
 
   // Confirm cancel
-  const [confirmCancel, setConfirmCancel] = useState(null); // {id, name, amountUsd}
+  const [confirmCancel, setConfirmCancel] = useState(null); // {id, name, amountUsd, feeEst}
 
-  // ====== Trades por activación (para PnL no realizado y par del minigráfico)
+  // ====== Trades por activación
   const [tradesByActivation, setTradesByActivation] = useState({});
   const subsRef = useRef({});
 
-  // ====== Eventos por activación (timeline)
+  // ====== Eventos por activación
   const [eventsByActivation, setEventsByActivation] = useState({});
   const eventsSubsRef = useRef({});
 
-  // Fees de cancelación (claves reales + fallbacks)
+  // Fees de cancelación
   const cancelFeePct = Number(
     settings?.['trading.bot_cancel_fee_pct'] ??
     settings?.['trading.bot_rent_fee_pct'] ??
@@ -231,7 +232,7 @@ const TradingBotsPage = () => {
     });
   }, []);
 
-  /* ---- Derivados: mis listas ---- */
+  /* ---- Listas ---- */
   const myActiveBots = useMemo(() => {
     if (Array.isArray(activeBots)) return activeBots;
     return (botActivations || []).filter((b) => ['active', 'paused'].includes(normStatus(b?.status)));
@@ -248,7 +249,7 @@ const TradingBotsPage = () => {
   );
   const botsCount = myActiveBots.length;
 
-  // Estimación mensual de los bots activos
+  // Estimación mensual
   const activeEstimated = useMemo(() => {
     let minSum = 0;
     let maxSum = 0;
@@ -262,38 +263,41 @@ const TradingBotsPage = () => {
     return { min: minSum, max: maxSum };
   }, [myActiveBots]);
 
-  // Objetivos simples para “energía de bots”
+  // Energía
   const GOALS = { botsCount: 3, botsUsd: 2000 };
   const pctBotsCount = clamp((botsCount / GOALS.botsCount) * 100);
   const pctBotsUsd = clamp((botsAllocated / GOALS.botsUsd) * 100);
   const energyBots = clamp((pctBotsCount + pctBotsUsd) / 2);
 
-  /* ---- Refresh on mount / user change ---- */
+  /* ---- Mount ---- */
   useEffect(() => {
     if (!user?.id) return;
     refreshBotActivations?.();
-    refreshTransactions?.(); // el PnL deriva de transacciones
+    refreshTransactions?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ✅ usa el balance robusto del DataContext
-const { getAvailableBalance } = useData();
-const [availableUsd, setAvailableUsd] = useState(0);
-
-useEffect(() => {
-  let alive = true;
-  (async () => {
-    // lee USDC pero internamente prueba USDC/USD/USDT, RPCs y tablas
+  /* ---- Saldo robusto USDC ---- */
+  const [availableUsd, setAvailableUsd] = useState(0);
+  const reloadAvailable = useCallback(async () => {
     const v = await getAvailableBalance?.('USDC');
-    if (alive) setAvailableUsd(Number(v || 0));
-  })();
-  // refresca cuando cambie el user o cuando vuelvas a la vista
-  // (si querés, podés llamar esto también después de depositar)
-  return () => { alive = false; };
-}, [user?.id, getAvailableBalance]);
+    setAvailableUsd(Number(v || 0));
+  }, [getAvailableBalance]);
 
+  useEffect(() => {
+    let alive = true;
+    // 1) seed (por si balances trae algo)
+    const seed = Number(balances?.USDC ?? balances?.usdc ?? balances?.usd ?? 0);
+    if (Number.isFinite(seed) && seed > 0) setAvailableUsd(seed);
+    // 2) robusto
+    (async () => {
+      const v = await getAvailableBalance?.('USDC');
+      if (alive) setAvailableUsd(Number(v || 0));
+    })();
+    return () => { alive = false; };
+  }, [user?.id, balances, getAvailableBalance]);
 
-  /* ===== Carga & subscripción de trades por activación ===== */
+  /* ===== Trades live ===== */
   const loadTrades = useCallback(async (activationId) => {
     try {
       const rows = await listBotTrades?.(activationId, 100);
@@ -305,24 +309,17 @@ useEffect(() => {
     (botActivations || []).forEach((a) => {
       const id = a.id;
       if (!id || subsRef.current[id]) return;
-
-      // Seed de trades
       loadTrades(id);
-
-      // Subscribe live
       const ch = subscribeBotTrades?.(id, () => loadTrades(id));
       subsRef.current[id] = ch;
     });
-
     return () => {
-      Object.values(subsRef.current).forEach((ch) => {
-        try { ch?.unsubscribe?.(); } catch {}
-      });
+      Object.values(subsRef.current).forEach((ch) => { try { ch?.unsubscribe?.(); } catch {} });
       subsRef.current = {};
     };
   }, [botActivations, subscribeBotTrades, loadTrades]);
 
-  /* ===== Carga & subscripción de eventos por activación ===== */
+  /* ===== Eventos live ===== */
   const loadEvents = useCallback(async (activationId) => {
     try {
       const rows = await listBotEvents?.(activationId, 100);
@@ -334,41 +331,31 @@ useEffect(() => {
     (botActivations || []).forEach((a) => {
       const id = a.id;
       if (!id || eventsSubsRef.current[id]) return;
-
-      // Seed de eventos
       loadEvents(id);
-
-      // Subscribe live
       const ch = subscribeBotEvents?.(id, () => loadEvents(id));
       eventsSubsRef.current[id] = ch;
     });
-
     return () => {
-      Object.values(eventsSubsRef.current).forEach((ch) => {
-        try { ch?.unsubscribe?.(); } catch {}
-      });
+      Object.values(eventsSubsRef.current).forEach((ch) => { try { ch?.unsubscribe?.(); } catch {} });
       eventsSubsRef.current = {};
     };
   }, [botActivations, subscribeBotEvents, loadEvents]);
 
-  /* ===== PnL no realizado + par principal por activación ===== */
+  /* ===== PnL no realizado + par ===== */
   const calcUnrealizedAndPair = useCallback((activationId, fallbackName) => {
     const rows = tradesByActivation[activationId] || [];
     let u = 0;
-    // Par principal: último trade abierto o primer par del catálogo del bot
     const lastOpen = rows.find((r) => String(r.status).toLowerCase() === 'open');
     let mainPair = lastOpen?.pair;
     if (!mainPair) {
       const cat = tradingBots.find((x) => x.name === fallbackName);
       mainPair = cat?.pairs?.[0] || 'BTC/USDT';
     }
-
     for (const t of rows) {
       if (String(t.status).toLowerCase() !== 'open') continue;
       const info = getPairInfo?.(t.pair) || {};
       const last = Number(info.price);
       if (!Number.isFinite(last) || !Number.isFinite(Number(t.entry))) continue;
-
       const sideMul = String(t.side).toLowerCase() === 'short' ? -1 : 1;
       const pct = (last - Number(t.entry)) / Number(t.entry);
       const pnlTrade = sideMul * pct * Number(t.leverage || 1) * Number(t.amount_usd || 0);
@@ -377,7 +364,7 @@ useEffect(() => {
     return { unrealized: u, mainPair };
   }, [tradesByActivation, getPairInfo]);
 
-  /* ========== Timeline de eventos ========== */
+  /* ========== Timeline ========== */
   const EventRow = ({ ev }) => {
     const kind = String(ev.kind || '').toLowerCase();
     const at = ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : '—';
@@ -457,12 +444,16 @@ useEffect(() => {
         });
         return;
       }
-      if (amount > availableUsd) {
+
+      // valida con saldo fresco y robusto
+      const freshAvail = Number(await getAvailableBalance?.('USDC') || 0);
+      if (amount > freshAvail) {
         toast({
           title: 'Saldo insuficiente',
-          description: `Tu saldo USDC es $${fmt(availableUsd)}. Depositá o reducí el monto.`,
+          description: `Tu saldo USDC es $${fmt(freshAvail)}. Depositá o reducí el monto.`,
           variant: 'destructive',
         });
+        await reloadAvailable();
         return;
       }
 
@@ -480,6 +471,7 @@ useEffect(() => {
           description: `Te faltan $${fmt(Number(res?.needed || 0))} para activar este bot.`,
           variant: 'destructive',
         });
+        await reloadAvailable();
         return;
       }
       if (!res?.ok) {
@@ -491,13 +483,11 @@ useEffect(() => {
         return;
       }
 
-      toast({
-        title: 'Bot activado',
-        description: `${selectedBot.name} activado por $${fmt(amount)}.`,
-      });
+      toast({ title: 'Bot activado', description: `${selectedBot.name} activado por $${fmt(amount)}.` });
       setSelectedBot(null);
       setInvestmentAmount('');
       await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
+      await reloadAvailable();
     } catch (e) {
       console.error('[handleActivateBot]', e);
       toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
@@ -544,9 +534,8 @@ useEffect(() => {
     }
   };
 
-  // Confirm y cancelación real
+  // Confirm + cancel
   const askCancel = (a) => {
-    // estimación de fee
     const pctPart = Math.max(0, (cancelFeePct || 0) / 100) * Number(a.amountUsd || 0);
     const fixed = Math.max(0, cancelFeeUsd || 0);
     let feeEst = Number((pctPart + fixed).toFixed(2));
@@ -562,6 +551,7 @@ useEffect(() => {
       if (r?.ok) {
         toast({ title: 'Bot cancelado' });
         await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
+        await reloadAvailable();
       } else {
         toast({ title: 'No se pudo cancelar', description: r?.msg || '', variant: 'destructive' });
       }
@@ -601,7 +591,7 @@ useEffect(() => {
     return [...base, ...extra.filter((v) => !base.includes(v))];
   }, [availableUsd]);
 
-  // Valores para el toggle del resumen
+  // Resumen toggle
   const summaryPnlValue = showNet ? totalBotNet : totalBotProfit;
   const summaryPnlLabel = showNet ? 'Ganancias (neto)' : 'Ganancias (bruto)';
 
@@ -609,20 +599,14 @@ useEffect(() => {
     <>
       <div className="space-y-8">
         {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
           <div className="flex items-center justify-between gap-3">
             <div>
               <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
                 <BotIcon className="h-8 w-8 mr-3 text-purple-400" />
                 Bots de Trading Automatizado
               </h1>
-              <p className="text-slate-300">
-                Maximizá tus ganancias con bots inteligentes conectados a tu saldo.
-              </p>
+              <p className="text-slate-300">Maximizá tus ganancias con bots inteligentes conectados a tu saldo.</p>
             </div>
 
             <div className="flex items-center gap-2">
@@ -941,11 +925,7 @@ useEffect(() => {
                     <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                       <div className="text-xs text-slate-400">Estimación mensual (según monto ingresado)</div>
                       <div className="text-white font-semibold">
-                        {amountNum > 0 ? (
-                          <>+${fmt(estMin)} – +${fmt(estMax)}</>
-                        ) : (
-                          '—'
-                        )}
+                        {amountNum > 0 ? <>+${fmt(estMin)} – +${fmt(estMax)}</> : '—'}
                       </div>
                       <div className="text-[10px] text-slate-500 mt-1">
                         Estimación teórica basada en el rango del bot. No garantiza resultados.
@@ -1009,13 +989,13 @@ useEffect(() => {
                 const createdAt =
                   a.createdAt || a.created_at || (a.created_at_ms ? new Date(a.created_at_ms) : null);
 
-                // PnL realizado (transacciones)
+                // PnL realizado
                 const { profit: grossProfit = 0, fees = 0, net: realizedNet = 0 } = getBotPnl?.(a.id) || {};
 
-                // PnL no realizado + par principal (para minigráfico)
+                // PnL no realizado + par
                 const { unrealized = 0, mainPair } = calcUnrealizedAndPair(a.id, a.botName);
 
-                // ROI con neto total (realizado + no realizado)
+                // ROI neto
                 const totalNet = Number(realizedNet) + Number(unrealized);
                 const roiNet = a.amountUsd > 0 ? (totalNet / Number(a.amountUsd)) * 100 : 0;
 
@@ -1052,11 +1032,9 @@ useEffect(() => {
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
-                      {/* Micro-gráfico del par dinámico */}
+                      {/* Micro-gráfico del par */}
                       <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
-                        <div className="text-xs text-slate-400 mb-1">
-                          Actividad del par ({mainPair})
-                        </div>
+                        <div className="text-xs text-slate-400 mb-1">Actividad del par ({mainPair})</div>
                         <MiniSparkline pair={mainPair} />
                       </div>
 
@@ -1117,7 +1095,7 @@ useEffect(() => {
                       {/* Timeline de eventos */}
                       <EventTimeline list={eventsByActivation[a.id]} />
 
-                      {/* Últimos trades (compacto) */}
+                      {/* Últimos trades */}
                       {(tradesByActivation[a.id] || []).length > 0 && (
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                           <div className="text-xs text-slate-400 mb-1">Últimos trades</div>
@@ -1142,29 +1120,18 @@ useEffect(() => {
 
                       <div className="flex flex-wrap gap-2">
                         {isActive && (
-                          <Button
-                            variant="outline"
-                            onClick={() => doPause(a.id)}
-                            disabled={rowBusy}
-                          >
+                          <Button variant="outline" onClick={() => doPause(a.id)} disabled={rowBusy}>
                             <PauseCircle className="w-4 h-4 mr-1" />
                             {rowBusy ? 'Pausando…' : 'Pausar'}
                           </Button>
                         )}
                         {isPaused && (
-                          <Button
-                            onClick={() => doResume(a.id)}
-                            disabled={rowBusy}
-                          >
+                          <Button onClick={() => doResume(a.id)} disabled={rowBusy}>
                             <PlayCircle className="w-4 h-4 mr-1" />
                             {rowBusy ? 'Reanudando…' : 'Reanudar'}
                           </Button>
                         )}
-                        <Button
-                          variant="destructive"
-                          onClick={() => askCancel(a)}
-                          disabled={rowBusy}
-                        >
+                        <Button variant="destructive" onClick={() => askCancel(a)} disabled={rowBusy}>
                           <XCircle className="w-4 h-4 mr-1" />
                           {rowBusy ? 'Cancelando…' : 'Cancelar'}
                         </Button>
@@ -1200,7 +1167,8 @@ useEffect(() => {
                         </span>
                       </CardTitle>
                       <CardDescription className="text-slate-300">
-                        Capital original: ${fmt(a.amountUsd)} · PnL neto: <span className={pnlColor(net)}>{fmtSign(net)}</span>
+                        Capital original: ${fmt(a.amountUsd)} · PnL neto:{' '}
+                        <span className={pnlColor(net)}>{fmtSign(net)}</span>
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
@@ -1223,7 +1191,6 @@ useEffect(() => {
                         </div>
                       </div>
 
-                      {/* Timeline de eventos (histórico) */}
                       <EventTimeline list={eventsByActivation[a.id]} />
                     </CardContent>
                   </Card>
@@ -1252,8 +1219,14 @@ useEffect(() => {
         onConfirm={() => doCancel(confirmCancel?.id)}
       >
         <div className="text-sm text-slate-300 space-y-1">
-          <div>Capital asignado: <span className="text-white font-semibold">${fmt(confirmCancel?.amountUsd || 0)}</span></div>
-          <div>Fee estimado: <span className="text-white font-semibold">${fmt(confirmCancel?.feeEst || 0)}</span></div>
+          <div>
+            Capital asignado:{' '}
+            <span className="text-white font-semibold">${fmt(confirmCancel?.amountUsd || 0)}</span>
+          </div>
+          <div>
+            Fee estimado:{' '}
+            <span className="text-white font-semibold">${fmt(confirmCancel?.feeEst || 0)}</span>
+          </div>
           {cancelFeeLabel && <div className="text-xs text-slate-400">{cancelFeeLabel}</div>}
         </div>
       </ConfirmModal>
