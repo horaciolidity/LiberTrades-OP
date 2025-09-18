@@ -116,21 +116,35 @@ async function rpcCancelBotRobust({ activation_id, user_id }) {
   return tryManyRPC(names2, payloads);
 }
 
-/** Balance robusto (RPCs + tablas) */
+/** Balance robusto (RPCs) — NO usa tablas */
 async function rpcGetBalanceRobust({ user_id, currency }) {
   const names = [
+    'get_user_available_balance',        // 👈 RPC recomendada
     'get_user_balance',
     'wallet_get_balance',
     'get_balance',
     'get_balance_by_currency',
   ];
   const payloads = [
+    { _currency: currency },                          // get_user_available_balance
+    { p_currency: currency },                         // variantes
     { p_user_id: user_id, p_currency: currency },
     { user_id, currency },
     { p_user: user_id, p_currency_code: currency },
-    { p_user_id: user_id, currency },
   ];
-  return tryManyRPC(names, payloads);
+  const { data } = await tryManyRPC(names, payloads);
+
+  // normalizá a número
+  const n =
+    data == null
+      ? null
+      : typeof data === 'number'
+      ? data
+      : Number(
+          data?.available ?? data?.balance ?? data?.amount ?? data?.[String(currency).toUpperCase()] ?? data
+        );
+
+  return { data: Number.isFinite(n) ? n : null, error: null };
 }
 
 /* ===================== PROVIDER ===================== */
@@ -1052,91 +1066,70 @@ export function DataProvider({ children }) {
     return best;
   }
 
-  // Busca balance por alias: USDC/USDT/USD y toma el mayor (evita falsos "insuficiente")
-  async function getAvailableBalance(currency = 'USDC') {
-    const C = String(currency || 'USDC').toUpperCase();
-    const aliases =
-      C === 'USDC'
-        ? ['USDC', 'USD', 'USDT']
-        : C === 'USDT'
-        ? ['USDT', 'USD', 'USDC']
-        : C === 'USD'
-        ? ['USD', 'USDC', 'USDT']
-        : [C, 'USDC', 'USD', 'USDT'];
+ // Busca balance por alias y corta rápido si la RPC existe.
+// NO golpea /balances ni /wallet_balances si la RPC responde bien.
+async function getAvailableBalance(currency = 'USDC') {
+  const C = String(currency || 'USDC').toUpperCase();
+  const aliases =
+    C === 'USDC' ? ['USDC', 'USD', 'USDT'] :
+    C === 'USDT' ? ['USDT', 'USD', 'USDC'] :
+    C === 'USD'  ? ['USD', 'USDC', 'USDT'] :
+                   [C, 'USDC', 'USD', 'USDT'];
 
-    // 0) AuthContext
-    let best = -Infinity;
-    for (const cur of aliases) {
-      const fromAuth = pickAuthAvailable(cur);
-      if (fromAuth != null) best = Math.max(best, Number(fromAuth));
-    }
-    if (DEBUG_BALANCE) console.log('[balance-debug] fromAuth best=', best, 'aliases=', aliases, 'balances=', balances);
-    if (Number.isFinite(best) && best >= 0) return best;
-
-    if (!user?.id) return 0;
-
-    // 1) RPCs
-    for (const cur of aliases) {
-      try {
-        const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency: cur });
-        const v = parseNum(data?.available ?? data?.balance ?? data?.amount ?? data?.[cur] ?? data);
-        if (v != null) best = Math.max(best, v);
-      } catch {}
-    }
-    if (Number.isFinite(best) && best >= 0) return best;
-
-    // 2) Tablas
-    for (const cur of aliases) {
-      try {
-        const { data } = await supabase
-          .from('wallet_balances')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('currency', cur)
-          .maybeSingle();
-        const v1 = parseNum(data?.available ?? data?.balance ?? data?.amount);
-        if (v1 != null) best = Math.max(best, v1);
-      } catch {}
-      try {
-        const { data } = await supabase
-          .from('balances')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('currency', cur)
-          .maybeSingle();
-        const v2 = parseNum(data?.available ?? data?.balance ?? data?.amount);
-        if (v2 != null) best = Math.max(best, v2);
-      } catch {}
-    }
-    if (Number.isFinite(best) && best >= 0) return best;
-
-    // 3) Fallback: suma de transacciones completadas
-    for (const cur of aliases) {
-      try {
-        const { data } = await supabase
-          .from('wallet_transactions')
-          .select('amount, status, currency')
-          .eq('user_id', user.id)
-          .eq('currency', cur)
-          .eq('status', 'completed');
-        const total = ensureArray(data).reduce((s, r) => s + (parseNum(r.amount) || 0), 0);
-        if (Number.isFinite(total)) best = Math.max(best, total);
-      } catch {}
-    }
-
-    if (DEBUG_BALANCE) console.log('[balance-debug] final best=', best);
-    return Number.isFinite(best) && best >= 0 ? best : 0;
+  // 0) AuthContext
+  let best = -Infinity;
+  for (const cur of aliases) {
+    const fromAuth = pickAuthAvailable(cur);
+    if (fromAuth != null) best = Math.max(best, Number(fromAuth));
   }
+  if (Number.isFinite(best) && best >= 0) return best;
+  if (!user?.id) return 0;
 
-  async function recalcAndRefreshBalances() {
-    if (!user?.id) return;
+  // 1) FAST PATH: RPC oficial get_user_available_balance
+  try {
+    const { data: fast } = await rpcGetBalanceRobust({ user_id: user.id, currency: C });
+    if (fast != null && Number.isFinite(Number(fast))) {
+      return Number(fast);
+    }
+  } catch {} // si falla, seguimos
+
+  // 2) RPCs alternativas por alias
+  for (const cur of aliases) {
     try {
-      await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
-    } catch {}
-    try {
-      refreshBalances?.();
+      const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency: cur });
+      if (data != null && Number.isFinite(Number(data))) {
+        return Number(data);
+      }
     } catch {}
   }
+
+  // 3) (Opcional) Fallback por transacciones completadas — SIN tocar tablas /balances
+  for (const cur of aliases) {
+    try {
+      const { data } = await supabase
+        .from('wallet_transactions')
+        .select('amount, status, currency')
+        .eq('user_id', user.id)
+        .eq('currency', cur)
+        .eq('status', 'completed');
+
+      const total = ensureArray(data).reduce((s, r) => s + (parseNum(r.amount) || 0), 0);
+      if (Number.isFinite(total)) best = Math.max(best, total);
+    } catch {}
+  }
+
+  return Number.isFinite(best) && best >= 0 ? best : 0;
+}
+
+ async function recalcAndRefreshBalances() {
+  if (!user?.id) return;
+  try {
+    await supabase.rpc('recalc_user_balances'); // 👈 sin args
+  } catch {}
+  try {
+    refreshBalances?.();
+  } catch {}
+}
 
   async function canActivateBot(amountUsd, currency = 'USDC') {
     const avail = await getAvailableBalance(currency);
