@@ -34,6 +34,14 @@ const CANCELLED_STATUSES = new Set([
   'canceled', 'cancelled', 'inactive', 'stopped', 'ended', 'closed', 'terminated', 'archived',
 ]);
 
+// Debug opcional de saldo
+const DEBUG_BALANCE = false;
+const parseNum = (x) => {
+  if (x == null) return null;
+  const n = Number(String(x).replace(/[\s,$]/g, '').replace(/^USDT?|USDC?|\$/i, ''));
+  return Number.isFinite(n) ? n : null;
+};
+
 /* =======================================================
    RPC WRAPPERS (tolerantes a nombres/firmas) + FALLBACKS
    ======================================================= */
@@ -537,7 +545,6 @@ export function DataProvider({ children }) {
       .filter((i) => (i.enabled ?? true) && ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase()))
       .map((i) => String(i.symbol || '').toUpperCase());
 
-    let alive = true;
     let idx = 0;
     let timer;
 
@@ -586,7 +593,7 @@ export function DataProvider({ children }) {
     };
 
     const drive = async () => {
-      if (!alive || simSyms.length === 0) return;
+      if (simSyms.length === 0) return;
 
       if (supportsBulkRef.current === true) {
         const { error } = await supabase.rpc('tick_all_simulated_v2');
@@ -888,23 +895,35 @@ export function DataProvider({ children }) {
   function pickAuthAvailable(currency = 'USDC') {
     const c = String(currency).toUpperCase();
     const b = balances || {};
-    const candidates = [
+
+    // caminos por moneda
+    const byCurrency = [
       b?.available?.[c],
       b?.[c]?.available,
       b?.[c]?.balance,
       b?.[c]?.free,
       b?.[c]?.amount,
       b?.[c],
-      b?.available,
-      b?.balance,
-      b?.free,
-      b?.amount,
-    ];
-    for (const v of candidates) {
-      const n = Number(v);
-      if (Number.isFinite(n)) return n;
-    }
-    return null;
+    ].map(parseNum).find((v) => v != null);
+    if (byCurrency != null) return byCurrency;
+
+    // totales globales
+    const totals = [
+      b?.net, b?.netUsd, b?.net_usd,
+      b?.total, b?.totalUsd, b?.total_usd,
+      b?.usd, b?.USDC, b?.USDT,
+    ].map(parseNum).find((v) => v != null);
+    if (totals != null) return totals;
+
+    // último recurso: mayor número visible
+    let best = null;
+    try {
+      Object.values(b).forEach((v) => {
+        const n = parseNum(v);
+        if (n != null) best = best == null ? n : Math.max(best, n);
+      });
+    } catch {}
+    return best;
   }
 
   // Busca balance por alias: USDC/USDT/USD y toma el mayor (evita falsos "insuficiente")
@@ -918,33 +937,28 @@ export function DataProvider({ children }) {
           ? ['USD', 'USDC', 'USDT']
           : [C, 'USDC', 'USD', 'USDT'];
 
-    // 0) Primero, lo que ya trae AuthContext
+    // 0) AuthContext
     let best = -Infinity;
     for (const cur of aliases) {
       const fromAuth = pickAuthAvailable(cur);
-      if (fromAuth != null && Number.isFinite(Number(fromAuth))) {
-        best = Math.max(best, Number(fromAuth));
-      }
+      if (fromAuth != null) best = Math.max(best, Number(fromAuth));
     }
+    if (DEBUG_BALANCE) console.log('[balance-debug] fromAuth best=', best, 'aliases=', aliases, 'balances=', balances);
     if (Number.isFinite(best) && best >= 0) return best;
 
     if (!user?.id) return 0;
 
-    // 1) RPCs clásicas
+    // 1) RPCs
     for (const cur of aliases) {
       try {
         const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency: cur });
-        if (data != null) {
-          const v = Number(
-            data?.available ?? data?.balance ?? data?.amount ?? data?.[cur] ?? data
-          );
-          if (Number.isFinite(v)) best = Math.max(best, v);
-        }
+        const v = parseNum(data?.available ?? data?.balance ?? data?.amount ?? data?.[cur] ?? data);
+        if (v != null) best = Math.max(best, v);
       } catch {}
     }
     if (Number.isFinite(best) && best >= 0) return best;
 
-    // 2) Tablas wallet_balances / balances
+    // 2) Tablas
     for (const cur of aliases) {
       try {
         const { data } = await supabase
@@ -953,10 +967,8 @@ export function DataProvider({ children }) {
           .eq('user_id', user.id)
           .eq('currency', cur)
           .maybeSingle();
-        if (data) {
-          const v = Number(data.available ?? data.balance ?? data.amount);
-          if (Number.isFinite(v)) best = Math.max(best, v);
-        }
+        const v1 = parseNum(data?.available ?? data?.balance ?? data?.amount);
+        if (v1 != null) best = Math.max(best, v1);
       } catch {}
       try {
         const { data } = await supabase
@@ -965,15 +977,13 @@ export function DataProvider({ children }) {
           .eq('user_id', user.id)
           .eq('currency', cur)
           .maybeSingle();
-        if (data) {
-          const v = Number(data.available ?? data.balance ?? data.amount);
-          if (Number.isFinite(v)) best = Math.max(best, v);
-        }
+        const v2 = parseNum(data?.available ?? data?.balance ?? data?.amount);
+        if (v2 != null) best = Math.max(best, v2);
       } catch {}
     }
     if (Number.isFinite(best) && best >= 0) return best;
 
-    // 3) Fallback: suma de transacciones completadas (por moneda)
+    // 3) Fallback: suma de transacciones completadas
     for (const cur of aliases) {
       try {
         const { data } = await supabase
@@ -982,12 +992,12 @@ export function DataProvider({ children }) {
           .eq('user_id', user.id)
           .eq('currency', cur)
           .eq('status', 'completed');
-
-        const total = ensureArray(data).reduce((s, r) => s + Number(r.amount || 0), 0);
+        const total = ensureArray(data).reduce((s, r) => s + (parseNum(r.amount) || 0), 0);
         if (Number.isFinite(total)) best = Math.max(best, total);
       } catch {}
     }
 
+    if (DEBUG_BALANCE) console.log('[balance-debug] final best=', best);
     return Number.isFinite(best) && best >= 0 ? best : 0;
   }
 
