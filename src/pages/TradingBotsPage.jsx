@@ -276,7 +276,22 @@ const TradingBotsPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  const availableUsd = Number(balances?.USDC ?? balances?.usdc ?? 0);
+  // ✅ usa el balance robusto del DataContext
+const { getAvailableBalance } = useData();
+const [availableUsd, setAvailableUsd] = useState(0);
+
+useEffect(() => {
+  let alive = true;
+  (async () => {
+    // lee USDC pero internamente prueba USDC/USD/USDT, RPCs y tablas
+    const v = await getAvailableBalance?.('USDC');
+    if (alive) setAvailableUsd(Number(v || 0));
+  })();
+  // refresca cuando cambie el user o cuando vuelvas a la vista
+  // (si querés, podés llamar esto también después de depositar)
+  return () => { alive = false; };
+}, [user?.id, getAvailableBalance]);
+
 
   /* ===== Carga & subscripción de trades por activación ===== */
   const loadTrades = useCallback(async (activationId) => {
