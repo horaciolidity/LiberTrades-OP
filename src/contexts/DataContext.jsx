@@ -31,7 +31,14 @@ const TICK_MS = 1000;
 
 const ACTIVE_STATUSES = new Set(['active', 'paused']);
 const CANCELLED_STATUSES = new Set([
-  'canceled', 'cancelled', 'inactive', 'stopped', 'ended', 'closed', 'terminated', 'archived',
+  'canceled',
+  'cancelled',
+  'inactive',
+  'stopped',
+  'ended',
+  'closed',
+  'terminated',
+  'archived',
 ]);
 
 // Debug opcional de saldo
@@ -159,9 +166,7 @@ export function DataProvider({ children }) {
   /* --------------- Admin settings ------------------- */
   const [adminSettings, setAdminSettings] = useState({});
   const DEFAULT_SLIPPAGE = 0.2; // %
-  const slippageMaxPct = Number(
-    adminSettings['trading.slippage_pct_max'] ?? DEFAULT_SLIPPAGE
-  );
+  const slippageMaxPct = Number(adminSettings['trading.slippage_pct_max'] ?? DEFAULT_SLIPPAGE);
 
   const botCancelFeeUsd = Number(
     (adminSettings['trading.bot_cancel_fee_usd'] ??
@@ -173,6 +178,58 @@ export function DataProvider({ children }) {
       adminSettings['trading.bot.cancel_fee_pct'] ??
       adminSettings.botCancelFeePct) ?? 0
   );
+
+  /* --------------- Modal (genérico + confirm) --------------- */
+  const [modal, setModal] = useState({
+    open: false,
+    name: null,
+    payload: null,
+  });
+
+  function openModal(name, payload = null) {
+    setModal({ open: true, name, payload });
+  }
+  function closeModal() {
+    setModal({ open: false, name: null, payload: null });
+  }
+  function setModalPayload(next) {
+    setModal((m) => ({ ...m, payload: typeof next === 'function' ? next(m.payload) : next }));
+  }
+
+  const confirmResolveRef = useRef(null);
+  const confirmRejectRef = useRef(null);
+
+  function confirmModal({
+    title = '¿Confirmar?',
+    message = '',
+    confirmText = 'Confirmar',
+    cancelText = 'Cancelar',
+    ...payloadExtra
+  } = {}) {
+    return new Promise((resolve, reject) => {
+      confirmResolveRef.current = resolve;
+      confirmRejectRef.current = reject;
+      openModal('confirm', { title, message, confirmText, cancelText, ...payloadExtra });
+    });
+  }
+
+  function confirmModalAccept(result = true) {
+    if (typeof confirmResolveRef.current === 'function') {
+      confirmResolveRef.current(result);
+    }
+    confirmResolveRef.current = null;
+    confirmRejectRef.current = null;
+    closeModal();
+  }
+
+  function confirmModalCancel(reason = 'cancel') {
+    if (typeof confirmRejectRef.current === 'function') {
+      confirmRejectRef.current(reason);
+    }
+    confirmResolveRef.current = null;
+    confirmRejectRef.current = null;
+    closeModal();
+  }
 
   /* --------------- Refs / conexiones ---------------- */
   const wsRef = useRef(null);
@@ -408,8 +465,7 @@ export function DataProvider({ children }) {
               const pair = t?.s;
               if (!pair) return;
 
-              const symU = Object.keys(liveMapRef.current)
-                .find((k) => liveMapRef.current[k] === pair);
+              const symU = Object.keys(liveMapRef.current).find((k) => liveMapRef.current[k] === pair);
               if (!symU) return;
 
               const price = Number(t?.c);
@@ -468,15 +524,10 @@ export function DataProvider({ children }) {
         const cur = ensureArray(prev[symU]);
         const nextH = [...cur, { time: ts, value: price }].slice(-HISTORY_MAX);
 
-        const ref24 =
-          Number(ref24Ref.current[symU]) ||
-          Number(nextH[0]?.value) ||
-          price;
+        const ref24 = Number(ref24Ref.current[symU]) || Number(nextH[0]?.value) || price;
         const change = ref24 > 0 ? ((price - ref24) / ref24) * 100 : 0;
 
-        const inst = instrumentsRef.current.find(
-          (i) => String(i.symbol || '').toUpperCase() === symU
-        );
+        const inst = instrumentsRef.current.find((i) => String(i.symbol || '').toUpperCase() === symU);
         const quoteU = String(inst?.quote || 'USDT').toUpperCase();
         const payload = { price, change, history: nextH };
 
@@ -506,7 +557,11 @@ export function DataProvider({ children }) {
     const startStatePolling = () => {
       clearInterval(statePollRef.current);
       const syms = instrumentsRef.current
-        .filter((i) => (i.enabled ?? true) && ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase()))
+        .filter(
+          (i) =>
+            (i.enabled ?? true) &&
+            ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase())
+        )
         .map((i) => String(i.symbol || '').toUpperCase());
       if (!syms.length) return;
 
@@ -542,7 +597,11 @@ export function DataProvider({ children }) {
   /* ---------- Simuladas driver (RPC) ---------- */
   useEffect(() => {
     const simSyms = instruments
-      .filter((i) => (i.enabled ?? true) && ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase()))
+      .filter(
+        (i) =>
+          (i.enabled ?? true) &&
+          ['simulated', 'manual', 'real'].includes(String(i.source || '').toLowerCase())
+      )
       .map((i) => String(i.symbol || '').toUpperCase());
 
     let idx = 0;
@@ -554,7 +613,9 @@ export function DataProvider({ children }) {
           const { error } = await supabase.rpc('tick_all_simulated_v2');
           supportsBulkRef.current = !error;
         }
-      } catch { supportsBulkRef.current = false; }
+      } catch {
+        supportsBulkRef.current = false;
+      }
 
       try {
         if (hasNextV2Ref.current === null) {
@@ -565,7 +626,9 @@ export function DataProvider({ children }) {
             hasNextV2Ref.current = false;
           }
         }
-      } catch { hasNextV2Ref.current = false; }
+      } catch {
+        hasNextV2Ref.current = false;
+      }
     };
 
     const callNextOnce = async (symU) => {
@@ -589,7 +652,9 @@ export function DataProvider({ children }) {
     };
 
     const seedOnce = async () => {
-      for (const symU of simSyms) { await callNextOnce(symU); }
+      for (const symU of simSyms) {
+        await callNextOnce(symU);
+      }
     };
 
     const drive = async () => {
@@ -614,7 +679,9 @@ export function DataProvider({ children }) {
       timer = setInterval(drive, TICK_MS);
     })();
 
-    return () => { clearInterval(timer); };
+    return () => {
+      clearInterval(timer);
+    };
   }, [instruments]);
 
   /* --------- Consolidación → cryptoPrices + histories --------- */
@@ -652,15 +719,14 @@ export function DataProvider({ children }) {
           base = Number.isFinite(lastKnown) ? lastKnown : Number(inst?.base_price ?? 0);
         }
 
-        let finalPrice = (symU === 'USDT' || symU === 'USDC') ? 1 : base;
+        let finalPrice = symU === 'USDT' || symU === 'USDC' ? 1 : base;
 
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
           finalPrice = lastKnown;
         }
 
         finalPrice = Number(
-          (Number.isFinite(finalPrice) ? finalPrice : 0)
-            .toFixed(Number.isFinite(decimals) ? decimals : 2)
+          (Number.isFinite(finalPrice) ? finalPrice : 0).toFixed(Number.isFinite(decimals) ? decimals : 2)
         );
 
         let changePct = 0;
@@ -692,23 +758,62 @@ export function DataProvider({ children }) {
   /* ---------------- Planes estáticos ---------------- */
   const investmentPlans = useMemo(
     () => [
-      { id: 1, name: 'Plan Básico',   minAmount: 100,   maxAmount: 999,   dailyReturn: 1.5, duration: 30, description: 'Perfecto para principiantes' },
-      { id: 2, name: 'Plan Estándar', minAmount: 1000,  maxAmount: 4999,  dailyReturn: 2.0, duration: 30, description: 'Para inversores intermedios' },
-      { id: 3, name: 'Plan Premium',  minAmount: 5000,  maxAmount: 19999, dailyReturn: 2.5, duration: 30, description: 'Para grandes inversores' },
-      { id: 4, name: 'Plan VIP',      minAmount: 20000, maxAmount: 100000, dailyReturn: 3.0, duration: 30, description: 'Para grandes inversores' },
+      {
+        id: 1,
+        name: 'Plan Básico',
+        minAmount: 100,
+        maxAmount: 999,
+        dailyReturn: 1.5,
+        duration: 30,
+        description: 'Perfecto para principiantes',
+      },
+      {
+        id: 2,
+        name: 'Plan Estándar',
+        minAmount: 1000,
+        maxAmount: 4999,
+        dailyReturn: 2.0,
+        duration: 30,
+        description: 'Para inversores intermedios',
+      },
+      {
+        id: 3,
+        name: 'Plan Premium',
+        minAmount: 5000,
+        maxAmount: 19999,
+        dailyReturn: 2.5,
+        duration: 30,
+        description: 'Para grandes inversores',
+      },
+      {
+        id: 4,
+        name: 'Plan VIP',
+        minAmount: 20000,
+        maxAmount: 100000,
+        dailyReturn: 3.0,
+        duration: 30,
+        description: 'Para grandes inversores',
+      },
     ],
     []
   );
 
   /* ---------------- Fetchers negocio ---------------- */
   async function refreshInvestments() {
-    if (!user?.id) { setInvestments([]); return; }
+    if (!user?.id) {
+      setInvestments([]);
+      return;
+    }
     const { data, error } = await supabase
       .from('investments')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
-    if (error) { console.error('[refreshInvestments] error:', error); setInvestments([]); return; }
+    if (error) {
+      console.error('[refreshInvestments] error:', error);
+      setInvestments([]);
+      return;
+    }
 
     const now = dayjs();
     const mapped = ensureArray(data).map((inv) => {
@@ -738,13 +843,20 @@ export function DataProvider({ children }) {
   }
 
   async function refreshTransactions() {
-    if (!user?.id) { setTransactions([]); return; }
+    if (!user?.id) {
+      setTransactions([]);
+      return;
+    }
     const { data, error } = await supabase
       .from('wallet_transactions')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
-    if (error) { console.error('[refreshTransactions] error:', error); setTransactions([]); return; }
+    if (error) {
+      console.error('[refreshTransactions] error:', error);
+      setTransactions([]);
+      return;
+    }
 
     const mapped = ensureArray(data).map((tx) => {
       let base = String(tx.type || '').toLowerCase();
@@ -786,24 +898,38 @@ export function DataProvider({ children }) {
   }
 
   async function refreshReferrals() {
-    if (!user?.id) { setReferrals([]); return; }
+    if (!user?.id) {
+      setReferrals([]);
+      return;
+    }
     const { data, error } = await supabase
       .from('profiles')
       .select('id, email, full_name, created_at, username')
       .eq('referred_by', user.id)
       .order('created_at', { ascending: false });
-    if (error) { console.error('[refreshReferrals] error:', error); setReferrals([]); return; }
+    if (error) {
+      console.error('[refreshReferrals] error:', error);
+      setReferrals([]);
+      return;
+    }
     setReferrals(ensureArray(data));
   }
 
   async function refreshBotActivations() {
-    if (!user?.id) { setBotActivations([]); return; }
+    if (!user?.id) {
+      setBotActivations([]);
+      return;
+    }
     const { data, error } = await supabase
       .from('bot_activations')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
-    if (error) { console.error('[refreshBotActivations] error:', error); setBotActivations([]); return; }
+    if (error) {
+      console.error('[refreshBotActivations] error:', error);
+      setBotActivations([]);
+      return;
+    }
 
     const mapped = ensureArray(data).map((b) => ({
       id: b.id,
@@ -836,7 +962,10 @@ export function DataProvider({ children }) {
 
   /* ---------------- Trades (legacy) ---------------- */
   async function refreshTrades() {
-    if (!user?.id) { setTrades([]); return; }
+    if (!user?.id) {
+      setTrades([]);
+      return;
+    }
     const { data, error } = await supabase
       .from('trades')
       .select('*')
@@ -896,7 +1025,6 @@ export function DataProvider({ children }) {
     const c = String(currency).toUpperCase();
     const b = balances || {};
 
-    // caminos por moneda
     const byCurrency = [
       b?.available?.[c],
       b?.[c]?.available,
@@ -904,18 +1032,16 @@ export function DataProvider({ children }) {
       b?.[c]?.free,
       b?.[c]?.amount,
       b?.[c],
-    ].map(parseNum).find((v) => v != null);
+    ]
+      .map(parseNum)
+      .find((v) => v != null);
     if (byCurrency != null) return byCurrency;
 
-    // totales globales
-    const totals = [
-      b?.net, b?.netUsd, b?.net_usd,
-      b?.total, b?.totalUsd, b?.total_usd,
-      b?.usd, b?.USDC, b?.USDT,
-    ].map(parseNum).find((v) => v != null);
+    const totals = [b?.net, b?.netUsd, b?.net_usd, b?.total, b?.totalUsd, b?.total_usd, b?.usd, b?.USDC, b?.USDT]
+      .map(parseNum)
+      .find((v) => v != null);
     if (totals != null) return totals;
 
-    // último recurso: mayor número visible
     let best = null;
     try {
       Object.values(b).forEach((v) => {
@@ -929,13 +1055,14 @@ export function DataProvider({ children }) {
   // Busca balance por alias: USDC/USDT/USD y toma el mayor (evita falsos "insuficiente")
   async function getAvailableBalance(currency = 'USDC') {
     const C = String(currency || 'USDC').toUpperCase();
-    const aliases = C === 'USDC'
-      ? ['USDC', 'USD', 'USDT']
-      : C === 'USDT'
+    const aliases =
+      C === 'USDC'
+        ? ['USDC', 'USD', 'USDT']
+        : C === 'USDT'
         ? ['USDT', 'USD', 'USDC']
         : C === 'USD'
-          ? ['USD', 'USDC', 'USDT']
-          : [C, 'USDC', 'USD', 'USDT'];
+        ? ['USD', 'USDC', 'USDT']
+        : [C, 'USDC', 'USD', 'USDT'];
 
     // 0) AuthContext
     let best = -Infinity;
@@ -1003,8 +1130,12 @@ export function DataProvider({ children }) {
 
   async function recalcAndRefreshBalances() {
     if (!user?.id) return;
-    try { await supabase.rpc('recalc_user_balances', { p_user_id: user.id }); } catch {}
-    try { refreshBalances?.(); } catch {}
+    try {
+      await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
+    } catch {}
+    try {
+      refreshBalances?.();
+    } catch {}
   }
 
   async function canActivateBot(amountUsd, currency = 'USDC') {
@@ -1025,12 +1156,11 @@ export function DataProvider({ children }) {
       status: 'active',
       currency_input: currency,
     };
-    const { data, error } = await supabase
-      .from('investments')
-      .insert(payload)
-      .select('*')
-      .single();
-    if (error) { console.error('[addInvestment] error:', error); return null; }
+    const { data, error } = await supabase.from('investments').insert(payload).select('*').single();
+    if (error) {
+      console.error('[addInvestment] error:', error);
+      return null;
+    }
 
     await refreshInvestments();
     return {
@@ -1050,8 +1180,13 @@ export function DataProvider({ children }) {
   }
 
   async function addTransaction({
-    amount, type, currency = 'USDC', description = '',
-    referenceType = null, referenceId = null, status = 'completed',
+    amount,
+    type,
+    currency = 'USDC',
+    description = '',
+    referenceType = null,
+    referenceId = null,
+    status = 'completed',
   }) {
     if (!user?.id) return null;
     const payload = {
@@ -1064,16 +1199,19 @@ export function DataProvider({ children }) {
       reference_type: referenceType,
       reference_id: referenceId,
     };
-    const { data, error } = await supabase
-      .from('wallet_transactions')
-      .insert(payload)
-      .select('*')
-      .single();
-    if (error) { console.error('[addTransaction] error:', error); return null; }
+    const { data, error } = await supabase.from('wallet_transactions').insert(payload).select('*').single();
+    if (error) {
+      console.error('[addTransaction] error:', error);
+      return null;
+    }
 
     await refreshTransactions();
-    try { await supabase.rpc('recalc_user_balances', { p_user_id: user.id }); } catch {}
-    try { refreshBalances?.(); } catch {}
+    try {
+      await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
+    } catch {}
+    try {
+      refreshBalances?.();
+    } catch {}
     let mappedType = data.type;
     if (mappedType === 'plan_purchase') mappedType = 'investment';
     return {
@@ -1153,14 +1291,13 @@ export function DataProvider({ children }) {
   }
 
   // Pausar
-  async function pauseBot(id)  {
+  async function pauseBot(id) {
     const r = await rpcPauseBotRobust({ activation_id: id, user_id: user?.id });
     if (!r.error) {
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
       return r.data ?? { ok: true };
     }
-    const { error } = await supabase.from('bot_activations')
-      .update({ status: 'paused' }).eq('id', id).eq('user_id', user?.id);
+    const { error } = await supabase.from('bot_activations').update({ status: 'paused' }).eq('id', id).eq('user_id', user?.id);
     if (error) return { ok: false, code: 'RPC_ERROR', error };
     await refreshBotActivations();
     return { ok: true, via: 'fallback' };
@@ -1173,8 +1310,7 @@ export function DataProvider({ children }) {
       await Promise.all([refreshBotActivations(), refreshTransactions()]);
       return r.data ?? { ok: true };
     }
-    const { error } = await supabase.from('bot_activations')
-      .update({ status: 'active' }).eq('id', id).eq('user_id', user?.id);
+    const { error } = await supabase.from('bot_activations').update({ status: 'active' }).eq('id', id).eq('user_id', user?.id);
     if (error) return { ok: false, code: 'RPC_ERROR', error };
     await refreshBotActivations();
     return { ok: true, via: 'fallback' };
@@ -1325,7 +1461,16 @@ export function DataProvider({ children }) {
   }
 
   /* ---------------- BOT TRADES (nuevo) ---------------- */
-  async function openBotTrade({ activationId, pair, side, amountUsd, leverage = 3, tpPct = null, slPct = null, entry = null }) {
+  async function openBotTrade({
+    activationId,
+    pair,
+    side,
+    amountUsd,
+    leverage = 3,
+    tpPct = null,
+    slPct = null,
+    entry = null,
+  }) {
     const { data, error } = await supabase.rpc('bot_trade_open', {
       p_activation_id: activationId,
       p_pair: pair,
@@ -1405,12 +1550,7 @@ export function DataProvider({ children }) {
   }
 
   /* --------- PnL de Bots (desde transacciones) --------- */
-  const {
-    botPnlByActivation,
-    totalBotProfit,
-    totalBotFees,
-    totalBotNet,
-  } = useMemo(() => {
+  const { botPnlByActivation, totalBotProfit, totalBotFees, totalBotNet } = useMemo(() => {
     const m = new Map();
     let profitSum = 0;
     let feesSum = 0;
@@ -1454,15 +1594,18 @@ export function DataProvider({ children }) {
     };
   }, [transactions]);
 
-  const getBotPnl = useCallback((activationId) => {
-    return botPnlByActivation[String(activationId)] || { profit: 0, fees: 0, refunds: 0, net: 0 };
-  }, [botPnlByActivation]);
+  const getBotPnl = useCallback(
+    (activationId) => {
+      return botPnlByActivation[String(activationId)] || { profit: 0, fees: 0, refunds: 0, net: 0 };
+    },
+    [botPnlByActivation]
+  );
 
   /* ---------------- Helpers UI ---------------- */
   const pairOptions = useMemo(() => {
-    const enabled = instruments.filter((i) => (i.enabled ?? true));
-    const list = enabled.map((i) =>
-      `${String(i.symbol || '').toUpperCase()}/${String(i.quote || 'USDT').toUpperCase()}`
+    const enabled = instruments.filter((i) => i.enabled ?? true);
+    const list = enabled.map(
+      (i) => `${String(i.symbol || '').toUpperCase()}/${String(i.quote || 'USDT').toUpperCase()}`
     );
     const s = new Set(list);
     if (!s.has('BTC/USDT')) s.add('BTC/USDT');
@@ -1475,8 +1618,8 @@ export function DataProvider({ children }) {
     const keys = [
       k,
       k.includes('/') ? k.replace('/', '') : k, // BTCUSDT
-      k.split('/')[0],                          // BTC
-      k.includes('/') ? k : `${k}/USDT`,       // "BTC" -> "BTC/USDT"
+      k.split('/')[0], // BTC
+      k.includes('/') ? k : `${k}/USDT`, // "BTC" -> "BTC/USDT"
     ];
     for (const key of keys) {
       const val = cryptoPrices[key];
@@ -1491,93 +1634,122 @@ export function DataProvider({ children }) {
     [botActivations]
   );
   const canceledBots = useMemo(
-    () => ensureArray(botActivations).filter((b) => {
-      const s = normStatus(b.status);
-      return CANCELLED_STATUSES.has(s) && !b.hidden && s !== 'archived';
-    }),
+    () =>
+      ensureArray(botActivations).filter((b) => {
+        const s = normStatus(b.status);
+        return CANCELLED_STATUSES.has(s) && !b.hidden && s !== 'archived';
+      }),
     [botActivations]
   );
 
-  const value = useMemo(() => ({
-    // negocio
-    investments,
-    transactions,
-    referrals,
-    botActivations,
-    activeBots,
-    canceledBots,
-    getInvestments: () => investments,
-    getTransactions: () => transactions,
-    getReferrals: () => referrals,
-    refreshInvestments,
-    refreshTransactions,
-    refreshReferrals,
-    addInvestment,
-    addTransaction,
+  const value = useMemo(
+    () => ({
+      // negocio
+      investments,
+      transactions,
+      referrals,
+      botActivations,
+      activeBots,
+      canceledBots,
+      getInvestments: () => investments,
+      getTransactions: () => transactions,
+      getReferrals: () => referrals,
+      refreshInvestments,
+      refreshTransactions,
+      refreshReferrals,
+      addInvestment,
+      addTransaction,
 
-    // bots
-    refreshBotActivations,
-    activateBot,
-    pauseBot,
-    resumeBot,
-    cancelBot,
-    creditBotProfit,
-    reactivateCanceledBot,
-    archiveCanceledBot,
+      // bots
+      refreshBotActivations,
+      activateBot,
+      pauseBot,
+      resumeBot,
+      cancelBot,
+      creditBotProfit,
+      reactivateCanceledBot,
+      archiveCanceledBot,
 
-    // PnL bots (para UI)
-    botPnlByActivation,
-    getBotPnl,
-    totalBotProfit,
-    totalBotFees,
-    totalBotNet,
+      // PnL bots (para UI)
+      botPnlByActivation,
+      getBotPnl,
+      totalBotProfit,
+      totalBotFees,
+      totalBotNet,
 
-    // mercado/admin
-    instruments,
-    marketRules,
-    refreshMarketInstruments,
-    refreshMarketRules,
-    forceRefreshMarket,
+      // mercado/admin
+      instruments,
+      marketRules,
+      refreshMarketInstruments,
+      refreshMarketRules,
+      forceRefreshMarket,
 
-    // precios
-    cryptoPrices,
-    getPairInfo,
-    pairOptions,
-    assetToSymbol: liveBinanceMap,
+      // precios
+      cryptoPrices,
+      getPairInfo,
+      pairOptions,
+      assetToSymbol: liveBinanceMap,
 
-    // trades (legacy)
-    trades,
-    refreshTrades,
-    closeTrade,
+      // trades (legacy)
+      trades,
+      refreshTrades,
+      closeTrade,
 
-    // BOT trades (nuevo)
-    openBotTrade,
-    mtmBotTrade,
-    closeBotTrade,
-    listBotTrades,
-    subscribeBotTrades,
+      // BOT trades (nuevo)
+      openBotTrade,
+      mtmBotTrade,
+      closeBotTrade,
+      listBotTrades,
+      subscribeBotTrades,
 
-    // settings de admin
-    settings: adminSettings,
-    slippageMaxPct,
-    botCancelFeeUsd,
-    botCancelFeePct,
-    refreshSettings: fetchAdminSettings,
+      // settings de admin
+      settings: adminSettings,
+      slippageMaxPct,
+      botCancelFeeUsd,
+      botCancelFeePct,
+      refreshSettings: fetchAdminSettings,
 
-    // saldos
-    getAvailableBalance,
-    canActivateBot,
+      // saldos
+      getAvailableBalance,
+      canActivateBot,
 
-    investmentPlans,
-  }), [
-    investments, transactions, referrals, botActivations,
-    activeBots, canceledBots,
-    instruments, marketRules, cryptoPrices, pairOptions, liveBinanceMap,
-    adminSettings, slippageMaxPct, investmentPlans, trades,
-    botPnlByActivation, getBotPnl, totalBotProfit, totalBotFees, totalBotNet,
-    botCancelFeeUsd, botCancelFeePct,
-    closeTrade,
-  ]);
+      // modal
+      modal,
+      openModal,
+      closeModal,
+      setModalPayload,
+      confirmModal,
+      confirmModalAccept,
+      confirmModalCancel,
+
+      investmentPlans,
+    }),
+    [
+      investments,
+      transactions,
+      referrals,
+      botActivations,
+      activeBots,
+      canceledBots,
+      instruments,
+      marketRules,
+      cryptoPrices,
+      pairOptions,
+      liveBinanceMap,
+      adminSettings,
+      slippageMaxPct,
+      investmentPlans,
+      trades,
+      botPnlByActivation,
+      getBotPnl,
+      totalBotProfit,
+      totalBotFees,
+      totalBotNet,
+      botCancelFeeUsd,
+      botCancelFeePct,
+      modal,
+    ]
+  );
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
@@ -1585,72 +1757,83 @@ export function DataProvider({ children }) {
 /* ---------------- Hook ---------------- */
 export function useData() {
   const ctx = useContext(DataContext);
-  return ctx || {
-    investments: [],
-    transactions: [],
-    referrals: [],
-    botActivations: [],
-    activeBots: [],
-    canceledBots: [],
-    getInvestments: () => [],
-    getTransactions: () => [],
-    getReferrals: () => [],
-    refreshInvestments: async () => {},
-    refreshTransactions: async () => {},
-    refreshReferrals: async () => {},
-    addInvestment: async () => null,
-    addTransaction: async () => null,
+  return (
+    ctx || {
+      investments: [],
+      transactions: [],
+      referrals: [],
+      botActivations: [],
+      activeBots: [],
+      canceledBots: [],
+      getInvestments: () => [],
+      getTransactions: () => [],
+      getReferrals: () => [],
+      refreshInvestments: async () => {},
+      refreshTransactions: async () => {},
+      refreshReferrals: async () => {},
+      addInvestment: async () => null,
+      addTransaction: async () => null,
 
-    refreshBotActivations: async () => {},
-    activateBot: async () => ({ ok: false }),
-    pauseBot: async () => ({ ok: false }),
-    resumeBot: async () => ({ ok: false }),
-    cancelBot: async () => ({ ok: false }),
-    creditBotProfit: async () => ({ ok: false }),
-    reactivateCanceledBot: async () => ({ ok: false }),
-    archiveCanceledBot: async () => ({ ok: false }),
+      refreshBotActivations: async () => {},
+      activateBot: async () => ({ ok: false }),
+      pauseBot: async () => ({ ok: false }),
+      resumeBot: async () => ({ ok: false }),
+      cancelBot: async () => ({ ok: false }),
+      creditBotProfit: async () => ({ ok: false }),
+      reactivateCanceledBot: async () => ({ ok: false }),
+      archiveCanceledBot: async () => ({ ok: false }),
 
-    // PnL bots
-    botPnlByActivation: {},
-    getBotPnl: () => ({ profit: 0, fees: 0, refunds: 0, net: 0 }),
-    totalBotProfit: 0,
-    totalBotFees: 0,
-    totalBotNet: 0,
+      // PnL bots
+      botPnlByActivation: {},
+      getBotPnl: () => ({ profit: 0, fees: 0, refunds: 0, net: 0 }),
+      totalBotProfit: 0,
+      totalBotFees: 0,
+      totalBotNet: 0,
 
-    instruments: [],
-    marketRules: [],
-    refreshMarketInstruments: async () => {},
-    refreshMarketRules: async () => {},
-    forceRefreshMarket: async () => {},
+      instruments: [],
+      marketRules: [],
+      refreshMarketInstruments: async () => {},
+      refreshMarketRules: async () => {},
+      forceRefreshMarket: async () => {},
 
-    cryptoPrices: {},
-    getPairInfo: () => ({ price: undefined, change: undefined, history: [] }),
-    pairOptions: ['BTC/USDT', 'ETH/USDT'],
-    assetToSymbol: DEFAULT_BINANCE_MAP,
+      cryptoPrices: {},
+      getPairInfo: () => ({ price: undefined, change: undefined, history: [] }),
+      pairOptions: ['BTC/USDT', 'ETH/USDT'],
+      assetToSymbol: DEFAULT_BINANCE_MAP,
 
-    // trades (legacy)
-    trades: [],
-    refreshTrades: async () => {},
-    closeTrade: async () => null,
+      // trades (legacy)
+      trades: [],
+      refreshTrades: async () => {},
+      closeTrade: async () => null,
 
-    // BOT trades
-    openBotTrade: async () => null,
-    mtmBotTrade: async () => null,
-    closeBotTrade: async () => null,
-    listBotTrades: async () => [],
-    subscribeBotTrades: () => () => {},
+      // BOT trades
+      openBotTrade: async () => null,
+      mtmBotTrade: async () => null,
+      closeBotTrade: async () => null,
+      listBotTrades: async () => [],
+      subscribeBotTrades: () => () => {},
 
-    // settings
-    settings: {},
-    slippageMaxPct: 0.2,
-    botCancelFeeUsd: 0,
-    botCancelFeePct: 0,
-    refreshSettings: async () => {},
+      // settings
+      settings: {},
+      slippageMaxPct: 0.2,
+      botCancelFeeUsd: 0,
+      botCancelFeePct: 0,
+      refreshSettings: async () => {},
 
-    // saldos
-    getAvailableBalance: async () => 0,
-    canActivateBot: async () => ({ ok: false, available: 0, needed: 0 }),
+      // saldos
+      getAvailableBalance: async () => 0,
+      canActivateBot: async () => ({ ok: false, available: 0, needed: 0 }),
 
-    investmentPlans: [],
-  };
+      // modal (fallback no-op)
+      modal: { open: false, name: null, payload: null },
+      openModal: () => {},
+      closeModal: () => {},
+      setModalPayload: () => {},
+      confirmModal: async () => false,
+      confirmModalAccept: () => {},
+      confirmModalCancel: () => {},
+
+      investmentPlans: [],
+    }
+  );
 }
