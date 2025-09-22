@@ -116,32 +116,44 @@ async function rpcCancelBotRobust({ activation_id, user_id }) {
   return tryManyRPC(names2, payloads);
 }
 
-/** Balance robusto (RPCs) — NO usa tablas */
+/** Balance robusto (RPCs) — prioriza disponible real por RPC */
 async function rpcGetBalanceRobust({ user_id, currency }) {
+  const C = String(currency || 'USDC').toUpperCase();
+
+  // Firmas más probables (nuestra recomendada primero)
   const names = [
-    'get_user_available_balance',        // 👈 RPC recomendada
+    'get_user_available_balance', // returns numeric disponible (desc. capital en bots)
+    'get_balance_by_currency',    // retorna bruto por moneda
     'get_user_balance',
     'wallet_get_balance',
     'get_balance',
-    'get_balance_by_currency',
   ];
+
   const payloads = [
-    { _currency: currency },                          // get_user_available_balance
-    { p_currency: currency },                         // variantes
-    { p_user_id: user_id, p_currency: currency },
-    { user_id, currency },
-    { p_user: user_id, p_currency_code: currency },
+    // firma recomendada que creamos: (p_currency text, p_user uuid)
+    { p_currency: C, p_user: user_id },
+
+    // variaciones comunes que podrías tener en tu DB
+    { p_currency: C, p_user_id: user_id },
+    { currency: C, user_id },
+    { _currency: C, _user: user_id },
+    { p_user: user_id, p_currency_code: C },
   ];
+
   const { data } = await tryManyRPC(names, payloads);
 
-  // normalizá a número
+  // normaliza a número
   const n =
     data == null
       ? null
       : typeof data === 'number'
       ? data
       : Number(
-          data?.available ?? data?.balance ?? data?.amount ?? data?.[String(currency).toUpperCase()] ?? data
+          data?.available ??
+          data?.balance ??
+          data?.amount ??
+          data?.[C] ??
+          data
         );
 
   return { data: Number.isFinite(n) ? n : null, error: null };
@@ -1066,8 +1078,7 @@ export function DataProvider({ children }) {
     return best;
   }
 
- // Busca balance por alias y corta rápido si la RPC existe.
-// NO golpea /balances ni /wallet_balances si la RPC responde bien.
+ // Busca balance disponible por RPC primero; AuthContext queda de fallback
 async function getAvailableBalance(currency = 'USDC') {
   const C = String(currency || 'USDC').toUpperCase();
   const aliases =
@@ -1076,34 +1087,31 @@ async function getAvailableBalance(currency = 'USDC') {
     C === 'USD'  ? ['USD', 'USDC', 'USDT'] :
                    [C, 'USDC', 'USD', 'USDT'];
 
-  // 0) AuthContext
+  if (!user?.id) return 0;
+
+  // 1) RPC oficial (disponible real que descuenta capital en bots)
+  try {
+    const { data: fast } = await rpcGetBalanceRobust({ user_id: user.id, currency: C });
+    if (fast != null && Number.isFinite(Number(fast))) return Number(fast);
+  } catch {}
+
+  // 2) RPCs alternativas por alias
+  for (const cur of aliases) {
+    try {
+      const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency: cur });
+      if (data != null && Number.isFinite(Number(data))) return Number(data);
+    } catch {}
+  }
+
+  // 3) Fallback: AuthContext (puede estar desfasado, por eso lo dejamos al final)
   let best = -Infinity;
   for (const cur of aliases) {
     const fromAuth = pickAuthAvailable(cur);
     if (fromAuth != null) best = Math.max(best, Number(fromAuth));
   }
   if (Number.isFinite(best) && best >= 0) return best;
-  if (!user?.id) return 0;
 
-  // 1) FAST PATH: RPC oficial get_user_available_balance
-  try {
-    const { data: fast } = await rpcGetBalanceRobust({ user_id: user.id, currency: C });
-    if (fast != null && Number.isFinite(Number(fast))) {
-      return Number(fast);
-    }
-  } catch {} // si falla, seguimos
-
-  // 2) RPCs alternativas por alias
-  for (const cur of aliases) {
-    try {
-      const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency: cur });
-      if (data != null && Number.isFinite(Number(data))) {
-        return Number(data);
-      }
-    } catch {}
-  }
-
-  // 3) (Opcional) Fallback por transacciones completadas — SIN tocar tablas /balances
+  // 4) Fallback adicional: sumar txns completed de esa moneda
   for (const cur of aliases) {
     try {
       const { data } = await supabase
@@ -1124,12 +1132,13 @@ async function getAvailableBalance(currency = 'USDC') {
  async function recalcAndRefreshBalances() {
   if (!user?.id) return;
   try {
-    await supabase.rpc('recalc_user_balances'); // 👈 sin args
+    // intenta con param y sin param
+    const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
+    if (r1.error) await supabase.rpc('recalc_user_balances');
   } catch {}
-  try {
-    refreshBalances?.();
-  } catch {}
+  try { refreshBalances?.(); } catch {}
 }
+
 
   async function canActivateBot(amountUsd, currency = 'USDC') {
     const avail = await getAvailableBalance(currency);
@@ -1172,55 +1181,115 @@ async function getAvailableBalance(currency = 'USDC') {
     };
   }
 
-  async function addTransaction({
-    amount,
-    type,
-    currency = 'USDC',
-    description = '',
-    referenceType = null,
-    referenceId = null,
-    status = 'completed',
-  }) {
-    if (!user?.id) return null;
-    const payload = {
-      user_id: user.id,
-      amount: Number(amount),
-      type,
-      status,
-      currency,
-      description,
-      reference_type: referenceType,
-      reference_id: referenceId,
-    };
-    const { data, error } = await supabase.from('wallet_transactions').insert(payload).select('*').single();
-    if (error) {
-      console.error('[addTransaction] error:', error);
-      return null;
-    }
+  // DataContext.jsx
+async function addTransaction({
+  amount,
+  type,
+  currency = 'USDC',
+  description = '',
+  referenceType = null,
+  referenceId = null,
+  status = 'completed',
+}) {
+  if (!user?.id) return null;
 
-    await refreshTransactions();
-    try {
-      await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
-    } catch {}
-    try {
-      refreshBalances?.();
-    } catch {}
-    let mappedType = data.type;
-    if (mappedType === 'plan_purchase') mappedType = 'investment';
-    return {
-      user_id: data.user_id,
-      userId: data.user_id,
-      id: data.id,
-      type: mappedType,
-      status: data.status,
-      amount: Number(data.amount || 0),
-      currency: data.currency || 'USDC',
-      description: data.description || '',
-      createdAt: data.created_at,
-      referenceType: data.reference_type,
-      referenceId: data.reference_id,
-    };
+  // ——————————— 1) PRIMERO INTENTAMOS RPC (recomendado) ———————————
+  try {
+    const { error: rpcErr } = await supabase.rpc('add_wallet_tx', {
+      // firma flexible (ajustá los nombres si tu RPC usa otros):
+      p_user: user.id,
+      p_currency: currency,
+      p_amount: Number(amount),
+      p_kind: type,
+      // opcional/JSON con metadatos que quieras guardar:
+      p_meta: {
+        description,
+        reference_type: referenceType,
+        reference_id: referenceId,
+        status,
+      },
+    });
+
+    if (!rpcErr) {
+      // la RPC puede no devolver la fila; armamos un objeto coherente
+      await refreshTransactions();
+      try {
+        // recálculo tolerante a ambas firmas
+        const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
+        if (r1.error) await supabase.rpc('recalc_user_balances');
+      } catch {}
+      try { refreshBalances?.(); } catch {}
+
+      const mappedType = type === 'plan_purchase' ? 'investment' : type;
+
+      return {
+        user_id: user.id,
+        userId: user.id,
+        id: crypto?.randomUUID?.() || `${Date.now()}`, // placeholder (la UI no depende de este id)
+        type: mappedType,
+        status,
+        amount: Number(amount || 0),
+        currency,
+        description: description || '',
+        createdAt: new Date().toISOString(),
+        referenceType,
+        referenceId,
+      };
+    }
+  } catch (e) {
+    // seguimos al fallback
+    console.warn('[addTransaction] RPC add_wallet_tx no disponible, usando fallback:', e?.message || e);
   }
+
+  // ——————————— 2) FALLBACK: INSERT DIRECTO (si tus RLS lo permiten) ———————————
+  const payload = {
+    user_id: user.id,
+    amount: Number(amount),
+    type,
+    status,
+    currency,
+    description,
+    reference_type: referenceType,
+    reference_id: referenceId,
+  };
+
+  const { data, error } = await supabase
+    .from('wallet_transactions')
+    .insert(payload)
+    .select('*')
+    .single();
+
+  if (error) {
+    console.error('[addTransaction] insert error:', error);
+    return null;
+  }
+
+  await refreshTransactions();
+
+  try {
+    const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
+    if (r1.error) await supabase.rpc('recalc_user_balances');
+  } catch {}
+  try { refreshBalances?.(); } catch {}
+
+  let mappedType = data.type;
+  if (mappedType === 'plan_purchase') mappedType = 'investment';
+
+  return {
+    user_id: data.user_id,
+    userId: data.user_id,
+    id: data.id,
+    type: mappedType,
+    status: data.status,
+    amount: Number(data.amount || 0),
+    currency: data.currency || 'USDC',
+    description: data.description || '',
+    createdAt: data.created_at,
+    referenceType: data.reference_type,
+    referenceId: data.reference_id,
+  };
+}
+
 
   /* ---------------- RPC Bots (activar/estado) --------------- */
 
