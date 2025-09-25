@@ -34,7 +34,15 @@ import { Link } from 'react-router-dom';
 import MiniSparkline from '@/components/bots/MiniSparkline';
 import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 
-/* ========== Helpers ========== */
+/* ============================================================
+   CONFIG: simulación de bots y puente al wallet real
+   ============================================================ */
+const SIM_MODE = true;                 // trades/eventos/pnl locales
+const USE_WALLET_BRIDGE = true;        // intenta debitar/acreditar en tu app
+const LS_KEY = 'libertrades_sim';
+const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+/* ========== Helpers numéricos/UI ========== */
 const fmt = (n, dec = 2) => {
   const v = Number(n);
   return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
@@ -56,60 +64,357 @@ const normStatus = (s) => String(s || '').trim().toLowerCase();
 const pnlColor = (n) => (n > 0 ? 'text-emerald-400' : n < 0 ? 'text-rose-400' : 'text-slate-200');
 const riskBase = (r) => (r === 'Alto' ? 65 : r === 'Medio' ? 45 : 25);
 
-/* ========== Catálogo visible (marketing) ========== */
+/* ============================================================
+   Catálogo visible (marketing)
+   ============================================================ */
 const tradingBots = [
-  {
-    id: 1,
-    name: 'Bot Conservador Alfa',
-    risk: 'Bajo',
-    strategy: 'Bajo Riesgo, Ingresos Estables',
-    monthlyReturn: '~5-8%',
-    minInvestment: 250,
-    pairs: ['BTC/USDT', 'ETH/USDT'],
-    icon: BarChart2,
-    color: 'text-blue-400',
-    bgColor: 'bg-blue-500/10',
-    features: ['Stop-loss dinámico', 'Análisis de sentimiento básico', 'Rebalanceo semanal'],
-  },
-  {
-    id: 2,
-    name: 'Bot Agresivo Beta',
-    risk: 'Alto',
-    strategy: 'Alto Riesgo, Alto Rendimiento Potencial',
-    monthlyReturn: '~15-25%',
-    minInvestment: 1000,
-    pairs: ['ALTCOINS/USDT', 'MEMES/USDT'],
-    icon: Zap,
-    color: 'text-red-400',
-    bgColor: 'bg-red-500/10',
-    features: ['Trading de alta frecuencia', 'Detección de pumps', 'Scalping en M1/M5'],
-  },
-  {
-    id: 3,
-    name: 'Bot Balanceado Gamma',
-    risk: 'Medio',
-    strategy: 'Riesgo Moderado, Crecimiento Constante',
-    monthlyReturn: '~8-12%',
-    minInvestment: 500,
-    pairs: ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT'],
-    icon: TrendingUp,
-    color: 'text-green-400',
-    bgColor: 'bg-green-500/10',
-    features: ['Grid trading', 'Dollar Cost Averaging (DCA)', 'Seguimiento de tendencia'],
-  },
+  { id: 1, name: 'Bot Conservador Alfa', risk: 'Bajo', strategy: 'Bajo Riesgo, Ingresos Estables', monthlyReturn: '~5-8%', minInvestment: 250, pairs: ['BTC/USDT','ETH/USDT'], icon: BarChart2, color: 'text-blue-400', bgColor: 'bg-blue-500/10', features: ['Stop-loss dinámico','Análisis de sentimiento básico','Rebalanceo semanal'] },
+  { id: 2, name: 'Bot Agresivo Beta', risk: 'Alto', strategy: 'Alto Riesgo, Alto Rendimiento Potencial', monthlyReturn: '~15-25%', minInvestment: 1000, pairs: ['ALTCOINS/USDT','MEMES/USDT'], icon: Zap, color: 'text-red-400', bgColor: 'bg-red-500/10', features: ['Trading de alta frecuencia','Detección de pumps','Scalping en M1/M5'] },
+  { id: 3, name: 'Bot Balanceado Gamma', risk: 'Medio', strategy: 'Riesgo Moderado, Crecimiento Constante', monthlyReturn: '~8-12%', minInvestment: 500, pairs: ['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT'], icon: TrendingUp, color: 'text-green-400', bgColor: 'bg-green-500/10', features: ['Grid trading','Dollar Cost Averaging (DCA)','Seguimiento de tendencia'] },
 ];
+
+/* ============================================================
+   Simulador local (trades/eventos/payouts) + precios
+   ============================================================ */
+const defaultPairs = {
+  'BTC/USDT': 60000,
+  'ETH/USDT': 2500,
+  'BNB/USDT': 350,
+  'ADA/USDT': 0.45,
+  'ALTCOINS/USDT': 1.0,
+  'MEMES/USDT': 0.01,
+};
+
+function readLS() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch { return null; }
+}
+function writeLS(state) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch {}
+}
+function seedState(userId) {
+  const now = Date.now();
+  return {
+    userId,
+    shadowBalanceUsd: 0,         // saldo sombra si el bridge no existe
+    shadowMode: false,           // true si no hay métodos reales para delta
+    prices: { ...defaultPairs },
+    activations: [],
+    trades: {},                  // { [activationId]: Trade[] }
+    events: {},                  // { [activationId]: Event[] }
+    payouts: {},                 // { [activationId]: {profit, fees, net, refunds} }
+    lastTick: now,
+  };
+}
+function stepPrice(p, vol = 0.003) {
+  const shock = (Math.random() - 0.5) * 2 * vol;
+  const next = p * (1 + shock);
+  return Math.max(0.00001, next);
+}
+function mtmPnl(trade, priceNow) {
+  const sideMul = String(trade.side).toLowerCase() === 'short' ? -1 : 1;
+  const pct = (priceNow - trade.entry) / trade.entry;
+  return sideMul * pct * (trade.leverage || 1) * (trade.amount_usd || 0);
+}
+
+/** Bridge a tu wallet real: intenta varios nombres comunes. */
+async function tryApplyBalanceDelta(dataCtx, amount, meta = {}) {
+  if (!USE_WALLET_BRIDGE || !dataCtx) return { ok: false, unsupported: true };
+  try {
+    // 1) método genérico (ideal)
+    if (typeof dataCtx.applyBalanceDelta === 'function') {
+      const r = await dataCtx.applyBalanceDelta(amount, { currency: 'USDC', ...meta });
+      if (r?.ok ?? r === true) return { ok: true };
+    }
+    // 2) explícitos credit/debit
+    if (amount >= 0 && typeof dataCtx.creditBalance === 'function') {
+      const r = await dataCtx.creditBalance(amount, { currency: 'USDC', ...meta });
+      if (r?.ok ?? r === true) return { ok: true };
+    }
+    if (amount < 0 && typeof dataCtx.debitBalance === 'function') {
+      const r = await dataCtx.debitBalance(-amount, { currency: 'USDC', ...meta });
+      if (r?.ok ?? r === true) return { ok: true };
+    }
+    // 3) registrar transacción ad-hoc
+    if (typeof dataCtx.createTransaction === 'function') {
+      const r = await dataCtx.createTransaction({
+        kind: 'BOT_SIM',
+        currency: 'USDC',
+        amount,
+        meta,
+      });
+      if (r?.ok ?? r === true) return { ok: true };
+    }
+    if (typeof dataCtx.addTransaction === 'function') {
+      const r = await dataCtx.addTransaction({
+        kind: 'BOT_SIM',
+        currency: 'USDC',
+        amount,
+        meta,
+      });
+      if (r?.ok ?? r === true) return { ok: true };
+    }
+  } catch (e) {
+    console.error('[wallet-bridge] error aplicando delta', e);
+  }
+  return { ok: false, unsupported: true };
+}
+
+/** Hook que imita useData() pero simulado, y puentea el wallet real. */
+function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
+  const { user } = useAuth();
+  const userId = user?.id || 'sim-user';
+
+  const [s, setS] = useState(() => {
+    const existing = readLS();
+    return existing?.userId === userId ? existing : seedState(userId);
+  });
+
+  // Ticker local de precios + actividad de trades
+  useEffect(() => {
+    const int = setInterval(() => {
+      setS((prev) => {
+        const next = { ...prev, prices: { ...prev.prices } };
+        Object.keys(next.prices).forEach((pair) => {
+          next.prices[pair] = stepPrice(next.prices[pair], 0.005);
+        });
+
+        for (const act of next.activations.filter(a => ['active', 'paused'].includes((a.status || '').toLowerCase()))) {
+          const list = next.trades[act.id] || [];
+          // close aleatorio
+          if (Math.random() < 0.2) {
+            const idx = list.findIndex(t => (t.status || '').toLowerCase() === 'open');
+            if (idx >= 0) {
+              const t = list[idx];
+              const px = (next.prices[t.pair] ?? t.entry);
+              const pnl = mtmPnl(t, px);
+              list[idx] = { ...t, status: 'closed', closed_at: new Date().toISOString(), pnl };
+              next.events[act.id] = [{ id: uid(), kind: 'close', created_at: new Date().toISOString(), payload: { pair: t.pair, pnl } }, ...(next.events[act.id] || [])].slice(0, 100);
+              const prevPay = next.payouts[act.id] || { profit: 0, fees: 0, net: 0, refunds: 0 };
+              next.payouts[act.id] = { ...prevPay, profit: prevPay.profit + pnl, net: prevPay.net + pnl };
+            }
+          }
+          // open aleatorio si activo
+          if ((act.status || '').toLowerCase() === 'active' && Math.random() < 0.25) {
+            const pair = (['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT','ALTCOINS/USDT','MEMES/USDT'])[Math.floor(Math.random()*6)];
+            const side = Math.random() < 0.5 ? 'long' : 'short';
+            const leverage = [1,2,3,5][Math.floor(Math.random()*4)];
+            const amount_usd = Math.max(10, Math.min(act.amountUsd * 0.3, 200));
+            const entry = next.prices[pair] ?? defaultPairs[pair] ?? 1;
+            const trade = { id: uid(), pair, side, leverage, amount_usd, entry, status: 'open', opened_at: new Date().toISOString() };
+            next.trades[act.id] = [trade, ...(next.trades[act.id] || [])].slice(0, 100);
+            next.events[act.id] = [{ id: uid(), kind: 'open', created_at: new Date().toISOString(), payload: { pair } }, ...(next.events[act.id] || [])].slice(0, 100);
+          }
+        }
+
+        writeLS(next);
+        return next;
+      });
+    }, 2000);
+    return () => clearInterval(int);
+  }, []);
+
+  const persist = (fn) => setS((prev) => {
+    const next = fn(prev);
+    writeLS(next);
+    return next;
+  });
+
+  const settings = {
+    ...realDataSettings,
+    'trading.bot_cancel_fee_pct': Number(realDataSettings?.['trading.bot_cancel_fee_pct'] ?? 2),
+    'trading.bot_cancel_fee_usd': Number(realDataSettings?.['trading.bot_cancel_fee_usd'] ?? 0),
+  };
+
+  // ==== SALDO (read) ====
+  const getAvailableBalance = async () => {
+    if (typeof walletReader === 'function') {
+      const real = await walletReader();
+      if (Number.isFinite(Number(real))) {
+        // si estamos en shadowMode (no hay bridge), mostramos real + sombra
+        return Number(real) + (s.shadowMode ? Number(s.shadowBalanceUsd || 0) : 0);
+      }
+    }
+    // sin reader real: sólo sombra
+    return Number(s.shadowBalanceUsd || 0);
+  };
+
+  // ==== ACCIONES ====
+  const activateBot = async ({ botId, botName, strategy, amountUsd }) => {
+    const amount = Number(amountUsd || 0);
+    if (!(amount > 0)) return { ok: false, msg: 'Monto inválido' };
+
+    // Debitar del saldo real si se puede
+    let bridged = false;
+    if (typeof walletDeltaApplier === 'function') {
+      const r = await walletDeltaApplier(-amount, { reason: 'bot-activate', botName, botId });
+      bridged = !!r?.ok;
+    }
+
+    persist((prev) => {
+      const next = { ...prev };
+      if (!bridged) {
+        next.shadowMode = true;
+        next.shadowBalanceUsd = Math.max(0, Number(next.shadowBalanceUsd || 0) - amount);
+      }
+      const a = {
+        id: uid(), userId,
+        botId, botName, strategy,
+        amountUsd: amount,
+        status: 'active',
+        created_at: new Date().toISOString(),
+      };
+      next.activations = [a, ...prev.activations];
+      next.trades[a.id] = [];
+      next.events[a.id] = [{ id: uid(), kind: 'resume', created_at: new Date().toISOString(), payload: { reason: 'activate' } }];
+      next.payouts[a.id] = { profit: 0, fees: 0, net: 0, refunds: 0 };
+      return next;
+    });
+
+    return { ok: true };
+  };
+
+  const pauseBot = async (activationId) => {
+    persist((prev) => {
+      const next = { ...prev };
+      next.activations = prev.activations.map(a => a.id === activationId ? { ...a, status: 'paused' } : a);
+      next.events[activationId] = [{ id: uid(), kind: 'pause', created_at: new Date().toISOString(), payload: { reason: 'user' } }, ...(next.events[activationId] || [])].slice(0, 100);
+      return next;
+    });
+    return { ok: true };
+  };
+
+  const resumeBot = async (activationId) => {
+    persist((prev) => {
+      const next = { ...prev };
+      next.activations = prev.activations.map(a => a.id === activationId ? { ...a, status: 'active' } : a);
+      next.events[activationId] = [{ id: uid(), kind: 'resume', created_at: new Date().toISOString(), payload: { reason: 'user' } }, ...(next.events[activationId] || [])].slice(0, 100);
+      return next;
+    });
+    return { ok: true };
+  };
+
+  const cancelBot = async (activationId) => {
+    // cierra abiertos, calcula gross, aplica fee, devuelve al wallet real (o sombra)
+    let payloadForBridge = null;
+
+    persist((prev) => {
+      const next = { ...prev };
+      const act = next.activations.find(a => a.id === activationId);
+      if (!act) return prev;
+
+      const list = next.trades[activationId] || [];
+      let gross = 0;
+      const nowIso = new Date().toISOString();
+      const closedList = list.map(t => {
+        if ((t.status || '').toLowerCase() === 'open') {
+          const px = next.prices[t.pair] ?? t.entry;
+          const pnl = mtmPnl(t, px);
+          gross += pnl;
+          return { ...t, status: 'closed', closed_at: nowIso, pnl };
+        }
+        return t;
+      });
+      next.trades[activationId] = closedList;
+
+      const pct = Math.max(0, Number(settings['trading.bot_cancel_fee_pct'] || 0) / 100);
+      const fixed = Math.max(0, Number(settings['trading.bot_cancel_fee_usd'] || 0));
+      let fee = pct * Number(act.amountUsd || 0) + fixed;
+
+      const maxFee = Math.max(0, act.amountUsd + Math.max(0, gross));
+      if (fee > maxFee) fee = maxFee;
+
+      const net = gross - fee;
+      const refund = Math.max(0, act.amountUsd + net);
+
+      // Bridge payload (lo aplicamos afuera del setState)
+      payloadForBridge = { refund, net, gross, fee, act };
+
+      next.activations = next.activations.map(a => a.id === activationId ? { ...a, status: 'canceled' } : a);
+      next.events[activationId] = [{ id: uid(), kind: 'cancel', created_at: nowIso, payload: { reason: 'user', pnl: net } }, ...(next.events[activationId] || [])].slice(0, 100);
+
+      const prevPay = next.payouts[activationId] || { profit: 0, fees: 0, net: 0, refunds: 0 };
+      next.payouts[activationId] = { profit: prevPay.profit + gross, fees: prevPay.fees + fee, net: prevPay.net + net, refunds: prevPay.refunds + refund };
+
+      return next;
+    });
+
+    // aplicar delta al wallet real (o sombra si no hay)
+    if (payloadForBridge) {
+      const { refund, act } = payloadForBridge;
+      let bridged = false;
+      if (typeof walletDeltaApplier === 'function') {
+        const r = await walletDeltaApplier(refund, { reason: 'bot-cancel', botName: act.botName, botId: act.botId, activationId });
+        bridged = !!r?.ok;
+      }
+      if (!bridged) {
+        // modo sombra
+        persist((prev) => {
+          const next = { ...prev };
+          next.shadowMode = true;
+          next.shadowBalanceUsd = Number(next.shadowBalanceUsd || 0) + Number(refund || 0);
+          return next;
+        });
+      }
+    }
+    return { ok: true };
+  };
+
+  // Listados / subs
+  const listBotTrades = async (activationId, limit = 100) => (s.trades[activationId] || []).slice(0, limit);
+  const subscribeBotTrades = (activationId, cb) => { const int = setInterval(() => cb?.(), 2500); return { unsubscribe: () => clearInterval(int) }; };
+  const listBotEvents = async (activationId, limit = 100) => (s.events[activationId] || []).slice(0, limit);
+  const subscribeBotEvents = (activationId, cb) => { const int = setInterval(() => cb?.(), 2500); return { unsubscribe: () => clearInterval(int) }; };
+  const getPairInfo = (pair) => ({ symbol: pair, price: s.prices[pair] ?? 1 });
+  const getBotPnl = (activationId) => s.payouts[activationId] || { profit: 0, fees: 0, net: 0, refunds: 0 };
+
+  const myActs = s.activations.filter(a => a.userId === userId);
+  const activeBots = myActs.filter(a => ['active', 'paused'].includes(String(a.status).toLowerCase()));
+  const canceledBots = myActs.filter(a => ['canceled', 'cancelled'].includes(String(a.status).toLowerCase()));
+  const botActivations = myActs;
+
+  const totals = myActs.reduce((agg, a) => {
+    const p = s.payouts[a.id] || { profit: 0, fees: 0, net: 0 };
+    agg.profit += p.profit; agg.fees += p.fees; agg.net += p.net;
+    return agg;
+  }, { profit: 0, fees: 0, net: 0 });
+
+  return {
+    // datos + acciones
+    botActivations,
+    activeBots,
+    canceledBots,
+    activateBot,
+    pauseBot,
+    resumeBot,
+    cancelBot,
+    refreshBotActivations: async () => {},
+    refreshTransactions: async () => {},
+    settings,
+
+    // PnL
+    getBotPnl,
+    totalBotProfit: totals.profit,
+    totalBotFees: totals.fees,
+    totalBotNet: totals.net,
+
+    // Trades / precios
+    listBotTrades,
+    subscribeBotTrades,
+    getPairInfo,
+
+    // Timeline
+    listBotEvents,
+    subscribeBotEvents,
+
+    // Saldo
+    getAvailableBalance,
+  };
+}
 
 /* ========== Confirm Modal (inline) ========== */
 function ConfirmModal({
-  open,
-  title,
-  description,
-  confirmText = 'Confirmar',
-  cancelText = 'Cancelar',
-  onConfirm,
-  onCancel,
-  destructive = false,
-  children,
+  open, title, description, confirmText = 'Confirmar', cancelText = 'Cancelar',
+  onConfirm, onCancel, destructive = false, children,
 }) {
   if (!open) return null;
   return (
@@ -133,18 +438,12 @@ function ConfirmModal({
           <Card className="crypto-card">
             <CardHeader>
               <CardTitle className="text-white">{title}</CardTitle>
-              {description && (
-                <CardDescription className="text-slate-300">{description}</CardDescription>
-              )}
+              {description && <CardDescription className="text-slate-300">{description}</CardDescription>}
             </CardHeader>
-            <CardContent className="space-y-3">
-              {children}
-            </CardContent>
+            <CardContent className="space-y-3">{children}</CardContent>
             <CardFooter className="flex gap-2 justify-end">
               <Button variant="outline" onClick={onCancel}>{cancelText}</Button>
-              <Button variant={destructive ? 'destructive' : 'default'} onClick={onConfirm}>
-                {confirmText}
-              </Button>
+              <Button variant={destructive ? 'destructive' : 'default'} onClick={onConfirm}>{confirmText}</Button>
             </CardFooter>
           </Card>
         </motion.div>
@@ -153,13 +452,32 @@ function ConfirmModal({
   );
 }
 
-/* ========== Página ========== */
+/* ============================================================
+   Página
+   ============================================================ */
 const TradingBotsPage = () => {
-  const { user, balances } = useAuth();
+  const { user } = useAuth();
   const { playSound } = useSound();
 
+  // Contexto real (para leer saldo y aplicar delta si existe)
+  const realData = useData();
+
+  // Reader de saldo real
+  const readWallet = useCallback(async () => {
+    const v = await realData?.getAvailableBalance?.('USDC');
+    return Number(v || 0);
+  }, [realData]);
+
+  // Aplica delta al wallet real (si tu DataContext lo soporta)
+  const applyWalletDelta = useCallback(async (amount, meta) => {
+    return await tryApplyBalanceDelta(realData, amount, meta);
+  }, [realData]);
+
+  // Sim data con puente
+  const simData = useSimData(realData?.settings || {}, readWallet, applyWalletDelta);
+  const data = SIM_MODE ? simData : realData;
+
   const {
-    // datos + acciones
     botActivations,
     activeBots,
     canceledBots,
@@ -171,21 +489,20 @@ const TradingBotsPage = () => {
     refreshTransactions,
     settings,
 
-    // PnL (desde transacciones)
     getBotPnl,
-    totalBotProfit = 0, // bruto
-    totalBotFees = 0,   // fees (valor absoluto en DataContext)
-    totalBotNet = 0,    // neto
+    totalBotProfit = 0,
+    totalBotFees = 0,
+    totalBotNet = 0,
 
-    // Trades live / precios
     listBotTrades,
     subscribeBotTrades,
     getPairInfo,
 
-    // Eventos (timeline) — opcionales
     listBotEvents,
     subscribeBotEvents,
-  } = useData();
+
+    getAvailableBalance,
+  } = data;
 
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
@@ -193,30 +510,14 @@ const TradingBotsPage = () => {
   const [busyById, setBusyById] = useState(() => new Map());
   const [showNet, setShowNet] = useState(true);
   const [busyBrain, setBusyBrain] = useState(false);
-
-  // Confirm cancel
-  const [confirmCancel, setConfirmCancel] = useState(null); // {id, name, amountUsd}
-
-  // ====== Trades por activación (para PnL no realizado y par del minigráfico)
+  const [confirmCancel, setConfirmCancel] = useState(null);
   const [tradesByActivation, setTradesByActivation] = useState({});
   const subsRef = useRef({});
-
-  // ====== Eventos por activación (timeline)
   const [eventsByActivation, setEventsByActivation] = useState({});
   const eventsSubsRef = useRef({});
 
-  // Fees de cancelación (claves reales + fallbacks)
-  const cancelFeePct = Number(
-    settings?.['trading.bot_cancel_fee_pct'] ??
-    settings?.['trading.bot_rent_fee_pct'] ??
-    settings?.['trading.cancel_fee_pct'] ??
-    0
-  );
-  const cancelFeeUsd = Number(
-    settings?.['trading.bot_cancel_fee_usd'] ??
-    settings?.['trading.cancel_fee_usd'] ??
-    0
-  );
+  const cancelFeePct = Number(settings?.['trading.bot_cancel_fee_pct'] ?? 0);
+  const cancelFeeUsd = Number(settings?.['trading.bot_cancel_fee_usd'] ?? 0);
   const feeParts = [];
   if (cancelFeePct > 0) feeParts.push(`${fmt(cancelFeePct, 2)}%`);
   if (cancelFeeUsd > 0) feeParts.push(`$${fmt(cancelFeeUsd)}`);
@@ -231,7 +532,6 @@ const TradingBotsPage = () => {
     });
   }, []);
 
-  /* ---- Derivados: mis listas ---- */
   const myActiveBots = useMemo(() => {
     if (Array.isArray(activeBots)) return activeBots;
     return (botActivations || []).filter((b) => ['active', 'paused'].includes(normStatus(b?.status)));
@@ -248,7 +548,6 @@ const TradingBotsPage = () => {
   );
   const botsCount = myActiveBots.length;
 
-  // Estimación mensual de los bots activos
   const activeEstimated = useMemo(() => {
     let minSum = 0;
     let maxSum = 0;
@@ -262,122 +561,84 @@ const TradingBotsPage = () => {
     return { min: minSum, max: maxSum };
   }, [myActiveBots]);
 
-  // Objetivos simples para “energía de bots”
   const GOALS = { botsCount: 3, botsUsd: 2000 };
   const pctBotsCount = clamp((botsCount / GOALS.botsCount) * 100);
   const pctBotsUsd = clamp((botsAllocated / GOALS.botsUsd) * 100);
   const energyBots = clamp((pctBotsCount + pctBotsUsd) / 2);
 
-  /* ---- Refresh on mount / user change ---- */
   useEffect(() => {
     if (!user?.id) return;
     refreshBotActivations?.();
-    refreshTransactions?.(); // el PnL deriva de transacciones
+    refreshTransactions?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ✅ usa el balance robusto del DataContext
-const { getAvailableBalance } = useData();
-const [availableUsd, setAvailableUsd] = useState(0);
-
-useEffect(() => {
-  let alive = true;
-  (async () => {
-    // lee USDC pero internamente prueba USDC/USD/USDT, RPCs y tablas
+  const [availableUsd, setAvailableUsd] = useState(0);
+  const refreshAvailable = useCallback(async () => {
     const v = await getAvailableBalance?.('USDC');
-    if (alive) setAvailableUsd(Number(v || 0));
-  })();
-  // refresca cuando cambie el user o cuando vuelvas a la vista
-  // (si querés, podés llamar esto también después de depositar)
-  return () => { alive = false; };
-}, [user?.id, getAvailableBalance]);
+    setAvailableUsd(Number(v || 0));
+  }, [getAvailableBalance]);
 
+  useEffect(() => { refreshAvailable(); }, [refreshAvailable, botActivations, totalBotNet]);
 
-  /* ===== Carga & subscripción de trades por activación ===== */
   const loadTrades = useCallback(async (activationId) => {
-    try {
-      const rows = await listBotTrades?.(activationId, 100);
-      setTradesByActivation((prev) => ({ ...prev, [activationId]: rows || [] }));
-    } catch {}
+    try { const rows = await listBotTrades?.(activationId, 100); setTradesByActivation((p) => ({ ...p, [activationId]: rows || [] })); } catch {}
   }, [listBotTrades]);
 
   useEffect(() => {
     (botActivations || []).forEach((a) => {
       const id = a.id;
       if (!id || subsRef.current[id]) return;
-
-      // Seed de trades
       loadTrades(id);
-
-      // Subscribe live
       const ch = subscribeBotTrades?.(id, () => loadTrades(id));
       subsRef.current[id] = ch;
     });
-
     return () => {
-      Object.values(subsRef.current).forEach((ch) => {
-        try { ch?.unsubscribe?.(); } catch {}
-      });
+      Object.values(subsRef.current).forEach((ch) => { try { ch?.unsubscribe?.(); } catch {} });
       subsRef.current = {};
     };
   }, [botActivations, subscribeBotTrades, loadTrades]);
 
-  /* ===== Carga & subscripción de eventos por activación ===== */
   const loadEvents = useCallback(async (activationId) => {
-    try {
-      const rows = await listBotEvents?.(activationId, 100);
-      setEventsByActivation((prev) => ({ ...prev, [activationId]: rows || [] }));
-    } catch {}
+    try { const rows = await listBotEvents?.(activationId, 100); setEventsByActivation((p) => ({ ...p, [activationId]: rows || [] })); } catch {}
   }, [listBotEvents]);
 
   useEffect(() => {
     (botActivations || []).forEach((a) => {
       const id = a.id;
       if (!id || eventsSubsRef.current[id]) return;
-
-      // Seed de eventos
       loadEvents(id);
-
-      // Subscribe live
       const ch = subscribeBotEvents?.(id, () => loadEvents(id));
       eventsSubsRef.current[id] = ch;
     });
-
     return () => {
-      Object.values(eventsSubsRef.current).forEach((ch) => {
-        try { ch?.unsubscribe?.(); } catch {}
-      });
+      Object.values(eventsSubsRef.current).forEach((ch) => { try { ch?.unsubscribe?.(); } catch {} });
       eventsSubsRef.current = {};
     };
   }, [botActivations, subscribeBotEvents, loadEvents]);
 
-  /* ===== PnL no realizado + par principal por activación ===== */
   const calcUnrealizedAndPair = useCallback((activationId, fallbackName) => {
     const rows = tradesByActivation[activationId] || [];
     let u = 0;
-    // Par principal: último trade abierto o primer par del catálogo del bot
     const lastOpen = rows.find((r) => String(r.status).toLowerCase() === 'open');
     let mainPair = lastOpen?.pair;
     if (!mainPair) {
       const cat = tradingBots.find((x) => x.name === fallbackName);
       mainPair = cat?.pairs?.[0] || 'BTC/USDT';
     }
-
     for (const t of rows) {
       if (String(t.status).toLowerCase() !== 'open') continue;
       const info = getPairInfo?.(t.pair) || {};
       const last = Number(info.price);
       if (!Number.isFinite(last) || !Number.isFinite(Number(t.entry))) continue;
-
       const sideMul = String(t.side).toLowerCase() === 'short' ? -1 : 1;
       const pct = (last - Number(t.entry)) / Number(t.entry);
-      const pnlTrade = sideMul * pct * Number(t.leverage || 1) * Number(t.amount_usd || 0);
-      if (Number.isFinite(pnlTrade)) u += pnlTrade;
+      const uPnL = sideMul * pct * Number(t.leverage || 1) * Number(t.amount_usd || 0);
+      if (Number.isFinite(uPnL)) u += uPnL;
     }
     return { unrealized: u, mainPair };
   }, [tradesByActivation, getPairInfo]);
 
-  /* ========== Timeline de eventos ========== */
   const EventRow = ({ ev }) => {
     const kind = String(ev.kind || '').toLowerCase();
     const at = ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : '—';
@@ -385,22 +646,18 @@ useEffect(() => {
     const pnl = Number(p?.pnl);
     const pair = p?.pair || p?.symbol || p?.pair_symbol || '';
     const reason = p?.reason || '';
-
     const Icon =
       kind === 'open' ? Activity :
       kind === 'close' ? CheckCircle :
       kind === 'pause' ? PauseCircle :
       kind === 'resume' ? PlayCircle :
-      kind === 'cancel' ? XCircle :
-      Clock;
-
+      kind === 'cancel' ? XCircle : Clock;
     const color =
       kind === 'open' ? 'text-sky-300' :
       kind === 'close' ? 'text-emerald-300' :
       kind === 'pause' ? 'text-amber-300' :
       kind === 'resume' ? 'text-emerald-300' :
       kind === 'cancel' ? 'text-rose-300' : 'text-slate-300';
-
     return (
       <div className="flex items-center justify-between text-xs">
         <span className="text-slate-400">{at}</span>
@@ -418,7 +675,6 @@ useEffect(() => {
       </div>
     );
   };
-
   const EventTimeline = ({ list = [] }) => {
     if (!list?.length) return null;
     return (
@@ -431,11 +687,10 @@ useEffect(() => {
     );
   };
 
-  /* ========== Handlers ========== */
+  // ====== Handlers ======
   const handleActivateBot = async () => {
     try {
       playSound?.('invest');
-
       if (!user?.id) {
         toast({ title: 'No autenticado', description: 'Iniciá sesión para continuar.', variant: 'destructive' });
         return;
@@ -450,54 +705,30 @@ useEffect(() => {
         return;
       }
       if (amount < selectedBot.minInvestment) {
-        toast({
-          title: 'Monto insuficiente',
-          description: `El mínimo para ${selectedBot.name} es $${selectedBot.minInvestment}.`,
-          variant: 'destructive',
-        });
+        toast({ title: 'Monto insuficiente', description: `El mínimo para ${selectedBot.name} es $${selectedBot.minInvestment}.`, variant: 'destructive' });
         return;
       }
       if (amount > availableUsd) {
-        toast({
-          title: 'Saldo insuficiente',
-          description: `Tu saldo USDC es $${fmt(availableUsd)}. Depositá o reducí el monto.`,
-          variant: 'destructive',
-        });
+        toast({ title: 'Saldo insuficiente', description: `Tu saldo USDC es $${fmt(availableUsd)}.`, variant: 'destructive' });
         return;
       }
 
       setBusyActivate(true);
-      const res = await activateBot?.({
-        botId: selectedBot.id,
-        botName: selectedBot.name,
-        strategy: selectedBot.strategy,
-        amountUsd: amount,
-      });
-
+      const res = await activateBot?.({ botId: selectedBot.id, botName: selectedBot.name, strategy: selectedBot.strategy, amountUsd: amount });
       if (res?.code === 'INSUFFICIENT_FUNDS') {
-        toast({
-          title: 'Saldo insuficiente',
-          description: `Te faltan $${fmt(Number(res?.needed || 0))} para activar este bot.`,
-          variant: 'destructive',
-        });
+        toast({ title: 'Saldo insuficiente', description: `Te faltan $${fmt(Number(res?.needed || 0))}.`, variant: 'destructive' });
         return;
       }
       if (!res?.ok) {
-        toast({
-          title: 'No se pudo activar el bot',
-          description: res?.msg || 'Intentá nuevamente.',
-          variant: 'destructive',
-        });
+        toast({ title: 'No se pudo activar', description: res?.msg || 'Intentá nuevamente.', variant: 'destructive' });
         return;
       }
 
-      toast({
-        title: 'Bot activado',
-        description: `${selectedBot.name} activado por $${fmt(amount)}.`,
-      });
+      toast({ title: 'Bot activado', description: `${selectedBot.name} por $${fmt(amount)}.` });
       setSelectedBot(null);
       setInvestmentAmount('');
       await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
+      await refreshAvailable();
     } catch (e) {
       console.error('[handleActivateBot]', e);
       toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
@@ -544,9 +775,7 @@ useEffect(() => {
     }
   };
 
-  // Confirm y cancelación real
   const askCancel = (a) => {
-    // estimación de fee
     const pctPart = Math.max(0, (cancelFeePct || 0) / 100) * Number(a.amountUsd || 0);
     const fixed = Math.max(0, cancelFeeUsd || 0);
     let feeEst = Number((pctPart + fixed).toFixed(2));
@@ -562,6 +791,7 @@ useEffect(() => {
       if (r?.ok) {
         toast({ title: 'Bot cancelado' });
         await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
+        await refreshAvailable();
       } else {
         toast({ title: 'No se pudo cancelar', description: r?.msg || '', variant: 'destructive' });
       }
@@ -594,14 +824,12 @@ useEffect(() => {
     }
   };
 
-  /* ---- Cantidades rápidas ---- */
   const quickAmounts = useMemo(() => {
     const base = [250, 500, 1000, 2000];
     const extra = availableUsd > 0 ? [Math.min(availableUsd, 5000)] : [];
     return [...base, ...extra.filter((v) => !base.includes(v))];
   }, [availableUsd]);
 
-  // Valores para el toggle del resumen
   const summaryPnlValue = showNet ? totalBotNet : totalBotProfit;
   const summaryPnlLabel = showNet ? 'Ganancias (neto)' : 'Ganancias (bruto)';
 
@@ -609,22 +837,15 @@ useEffect(() => {
     <>
       <div className="space-y-8">
         {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
           <div className="flex items-center justify-between gap-3">
             <div>
               <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
                 <BotIcon className="h-8 w-8 mr-3 text-purple-400" />
                 Bots de Trading Automatizado
               </h1>
-              <p className="text-slate-300">
-                Maximizá tus ganancias con bots inteligentes conectados a tu saldo.
-              </p>
+              <p className="text-slate-300">Maximizá tus ganancias con bots inteligentes conectados a tu saldo.</p>
             </div>
-
             <div className="flex items-center gap-2">
               {cancelFeeLabel && (
                 <span className="text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
@@ -650,9 +871,7 @@ useEffect(() => {
                   <Gauge className="h-5 w-5 text-emerald-400" />
                   Estado de tus Bots
                 </CardTitle>
-                <CardDescription className="text-slate-300">
-                  Progreso hacia tus objetivos (cantidad y capital asignado).
-                </CardDescription>
+                <CardDescription className="text-slate-300">Progreso hacia tus objetivos (cantidad y capital asignado).</CardDescription>
               </div>
               {cancelFeeLabel && (
                 <span className="hidden md:inline text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
@@ -693,8 +912,6 @@ useEffect(() => {
                   ${fmt(activeEstimated.min)} – ${fmt(activeEstimated.max)}
                 </div>
               </div>
-
-              {/* Ganancias con toggle Neto/Bruto */}
               <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
                 <div className="flex items-center justify-between">
                   <div className="text-xs text-slate-400 flex items-center gap-2">
@@ -819,7 +1036,6 @@ useEffect(() => {
                       Pares: <span className="font-semibold text-white">{bot.pairs.join(', ')}</span>
                     </div>
 
-                    {/* Ejemplo de rendimiento */}
                     <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3 text-sm">
                       <div className="text-slate-400">Ej. con ${fmt(exAmount, 0)}:</div>
                       <div className="text-slate-100 font-semibold">+${fmt(estMin)} – +${fmt(estMax)} / mes</div>
@@ -937,32 +1153,15 @@ useEffect(() => {
                       </div>
                     </div>
 
-                    {/* Estimación en vivo */}
                     <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
-                      <div className="text-xs text-slate-400">Estimación mensual (según monto ingresado)</div>
+                      <div className="text-xs text-slate-400">Estimación mensual (según monto)</div>
                       <div className="text-white font-semibold">
-                        {amountNum > 0 ? (
-                          <>+${fmt(estMin)} – +${fmt(estMax)}</>
-                        ) : (
-                          '—'
-                        )}
+                        {amountNum > 0 ? (<>+${fmt(estMin)} – +${fmt(estMax)}</>) : '—'}
                       </div>
                       <div className="text-[10px] text-slate-500 mt-1">
                         Estimación teórica basada en el rango del bot. No garantiza resultados.
                       </div>
                     </div>
-
-                    {/* Validaciones */}
-                    {amountNum > availableUsd && (
-                      <div className="text-xs text-rose-400 flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4" /> Monto supera tu saldo USDC (${fmt(availableUsd)}).
-                      </div>
-                    )}
-                    {amountNum > 0 && amountNum < selectedBot.minInvestment && (
-                      <div className="text-xs text-amber-400 flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4" /> Debe ser ≥ ${fmt(selectedBot.minInvestment, 0)}.
-                      </div>
-                    )}
 
                     <Button
                       onClick={handleActivateBot}
@@ -1009,17 +1208,11 @@ useEffect(() => {
                 const createdAt =
                   a.createdAt || a.created_at || (a.created_at_ms ? new Date(a.created_at_ms) : null);
 
-                // PnL realizado (transacciones)
                 const { profit: grossProfit = 0, fees = 0, net: realizedNet = 0 } = getBotPnl?.(a.id) || {};
-
-                // PnL no realizado + par principal (para minigráfico)
                 const { unrealized = 0, mainPair } = calcUnrealizedAndPair(a.id, a.botName);
-
-                // ROI con neto total (realizado + no realizado)
                 const totalNet = Number(realizedNet) + Number(unrealized);
                 const roiNet = a.amountUsd > 0 ? (totalNet / Number(a.amountUsd)) * 100 : 0;
 
-                // Exposición & riesgo
                 const open = (tradesByActivation[a.id] || []).filter(
                   (t) => String(t.status).toLowerCase() === 'open'
                 );
@@ -1052,7 +1245,6 @@ useEffect(() => {
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
-                      {/* Micro-gráfico del par dinámico */}
                       <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                         <div className="text-xs text-slate-400 mb-1">
                           Actividad del par ({mainPair})
@@ -1114,10 +1306,8 @@ useEffect(() => {
                         </div>
                       </div>
 
-                      {/* Timeline de eventos */}
                       <EventTimeline list={eventsByActivation[a.id]} />
 
-                      {/* Últimos trades (compacto) */}
                       {(tradesByActivation[a.id] || []).length > 0 && (
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                           <div className="text-xs text-slate-400 mb-1">Últimos trades</div>
@@ -1223,7 +1413,6 @@ useEffect(() => {
                         </div>
                       </div>
 
-                      {/* Timeline de eventos (histórico) */}
                       <EventTimeline list={eventsByActivation[a.id]} />
                     </CardContent>
                   </Card>
