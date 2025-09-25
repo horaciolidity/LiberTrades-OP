@@ -93,7 +93,9 @@ export function supabaseAuthHeaders() {
   };
 }
 
-/** Llamar Edge Functions (usa access_token de usuario si hay sesión) */
+/** Llamar Edge Functions (usa access_token de usuario si hay sesión)
+ *  (No se usa para el bot-brain en producción para evitar CORS)
+ */
 export async function callEdgeFunction(name, init = {}) {
   const url = `${SUPABASE_URL}/functions/v1/${name}`;
 
@@ -160,33 +162,27 @@ async function rpcTry(names, params) {
     // “no existe”
     const code = error?.code || '';
     const msg = String(error?.message || '').toLowerCase();
-    const notExists = code === 'PGRST302' || code === '42883' || (msg.includes('function') && msg.includes('does not exist'));
+    const notExists =
+      code === 'PGRST302' ||
+      code === '42883' ||
+      (msg.includes('function') && msg.includes('does not exist'));
     if (!notExists) return { data: null, error, fn: name }; // error real
     lastError = error;
   }
   return { data: null, error: lastError, fn: names[names.length - 1] };
 }
 
-/* =================== BOT BRAIN (RPC primero, Edge fallback) =================== */
-/** Ejecuta un ciclo del “cerebro”.
- *  1) RPC `run_bot_brain_once`
- *  2) Fallback a Edge Function `bot-brain` con {action:'tick'} */
+/* =================== BOT BRAIN (RPC-ONLY) =================== */
+/** Ejecuta un ciclo del “cerebro” (simulador/real) via RPC.
+ *  Importante: SIN fallback a Edge Function para evitar CORS.
+ */
 export async function runBotBrainOnce(payload = {}) {
-  // 1) RPC
-  try {
-    const { data, error } = await supabase.rpc('run_bot_brain_once', payload);
-    if (!error) return data;
-    const code = error?.code || '';
-    const msg = String(error?.message || '').toLowerCase();
-    const notExists = code === 'PGRST302' || code === '42883' || msg.includes('does not exist');
-    if (!notExists) throw error; // error real de la RPC
-  } catch (e) {
-    if (e?.code && e.code !== 'PGRST302' && e.code !== '42883') throw e;
+  const { data, error } = await supabase.rpc('run_bot_brain_once', payload);
+  if (error) {
+    console.error('[run_bot_brain_once] RPC error:', error);
+    throw error;
   }
-
-  // 2) Edge fallback
-  const body = JSON.stringify({ action: 'tick', ...payload });
-  return callEdgeFunction('bot-brain', { method: 'POST', body });
+  return data;
 }
 
 /* ============== PRECIOS SIMULADOS PERSISTENTES (sim_pairs) ============== */
@@ -202,8 +198,12 @@ export async function getSimPairPrice(pair) {
 
 /* ================== RPCs de bots (robustos a nombres) ================== */
 export async function rpcActivateBot({ bot_id, bot_name, strategy, amount_usd }) {
-  // nombre canónico
-  const { data, error } = await rpcTry(['activate_trading_bot'], { bot_id, bot_name, strategy, amount_usd });
+  const { data, error } = await rpcTry(['activate_trading_bot'], {
+    bot_id,
+    bot_name,
+    strategy,
+    amount_usd,
+  });
   return { data, error };
 }
 
@@ -233,7 +233,9 @@ export function subscribeTradesByActivation(activation_id, onChange) {
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'bot_trades', filter: `activation_id=eq.${activation_id}` },
-      () => { try { onChange?.(); } catch {} }
+      () => {
+        try { onChange?.(); } catch {}
+      }
     )
     .subscribe();
   return channel;
