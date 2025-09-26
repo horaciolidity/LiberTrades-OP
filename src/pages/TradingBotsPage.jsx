@@ -34,19 +34,14 @@ import { Link } from 'react-router-dom';
 import MiniSparkline from '@/components/bots/MiniSparkline';
 import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 
-/* ============================================================
-   CONFIG: simulación de bots y puente al wallet real
-   ============================================================ */
+/* ============================ CONFIG ============================ */
 const SIM_MODE = true;                 // trades/eventos/pnl locales
-const USE_WALLET_BRIDGE = true;        // intenta debitar/acreditar en tu app
 const LS_KEY = 'libertrades_sim';
+const FIXED_CANCEL_FEE_USD = 5;        // fee fijo pedido
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-/* ========== Helpers numéricos/UI ========== */
-const fmt = (n, dec = 2) => {
-  const v = Number(n);
-  return Number.isFinite(v) ? v.toFixed(dec) : (0).toFixed(dec);
-};
+/* ====================== Helpers numéricos/UI ===================== */
+const fmt = (n, dec = 2) => Number.isFinite(Number(n)) ? Number(n).toFixed(dec) : (0).toFixed(dec);
 const fmtSign = (n, dec = 2) => {
   const v = Number(n);
   if (!Number.isFinite(v)) return (0).toFixed(dec);
@@ -64,18 +59,14 @@ const normStatus = (s) => String(s || '').trim().toLowerCase();
 const pnlColor = (n) => (n > 0 ? 'text-emerald-400' : n < 0 ? 'text-rose-400' : 'text-slate-200');
 const riskBase = (r) => (r === 'Alto' ? 65 : r === 'Medio' ? 45 : 25);
 
-/* ============================================================
-   Catálogo visible (marketing)
-   ============================================================ */
+/* =================== Catálogo visible (marketing) =================== */
 const tradingBots = [
   { id: 1, name: 'Bot Conservador Alfa', risk: 'Bajo', strategy: 'Bajo Riesgo, Ingresos Estables', monthlyReturn: '~5-8%', minInvestment: 250, pairs: ['BTC/USDT','ETH/USDT'], icon: BarChart2, color: 'text-blue-400', bgColor: 'bg-blue-500/10', features: ['Stop-loss dinámico','Análisis de sentimiento básico','Rebalanceo semanal'] },
   { id: 2, name: 'Bot Agresivo Beta', risk: 'Alto', strategy: 'Alto Riesgo, Alto Rendimiento Potencial', monthlyReturn: '~15-25%', minInvestment: 1000, pairs: ['ALTCOINS/USDT','MEMES/USDT'], icon: Zap, color: 'text-red-400', bgColor: 'bg-red-500/10', features: ['Trading de alta frecuencia','Detección de pumps','Scalping en M1/M5'] },
   { id: 3, name: 'Bot Balanceado Gamma', risk: 'Medio', strategy: 'Riesgo Moderado, Crecimiento Constante', monthlyReturn: '~8-12%', minInvestment: 500, pairs: ['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT'], icon: TrendingUp, color: 'text-green-400', bgColor: 'bg-green-500/10', features: ['Grid trading','Dollar Cost Averaging (DCA)','Seguimiento de tendencia'] },
 ];
 
-/* ============================================================
-   Simulador local (trades/eventos/payouts) + precios
-   ============================================================ */
+/* ========== Simulador local (precios, trades, eventos) ========== */
 const defaultPairs = {
   'BTC/USDT': 60000,
   'ETH/USDT': 2500,
@@ -84,19 +75,14 @@ const defaultPairs = {
   'ALTCOINS/USDT': 1.0,
   'MEMES/USDT': 0.01,
 };
-
-function readLS() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch { return null; }
-}
-function writeLS(state) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch {}
-}
+function readLS() { try { return JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch { return null; } }
+function writeLS(state) { try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch {} }
 function seedState(userId) {
   const now = Date.now();
   return {
     userId,
-    shadowBalanceUsd: 0,         // saldo sombra si el bridge no existe
-    shadowMode: false,           // true si no hay métodos reales para delta
+    shadowBalanceUsd: 0,         // saldo sombra (si el puente no existe)
+    shadowMode: false,
     prices: { ...defaultPairs },
     activations: [],
     trades: {},                  // { [activationId]: Trade[] }
@@ -116,51 +102,24 @@ function mtmPnl(trade, priceNow) {
   return sideMul * pct * (trade.leverage || 1) * (trade.amount_usd || 0);
 }
 
-/** Bridge a tu wallet real: intenta varios nombres comunes. */
-async function tryApplyBalanceDelta(dataCtx, amount, meta = {}) {
-  if (!USE_WALLET_BRIDGE || !dataCtx) return { ok: false, unsupported: true };
+/* ========= Puente al wallet real usando DataContext.addTransaction =========
+   Importante: tu DataContext usa addTransaction({amount, type, currency, description, referenceType, referenceId, status})
+   Lo aprovechamos para: bot_lock, bot_profit, bot_fee, bot_refund
+=========================================================================== */
+async function applyWalletTx(dataCtx, tx) {
   try {
-    // 1) método genérico (ideal)
-    if (typeof dataCtx.applyBalanceDelta === 'function') {
-      const r = await dataCtx.applyBalanceDelta(amount, { currency: 'USDC', ...meta });
-      if (r?.ok ?? r === true) return { ok: true };
-    }
-    // 2) explícitos credit/debit
-    if (amount >= 0 && typeof dataCtx.creditBalance === 'function') {
-      const r = await dataCtx.creditBalance(amount, { currency: 'USDC', ...meta });
-      if (r?.ok ?? r === true) return { ok: true };
-    }
-    if (amount < 0 && typeof dataCtx.debitBalance === 'function') {
-      const r = await dataCtx.debitBalance(-amount, { currency: 'USDC', ...meta });
-      if (r?.ok ?? r === true) return { ok: true };
-    }
-    // 3) registrar transacción ad-hoc
-    if (typeof dataCtx.createTransaction === 'function') {
-      const r = await dataCtx.createTransaction({
-        kind: 'BOT_SIM',
-        currency: 'USDC',
-        amount,
-        meta,
-      });
-      if (r?.ok ?? r === true) return { ok: true };
-    }
-    if (typeof dataCtx.addTransaction === 'function') {
-      const r = await dataCtx.addTransaction({
-        kind: 'BOT_SIM',
-        currency: 'USDC',
-        amount,
-        meta,
-      });
-      if (r?.ok ?? r === true) return { ok: true };
+    if (typeof dataCtx?.addTransaction === 'function') {
+      const r = await dataCtx.addTransaction(tx);
+      return !!r;
     }
   } catch (e) {
-    console.error('[wallet-bridge] error aplicando delta', e);
+    console.error('[applyWalletTx] error', e);
   }
-  return { ok: false, unsupported: true };
+  return false;
 }
 
-/** Hook que imita useData() pero simulado, y puentea el wallet real. */
-function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
+/* ===== Hook sim principal (usa DataContext para tocar el saldo real) ===== */
+function useSimData(realDataSettings = {}, realDC) {
   const { user } = useAuth();
   const userId = user?.id || 'sim-user';
 
@@ -169,7 +128,7 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
     return existing?.userId === userId ? existing : seedState(userId);
   });
 
-  // Ticker local de precios + actividad de trades
+  // Ticker de precios + actividad pseudo-aleatoria
   useEffect(() => {
     const int = setInterval(() => {
       setS((prev) => {
@@ -180,7 +139,7 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
 
         for (const act of next.activations.filter(a => ['active', 'paused'].includes((a.status || '').toLowerCase()))) {
           const list = next.trades[act.id] || [];
-          // close aleatorio
+          // cerrar aleatorio
           if (Math.random() < 0.2) {
             const idx = list.findIndex(t => (t.status || '').toLowerCase() === 'open');
             if (idx >= 0) {
@@ -193,9 +152,10 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
               next.payouts[act.id] = { ...prevPay, profit: prevPay.profit + pnl, net: prevPay.net + pnl };
             }
           }
-          // open aleatorio si activo
+          // abrir aleatorio si activo
           if ((act.status || '').toLowerCase() === 'active' && Math.random() < 0.25) {
-            const pair = (['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT','ALTCOINS/USDT','MEMES/USDT'])[Math.floor(Math.random()*6)];
+            const choices = ['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT','ALTCOINS/USDT','MEMES/USDT'];
+            const pair = choices[Math.floor(Math.random()*choices.length)];
             const side = Math.random() < 0.5 ? 'long' : 'short';
             const leverage = [1,2,3,5][Math.floor(Math.random()*4)];
             const amount_usd = Math.max(10, Math.min(act.amountUsd * 0.3, 200));
@@ -219,22 +179,14 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
     return next;
   });
 
-  const settings = {
-    ...realDataSettings,
-    'trading.bot_cancel_fee_pct': Number(realDataSettings?.['trading.bot_cancel_fee_pct'] ?? 2),
-    'trading.bot_cancel_fee_usd': Number(realDataSettings?.['trading.bot_cancel_fee_usd'] ?? 0),
-  };
-
-  // ==== SALDO (read) ====
+  // ==== SALDO (read) usando DataContext robusto ====
   const getAvailableBalance = async () => {
-    if (typeof walletReader === 'function') {
-      const real = await walletReader();
-      if (Number.isFinite(Number(real))) {
-        // si estamos en shadowMode (no hay bridge), mostramos real + sombra
-        return Number(real) + (s.shadowMode ? Number(s.shadowBalanceUsd || 0) : 0);
-      }
+    const v = await realDC?.getAvailableBalance?.('USDC');
+    if (Number.isFinite(Number(v))) {
+      // Si estamos en modo sombra, “saldo real” + sombra para la UI
+      return Number(v) + (s.shadowMode ? Number(s.shadowBalanceUsd || 0) : 0);
     }
-    // sin reader real: sólo sombra
+    // sin reader real: solo sombra
     return Number(s.shadowBalanceUsd || 0);
   };
 
@@ -243,19 +195,10 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
     const amount = Number(amountUsd || 0);
     if (!(amount > 0)) return { ok: false, msg: 'Monto inválido' };
 
-    // Debitar del saldo real si se puede
-    let bridged = false;
-    if (typeof walletDeltaApplier === 'function') {
-      const r = await walletDeltaApplier(-amount, { reason: 'bot-activate', botName, botId });
-      bridged = !!r?.ok;
-    }
-
+    let aCreated = null;
+    // 1) Persistimos activación primero para tener activationId
     persist((prev) => {
       const next = { ...prev };
-      if (!bridged) {
-        next.shadowMode = true;
-        next.shadowBalanceUsd = Math.max(0, Number(next.shadowBalanceUsd || 0) - amount);
-      }
       const a = {
         id: uid(), userId,
         botId, botName, strategy,
@@ -263,6 +206,7 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
         status: 'active',
         created_at: new Date().toISOString(),
       };
+      aCreated = a;
       next.activations = [a, ...prev.activations];
       next.trades[a.id] = [];
       next.events[a.id] = [{ id: uid(), kind: 'resume', created_at: new Date().toISOString(), payload: { reason: 'activate' } }];
@@ -270,7 +214,23 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
       return next;
     });
 
-    return { ok: true };
+    // 2) Debitar en el wallet real con una transacción tipo bot_lock
+    const locked = await applyWalletTx(realDC, {
+      amount: -amount,
+      type: 'bot_lock',
+      currency: 'USDC',
+      description: `Capital asignado a ${botName}`,
+      referenceType: 'bot_activation',
+      referenceId: aCreated.id,
+      status: 'completed',
+    });
+
+    // 3) Si no se pudo tocar el wallet real, usamos saldo sombra
+    if (!locked) {
+      persist((prev) => ({ ...prev, shadowMode: true, shadowBalanceUsd: Math.max(0, Number(prev.shadowBalanceUsd || 0) - amount) }));
+    }
+
+    return { ok: true, activation_id: aCreated.id };
   };
 
   const pauseBot = async (activationId) => {
@@ -294,8 +254,8 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
   };
 
   const cancelBot = async (activationId) => {
-    // cierra abiertos, calcula gross, aplica fee, devuelve al wallet real (o sombra)
-    let payloadForBridge = null;
+    // Calcula PnL bruto, fee fijo $5, neto y refund. Enlaza a transacciones reales para stats y saldo.
+    let payload = null;
 
     persist((prev) => {
       const next = { ...prev };
@@ -316,46 +276,78 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
       });
       next.trades[activationId] = closedList;
 
-      const pct = Math.max(0, Number(settings['trading.bot_cancel_fee_pct'] || 0) / 100);
-      const fixed = Math.max(0, Number(settings['trading.bot_cancel_fee_usd'] || 0));
-      let fee = pct * Number(act.amountUsd || 0) + fixed;
-
-      const maxFee = Math.max(0, act.amountUsd + Math.max(0, gross));
+      // Fee fijo 5 USD (según requerimiento)
+      let fee = Number(FIXED_CANCEL_FEE_USD || 0);
+      // El fee no puede exceder capital+gross (para no dejar negativo imposible)
+      const maxFee = Math.max(0, Number(act.amountUsd) + Math.max(0, gross));
       if (fee > maxFee) fee = maxFee;
 
       const net = gross - fee;
-      const refund = Math.max(0, act.amountUsd + net);
+      const refund = Math.max(0, Number(act.amountUsd) + net);
 
-      // Bridge payload (lo aplicamos afuera del setState)
-      payloadForBridge = { refund, net, gross, fee, act };
+      payload = { act, gross, fee, net, refund };
 
       next.activations = next.activations.map(a => a.id === activationId ? { ...a, status: 'canceled' } : a);
       next.events[activationId] = [{ id: uid(), kind: 'cancel', created_at: nowIso, payload: { reason: 'user', pnl: net } }, ...(next.events[activationId] || [])].slice(0, 100);
 
       const prevPay = next.payouts[activationId] || { profit: 0, fees: 0, net: 0, refunds: 0 };
-      next.payouts[activationId] = { profit: prevPay.profit + gross, fees: prevPay.fees + fee, net: prevPay.net + net, refunds: prevPay.refunds + refund };
+      next.payouts[activationId] = {
+        profit: prevPay.profit + gross,
+        fees: prevPay.fees + fee,
+        net: prevPay.net + net,
+        refunds: prevPay.refunds + refund,
+      };
 
       return next;
     });
 
-    // aplicar delta al wallet real (o sombra si no hay)
-    if (payloadForBridge) {
-      const { refund, act } = payloadForBridge;
-      let bridged = false;
-      if (typeof walletDeltaApplier === 'function') {
-        const r = await walletDeltaApplier(refund, { reason: 'bot-cancel', botName: act.botName, botId: act.botId, activationId });
-        bridged = !!r?.ok;
-      }
-      if (!bridged) {
-        // modo sombra
-        persist((prev) => {
-          const next = { ...prev };
-          next.shadowMode = true;
-          next.shadowBalanceUsd = Number(next.shadowBalanceUsd || 0) + Number(refund || 0);
-          return next;
+    if (payload) {
+      const { act, gross, fee, refund } = payload;
+
+      // 1) Registrar PnL como bot_profit (para que DataContext lo lea en dashboards)
+      if (Math.abs(gross) > 0.0001) {
+        await applyWalletTx(realDC, {
+          amount: gross,
+          type: 'bot_profit',
+          currency: 'USDC',
+          description: 'Liquidación PnL (sim)',
+          referenceType: 'bot_profit',
+          referenceId: act.id,
+          status: 'completed',
         });
       }
+
+      // 2) Registrar fee fijo de 5 USD
+      if (fee > 0) {
+        await applyWalletTx(realDC, {
+          amount: -fee,
+          type: 'bot_fee',
+          currency: 'USDC',
+          description: 'Fee uso de bot (sim)',
+          referenceType: 'bot_fee',
+          referenceId: act.id,
+          status: 'completed',
+        });
+      }
+
+      // 3) Registrar refund (capital + neto)
+      if (refund > 0) {
+        const ok = await applyWalletTx(realDC, {
+          amount: refund,
+          type: 'bot_refund',
+          currency: 'USDC',
+          description: `Devolución capital ${act.botName} (sim)`,
+          referenceType: 'bot_refund',
+          referenceId: act.id,
+          status: 'completed',
+        });
+        if (!ok) {
+          // modo sombra si el wallet real no existe
+          persist((prev) => ({ ...prev, shadowMode: true, shadowBalanceUsd: Number(prev.shadowBalanceUsd || 0) + Number(refund || 0) }));
+        }
+      }
     }
+
     return { ok: true };
   };
 
@@ -389,7 +381,7 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
     cancelBot,
     refreshBotActivations: async () => {},
     refreshTransactions: async () => {},
-    settings,
+    settings: realDataSettings,
 
     // PnL
     getBotPnl,
@@ -411,7 +403,7 @@ function useSimData(realDataSettings = {}, walletReader, walletDeltaApplier) {
   };
 }
 
-/* ========== Confirm Modal (inline) ========== */
+/* ======================= Confirm Modal (inline) ======================= */
 function ConfirmModal({
   open, title, description, confirmText = 'Confirmar', cancelText = 'Cancelar',
   onConfirm, onCancel, destructive = false, children,
@@ -452,30 +444,15 @@ function ConfirmModal({
   );
 }
 
-/* ============================================================
-   Página
-   ============================================================ */
+/* =============================== Página =============================== */
 const TradingBotsPage = () => {
   const { user } = useAuth();
   const { playSound } = useSound();
+  const realDC = useData(); // DataContext real (saldo/transacciones/back)
 
-  // Contexto real (para leer saldo y aplicar delta si existe)
-  const realData = useData();
-
-  // Reader de saldo real
-  const readWallet = useCallback(async () => {
-    const v = await realData?.getAvailableBalance?.('USDC');
-    return Number(v || 0);
-  }, [realData]);
-
-  // Aplica delta al wallet real (si tu DataContext lo soporta)
-  const applyWalletDelta = useCallback(async (amount, meta) => {
-    return await tryApplyBalanceDelta(realData, amount, meta);
-  }, [realData]);
-
-  // Sim data con puente
-  const simData = useSimData(realData?.settings || {}, readWallet, applyWalletDelta);
-  const data = SIM_MODE ? simData : realData;
+  // Data: simulador + puente al DataContext real (para tocar saldo/txs)
+  const simData = useSimData(realDC?.settings || {}, realDC);
+  const data = SIM_MODE ? simData : realDC;
 
   const {
     botActivations,
@@ -515,13 +492,6 @@ const TradingBotsPage = () => {
   const subsRef = useRef({});
   const [eventsByActivation, setEventsByActivation] = useState({});
   const eventsSubsRef = useRef({});
-
-  const cancelFeePct = Number(settings?.['trading.bot_cancel_fee_pct'] ?? 0);
-  const cancelFeeUsd = Number(settings?.['trading.bot_cancel_fee_usd'] ?? 0);
-  const feeParts = [];
-  if (cancelFeePct > 0) feeParts.push(`${fmt(cancelFeePct, 2)}%`);
-  if (cancelFeeUsd > 0) feeParts.push(`$${fmt(cancelFeeUsd)}`);
-  const cancelFeeLabel = feeParts.length ? `Fee cancelación: ${feeParts.join(' + ')}` : null;
 
   const setRowBusy = useCallback((id, val) => {
     setBusyById((prev) => {
@@ -578,7 +548,6 @@ const TradingBotsPage = () => {
     const v = await getAvailableBalance?.('USDC');
     setAvailableUsd(Number(v || 0));
   }, [getAvailableBalance]);
-
   useEffect(() => { refreshAvailable(); }, [refreshAvailable, botActivations, totalBotNet]);
 
   const loadTrades = useCallback(async (activationId) => {
@@ -687,7 +656,8 @@ const TradingBotsPage = () => {
     );
   };
 
-  // ====== Handlers ======
+  /* =========================== Handlers =========================== */
+
   const handleActivateBot = async () => {
     try {
       playSound?.('invest');
@@ -776,11 +746,7 @@ const TradingBotsPage = () => {
   };
 
   const askCancel = (a) => {
-    const pctPart = Math.max(0, (cancelFeePct || 0) / 100) * Number(a.amountUsd || 0);
-    const fixed = Math.max(0, cancelFeeUsd || 0);
-    let feeEst = Number((pctPart + fixed).toFixed(2));
-    if (feeEst > Number(a.amountUsd || 0)) feeEst = Number(a.amountUsd || 0);
-    setConfirmCancel({ id: a.id, name: a.botName, amountUsd: a.amountUsd, feeEst });
+    setConfirmCancel({ id: a.id, name: a.botName, amountUsd: a.amountUsd, feeEst: FIXED_CANCEL_FEE_USD });
   };
 
   const doCancel = async (id) => {
@@ -789,7 +755,7 @@ const TradingBotsPage = () => {
     try {
       const r = await cancelBot?.(id);
       if (r?.ok) {
-        toast({ title: 'Bot cancelado' });
+        toast({ title: 'Bot cancelado', description: 'Se liquidó PnL, se cobró fee ($5) y se devolvió capital.' });
         await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
         await refreshAvailable();
       } else {
@@ -847,11 +813,9 @@ const TradingBotsPage = () => {
               <p className="text-slate-300">Maximizá tus ganancias con bots inteligentes conectados a tu saldo.</p>
             </div>
             <div className="flex items-center gap-2">
-              {cancelFeeLabel && (
-                <span className="text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
-                  {cancelFeeLabel}
-                </span>
-              )}
+              <span className="text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
+                Fee cancelación: ${fmt(FIXED_CANCEL_FEE_USD)} fijo
+              </span>
               {BOT_BRAIN_CLIENT && (
                 <Button onClick={runBrain} variant="outline" disabled={busyBrain} className="shrink-0">
                   <Zap className="w-4 h-4 mr-1" />
@@ -862,7 +826,7 @@ const TradingBotsPage = () => {
           </div>
         </motion.div>
 
-        {/* Resumen / energía de bots */}
+        {/* Resumen */}
         <Card className="crypto-card">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
@@ -873,11 +837,9 @@ const TradingBotsPage = () => {
                 </CardTitle>
                 <CardDescription className="text-slate-300">Progreso hacia tus objetivos (cantidad y capital asignado).</CardDescription>
               </div>
-              {cancelFeeLabel && (
-                <span className="hidden md:inline text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
-                  {cancelFeeLabel}
-                </span>
-              )}
+              <span className="hidden md:inline text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
+                Fee cancelación: ${fmt(FIXED_CANCEL_FEE_USD)} fijo
+              </span>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -975,7 +937,7 @@ const TradingBotsPage = () => {
           </CardContent>
         </Card>
 
-        {/* Catálogo de bots */}
+        {/* Catálogo */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {tradingBots.map((bot, index) => {
             const Icon = bot.icon;
@@ -1180,15 +1142,13 @@ const TradingBotsPage = () => {
           })()}
         </AnimatePresence>
 
-        {/* Mis bots (ACTIVOS/PAUSADOS) */}
+        {/* Mis bots (activos/pausados) */}
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold text-white">Mis Bots</h2>
-            {cancelFeeLabel && (
-              <span className="text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
-                {cancelFeeLabel}
-              </span>
-            )}
+            <span className="text-[11px] px-2 py-1 rounded-md border border-slate-700 text-slate-300 bg-slate-800/60">
+              Fee cancelación: ${fmt(FIXED_CANCEL_FEE_USD)} fijo
+            </span>
           </div>
 
           {!myActiveBots?.length ? (
@@ -1203,7 +1163,7 @@ const TradingBotsPage = () => {
                 const estMax = (max / 100) * Number(a.amountUsd || 0);
                 const isActive = status === 'active';
                 const isPaused = status === 'paused';
-                const rowBusy = busyById.get(a.id);
+                const rowBusy = !!busyById.get(a.id);
 
                 const createdAt =
                   a.createdAt || a.created_at || (a.created_at_ms ? new Date(a.created_at_ms) : null);
@@ -1332,29 +1292,18 @@ const TradingBotsPage = () => {
 
                       <div className="flex flex-wrap gap-2">
                         {isActive && (
-                          <Button
-                            variant="outline"
-                            onClick={() => doPause(a.id)}
-                            disabled={rowBusy}
-                          >
+                          <Button variant="outline" onClick={() => doPause(a.id)} disabled={rowBusy}>
                             <PauseCircle className="w-4 h-4 mr-1" />
                             {rowBusy ? 'Pausando…' : 'Pausar'}
                           </Button>
                         )}
                         {isPaused && (
-                          <Button
-                            onClick={() => doResume(a.id)}
-                            disabled={rowBusy}
-                          >
+                          <Button onClick={() => doResume(a.id)} disabled={rowBusy}>
                             <PlayCircle className="w-4 h-4 mr-1" />
                             {rowBusy ? 'Reanudando…' : 'Reanudar'}
                           </Button>
                         )}
-                        <Button
-                          variant="destructive"
-                          onClick={() => askCancel(a)}
-                          disabled={rowBusy}
-                        >
+                        <Button variant="destructive" onClick={() => askCancel(a)} disabled={rowBusy}>
                           <XCircle className="w-4 h-4 mr-1" />
                           {rowBusy ? 'Cancelando…' : 'Cancelar'}
                         </Button>
@@ -1367,7 +1316,7 @@ const TradingBotsPage = () => {
           )}
         </div>
 
-        {/* HISTORIAL (cancelados) */}
+        {/* Historial (cancelados) */}
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <History className="w-5 h-5 text-slate-300" />
@@ -1433,7 +1382,7 @@ const TradingBotsPage = () => {
       <ConfirmModal
         open={!!confirmCancel}
         title={`Cancelar bot ${confirmCancel?.name || ''}`}
-        description="Al cancelar se libera el capital y se aplica el fee indicado."
+        description="Al cancelar se liquida el PnL, se libera el capital y se aplica un fee fijo de $5."
         destructive
         confirmText="Cancelar bot"
         cancelText="Volver"
@@ -1442,8 +1391,8 @@ const TradingBotsPage = () => {
       >
         <div className="text-sm text-slate-300 space-y-1">
           <div>Capital asignado: <span className="text-white font-semibold">${fmt(confirmCancel?.amountUsd || 0)}</span></div>
-          <div>Fee estimado: <span className="text-white font-semibold">${fmt(confirmCancel?.feeEst || 0)}</span></div>
-          {cancelFeeLabel && <div className="text-xs text-slate-400">{cancelFeeLabel}</div>}
+          <div>Fee estimado: <span className="text-white font-semibold">${fmt(FIXED_CANCEL_FEE_USD)}</span></div>
+          <div className="text-xs text-slate-400">Se acreditará/eliminará PnL simulado y se devolverá el remanente al saldo.</div>
         </div>
       </ConfirmModal>
     </>
