@@ -33,13 +33,12 @@ import { Link } from 'react-router-dom';
 import MiniSparkline from '@/components/bots/MiniSparkline';
 import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 
-// 💡 Hook que encapsula la simulación + Web Worker (el que te pasé)
+// 🔧 Sim visual (no toca saldo): Web Worker
 import useBotSimWorker from '@/hooks/useBotSimWorker';
 
 /* ===================== CONFIG ===================== */
-// La UI usa siempre el DataContext real para tocar saldo (lock/fees/refunds).
-// La simulación de precios/trades se hace en el Worker vía el hook.
-const SIM_MODE = true;
+const SIM_MODE = true;           // sólo visual
+const CURRENCY = 'USDC';         // cambia a 'USD' si tu wallet usa USD
 
 /* ===================== Utils ===================== */
 const fmt = (n, dec = 2) => (Number.isFinite(+n) ? (+n).toFixed(dec) : (0).toFixed(dec));
@@ -109,9 +108,9 @@ function ConfirmModal({
 }
 
 const EventRow = ({ ev }) => {
-  const kind = String(ev.kind || '').toLowerCase();
-  const at = ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : '—';
-  const p = ev.payload || {};
+  const kind = String(ev?.kind || '').toLowerCase();
+  const at = ev?.created_at ? new Date(ev.created_at).toLocaleTimeString() : '—';
+  const p = ev?.payload || {};
   const pnl = Number(p?.pnl);
   const pair = p?.pair || p?.symbol || p?.pair_symbol || '';
   const reason = p?.reason || '';
@@ -161,10 +160,12 @@ const TradingBotsPage = () => {
   const { user } = useAuth();
   const { playSound } = useSound();
 
-  // DataContext real (saldo/txns reales)
-  const realData = useData();
-  // Simulación (en Worker) via hook. Si desactivás SIM_MODE, podrías usar directamente realData.
-  const data = SIM_MODE ? useBotSimWorker(realData) : realData;
+  // Negocio real (saldo/txns/activaciones)
+  const api = useData();
+
+  // Simulación visual (no toca saldo). Si no querés sim, desactiva SIM_MODE y no uses este hook.
+  const sim = SIM_MODE ? useBotSimWorker() : null;
+  // (En esta página usamos api.* para todo movimiento de dinero)
 
   const {
     botActivations,
@@ -172,7 +173,7 @@ const TradingBotsPage = () => {
     canceledBots,
     activateBot,
     cancelBot,
-    takeProfit,
+    creditBotProfit,          // ← para “Tomar ganancias”
     refreshBotActivations,
     refreshTransactions,
     settings,
@@ -186,11 +187,12 @@ const TradingBotsPage = () => {
     subscribeBotTrades,
     getPairInfo,
 
+    // Puede que no exista aún en tu backend; lo hacemos opcional
     listBotEvents,
     subscribeBotEvents,
 
     getAvailableBalance,
-  } = data;
+  } = api;
 
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
@@ -221,12 +223,12 @@ const TradingBotsPage = () => {
 
   const myActiveBots = useMemo(() => {
     if (Array.isArray(activeBots)) return activeBots;
-    return (botActivations || []).filter((b) => ['active'].includes(normStatus(b?.status)));
+    return (botActivations || []).filter((b) => ['active', 'paused'].includes(normStatus(b?.status)));
   }, [activeBots, botActivations]);
 
   const myCanceledBots = useMemo(() => {
     if (Array.isArray(canceledBots)) return canceledBots;
-    return (botActivations || []).filter((b) => ['canceled', 'cancelled'].includes(normStatus(b?.status)));
+    return (botActivations || []).filter((b) => ['canceled', 'cancelled', 'archived', 'stopped', 'ended', 'inactive'].includes(normStatus(b?.status)));
   }, [canceledBots, botActivations]);
 
   const botsAllocated = useMemo(
@@ -252,26 +254,29 @@ const TradingBotsPage = () => {
   const pctBotsUsd = clamp((botsAllocated / GOALS.botsUsd) * 100);
   const energyBots = clamp((pctBotsCount + pctBotsUsd) / 2);
 
+  // Saldo disponible real
   const [availableUsd, setAvailableUsd] = useState(0);
   const refreshAvailable = useCallback(async () => {
-    // El hook expone getAvailableBalance y acepta 'USDC' (compatibles con DataContext)
-    const v = await getAvailableBalance?.('USDC');
-    setAvailableUsd(Number(v || 0));
+    try {
+      let v = await getAvailableBalance?.(CURRENCY);
+      if (v == null) v = await getAvailableBalance?.(); // firma alternativa
+      setAvailableUsd(Number(v || 0));
+    } catch {
+      setAvailableUsd(0);
+    }
   }, [getAvailableBalance]);
 
   useEffect(() => {
     refreshAvailable();
-    // Recalcular cuando cambien activaciones o el neto (para pintar saldo tras TP/cancel)
   }, [refreshAvailable, botActivations, totalBotNet]);
 
   useEffect(() => {
     if (!user?.id) return;
-    // Trae estado inicial desde el hook/worker + refresca movimientos reales
     refreshBotActivations?.();
     refreshTransactions?.();
   }, [user?.id]); // eslint-disable-line
 
-  // ===== Trades & Eventos (subs provenientes del hook/worker) =====
+  // ===== Trades & Eventos =====
   const loadTrades = useCallback(async (activationId) => {
     try {
       const rows = await listBotTrades?.(activationId, 80);
@@ -294,6 +299,7 @@ const TradingBotsPage = () => {
   }, [botActivations, subscribeBotTrades, loadTrades]);
 
   const loadEvents = useCallback(async (activationId) => {
+    if (!listBotEvents) return;
     try {
       const rows = await listBotEvents?.(activationId, 80);
       setEventsByActivation(p => ({ ...p, [activationId]: rows || [] }));
@@ -301,6 +307,7 @@ const TradingBotsPage = () => {
   }, [listBotEvents]);
 
   useEffect(() => {
+    if (!subscribeBotEvents) return;
     (botActivations || []).forEach((a) => {
       const id = a.id;
       if (!id || eventsSubsRef.current[id]) return;
@@ -361,7 +368,7 @@ const TradingBotsPage = () => {
         return;
       }
       if (amount > availableUsd) {
-        toast({ title: 'Saldo insuficiente', description: `Tu saldo USDC es $${fmt(availableUsd)}.`, variant: 'destructive' });
+        toast({ title: 'Saldo insuficiente', description: `Tu saldo ${CURRENCY} es $${fmt(availableUsd)}.`, variant: 'destructive' });
         return;
       }
 
@@ -372,7 +379,7 @@ const TradingBotsPage = () => {
         toast({ title: 'Saldo insuficiente', description: `Te faltan $${fmt(Number(res?.needed || 0))}.`, variant: 'destructive' });
         return;
       }
-      if (!res?.ok) {
+      if (!res?.ok && res?.ok !== true) {
         toast({ title: 'No se pudo activar', description: res?.msg || 'Intentá nuevamente.', variant: 'destructive' });
         return;
       }
@@ -424,15 +431,16 @@ const TradingBotsPage = () => {
     if (!a?.id) return;
     setRowBusy(a.id, true);
     try {
-      const before = data.getBotPnl?.(a.id) || {};
+      const before = api.getBotPnl?.(a.id) || {};
       const withdrawable = Math.max(0, Number(before.net || 0) - Number(before.withdrawn || 0));
       if (withdrawable <= 0) {
         toast({ title: 'Sin ganancias para retirar', description: 'Aún no hay PnL realizado disponible.', variant: 'destructive' });
         setRowBusy(a.id, false);
         return;
       }
-      const r = await data.takeProfit?.(a.id);
-      if (r?.ok) {
+      // Usa DataContext: acredita PnL al saldo
+      const r = await creditBotProfit?.(a.id, withdrawable, `Take profit ${a.botName}`);
+      if (r?.ok || r?.via === 'fallback') {
         toast({ title: 'Ganancias acreditadas', description: `Se pasaron $${fmt(withdrawable)} al saldo.` });
         await Promise.all([refreshTransactions?.()]);
         await refreshAvailable();
@@ -528,7 +536,7 @@ const TradingBotsPage = () => {
               <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-3">
                 <div className="text-xs text-slate-400 flex items-center gap-2">
                   <Wallet className="w-4 h-4 text-emerald-300" />
-                  Saldo USDC
+                  Saldo {CURRENCY}
                 </div>
                 <div className="text-2xl text-white font-semibold">${fmt(availableUsd)}</div>
               </div>
