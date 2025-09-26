@@ -1,5 +1,5 @@
 // src/pages/TradingBotsPage.jsx
-import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef, useDeferredValue } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter,
@@ -38,6 +38,9 @@ import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 const SIM_MODE = true;                 // trades/eventos/pnl locales
 const LS_KEY = 'libertrades_sim';
 const FIXED_CANCEL_FEE_USD = 5;        // fee fijo pedido
+const TICK_MS = 5000;                  // menos frecuencia para bajar CPU
+const MAX_ROWS = 30;                   // límite de trades/eventos por bot
+const LS_FLUSH_MS = 30000;             // flush de LS cada 30s
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 /* ====================== Helpers numéricos/UI ===================== */
@@ -91,7 +94,7 @@ function seedState(userId) {
     lastTick: now,
   };
 }
-function stepPrice(p, vol = 0.003) {
+function stepPrice(p, vol = 0.0025) { // menos movimiento => menos renders “grandes”
   const shock = (Math.random() - 0.5) * 2 * vol;
   const next = p * (1 + shock);
   return Math.max(0.00001, next);
@@ -102,10 +105,7 @@ function mtmPnl(trade, priceNow) {
   return sideMul * pct * (trade.leverage || 1) * (trade.amount_usd || 0);
 }
 
-/* ========= Puente al wallet real usando DataContext.addTransaction =========
-   Importante: tu DataContext usa addTransaction({amount, type, currency, description, referenceType, referenceId, status})
-   Lo aprovechamos para: bot_lock, bot_profit, bot_fee, bot_refund
-=========================================================================== */
+/* ========= Puente al wallet real usando DataContext.addTransaction ========= */
 async function applyWalletTx(dataCtx, tx) {
   try {
     if (typeof dataCtx?.addTransaction === 'function') {
@@ -118,7 +118,7 @@ async function applyWalletTx(dataCtx, tx) {
   return false;
 }
 
-/* ===== Hook sim principal (usa DataContext para tocar el saldo real) ===== */
+/* ===== Hook sim principal (optimizado para no trabar la UI) ===== */
 function useSimData(realDataSettings = {}, realDC) {
   const { user } = useAuth();
   const userId = user?.id || 'sim-user';
@@ -128,54 +128,82 @@ function useSimData(realDataSettings = {}, realDC) {
     return existing?.userId === userId ? existing : seedState(userId);
   });
 
-  // Ticker de precios + actividad pseudo-aleatoria
-  useEffect(() => {
-    const int = setInterval(() => {
-      setS((prev) => {
-        const next = { ...prev, prices: { ...prev.prices } };
-        Object.keys(next.prices).forEach((pair) => {
-          next.prices[pair] = stepPrice(next.prices[pair], 0.005);
-        });
+  // Debounce LS flush
+  const lsTimerRef = useRef(null);
+  const requestLSFlush = useCallback((next) => {
+    if (lsTimerRef.current) clearTimeout(lsTimerRef.current);
+    lsTimerRef.current = setTimeout(() => writeLS(next), LS_FLUSH_MS);
+  }, []);
+  useEffect(() => () => { if (lsTimerRef.current) clearTimeout(lsTimerRef.current); }, []);
 
-        for (const act of next.activations.filter(a => ['active', 'paused'].includes((a.status || '').toLowerCase()))) {
+  // Ticker de precios + actividad pseudo-aleatoria (menos frecuente)
+  useEffect(() => {
+    let mounted = true;
+    const int = setInterval(() => {
+      if (!mounted) return;
+      setS((prev) => {
+        // copiar sólo lo necesario
+        const prices = { ...prev.prices };
+        for (const pair in prices) prices[pair] = stepPrice(prices[pair]);
+
+        // clones superficiales para no disparar renders gigantes
+        const next = { ...prev, prices };
+
+        // actividad mínima (mucho más barata)
+        for (const act of next.activations) {
+          const st = String(act.status || '').toLowerCase();
+          if (st !== 'active' && st !== 'paused') continue;
+
           const list = next.trades[act.id] || [];
-          // cerrar aleatorio
-          if (Math.random() < 0.2) {
+          // cerrar muy de vez en cuando
+          if (list.length && Math.random() < 0.1) {
             const idx = list.findIndex(t => (t.status || '').toLowerCase() === 'open');
             if (idx >= 0) {
               const t = list[idx];
-              const px = (next.prices[t.pair] ?? t.entry);
+              const px = prices[t.pair] ?? t.entry;
               const pnl = mtmPnl(t, px);
-              list[idx] = { ...t, status: 'closed', closed_at: new Date().toISOString(), pnl };
-              next.events[act.id] = [{ id: uid(), kind: 'close', created_at: new Date().toISOString(), payload: { pair: t.pair, pnl } }, ...(next.events[act.id] || [])].slice(0, 100);
+              const closed = { ...t, status: 'closed', closed_at: new Date().toISOString(), pnl };
+              const newList = [...list];
+              newList[idx] = closed;
+              next.trades = { ...next.trades, [act.id]: newList.slice(0, MAX_ROWS) };
+
               const prevPay = next.payouts[act.id] || { profit: 0, fees: 0, net: 0, refunds: 0 };
-              next.payouts[act.id] = { ...prevPay, profit: prevPay.profit + pnl, net: prevPay.net + pnl };
+              next.payouts = {
+                ...next.payouts,
+                [act.id]: { ...prevPay, profit: prevPay.profit + pnl, net: prevPay.net + pnl }
+              };
+
+              const evs = [{ id: uid(), kind: 'close', created_at: new Date().toISOString(), payload: { pair: t.pair, pnl } }, ...(next.events[act.id] || [])].slice(0, MAX_ROWS);
+              next.events = { ...next.events, [act.id]: evs };
             }
           }
-          // abrir aleatorio si activo
-          if ((act.status || '').toLowerCase() === 'active' && Math.random() < 0.25) {
+          // abrir muy de vez en cuando y sólo si activo
+          if (st === 'active' && Math.random() < 0.12) {
             const choices = ['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT','ALTCOINS/USDT','MEMES/USDT'];
             const pair = choices[Math.floor(Math.random()*choices.length)];
             const side = Math.random() < 0.5 ? 'long' : 'short';
             const leverage = [1,2,3,5][Math.floor(Math.random()*4)];
-            const amount_usd = Math.max(10, Math.min(act.amountUsd * 0.3, 200));
-            const entry = next.prices[pair] ?? defaultPairs[pair] ?? 1;
+            const amount_usd = Math.max(10, Math.min(act.amountUsd * 0.25, 120));
+            const entry = prices[pair] ?? defaultPairs[pair] ?? 1;
             const trade = { id: uid(), pair, side, leverage, amount_usd, entry, status: 'open', opened_at: new Date().toISOString() };
-            next.trades[act.id] = [trade, ...(next.trades[act.id] || [])].slice(0, 100);
-            next.events[act.id] = [{ id: uid(), kind: 'open', created_at: new Date().toISOString(), payload: { pair } }, ...(next.events[act.id] || [])].slice(0, 100);
+            const newList = [trade, ...(next.trades[act.id] || [])].slice(0, MAX_ROWS);
+            next.trades = { ...next.trades, [act.id]: newList };
+
+            const evs = [{ id: uid(), kind: 'open', created_at: new Date().toISOString(), payload: { pair } }, ...(next.events[act.id] || [])].slice(0, MAX_ROWS);
+            next.events = { ...next.events, [act.id]: evs };
           }
         }
 
-        writeLS(next);
+        requestLSFlush(next); // flush diferido
         return next;
       });
-    }, 2000);
-    return () => clearInterval(int);
-  }, []);
+    }, TICK_MS);
+    return () => { mounted = false; clearInterval(int); };
+  }, [requestLSFlush]);
 
-  const persist = (fn) => setS((prev) => {
+  const persistImmediate = (fn) => setS((prev) => {
     const next = fn(prev);
-    writeLS(next);
+    writeLS(next); // flush inmediato al crear/cancelar
     return next;
   });
 
@@ -196,9 +224,8 @@ function useSimData(realDataSettings = {}, realDC) {
     if (!(amount > 0)) return { ok: false, msg: 'Monto inválido' };
 
     let aCreated = null;
-    // 1) Persistimos activación primero para tener activationId
-    persist((prev) => {
-      const next = { ...prev };
+    // persistencia y estado con flush inmediato
+    persistImmediate((prev) => {
       const a = {
         id: uid(), userId,
         botId, botName, strategy,
@@ -207,14 +234,16 @@ function useSimData(realDataSettings = {}, realDC) {
         created_at: new Date().toISOString(),
       };
       aCreated = a;
-      next.activations = [a, ...prev.activations];
-      next.trades[a.id] = [];
-      next.events[a.id] = [{ id: uid(), kind: 'resume', created_at: new Date().toISOString(), payload: { reason: 'activate' } }];
-      next.payouts[a.id] = { profit: 0, fees: 0, net: 0, refunds: 0 };
-      return next;
+      return {
+        ...prev,
+        activations: [a, ...prev.activations],
+        trades: { ...prev.trades, [a.id]: [] },
+        events: { ...prev.events, [a.id]: [{ id: uid(), kind: 'resume', created_at: new Date().toISOString(), payload: { reason: 'activate' } }] },
+        payouts: { ...prev.payouts, [a.id]: { profit: 0, fees: 0, net: 0, refunds: 0 } },
+      };
     });
 
-    // 2) Debitar en el wallet real con una transacción tipo bot_lock
+    // Debitar en el wallet real con una transacción tipo bot_lock
     const locked = await applyWalletTx(realDC, {
       amount: -amount,
       type: 'bot_lock',
@@ -225,86 +254,88 @@ function useSimData(realDataSettings = {}, realDC) {
       status: 'completed',
     });
 
-    // 3) Si no se pudo tocar el wallet real, usamos saldo sombra
     if (!locked) {
-      persist((prev) => ({ ...prev, shadowMode: true, shadowBalanceUsd: Math.max(0, Number(prev.shadowBalanceUsd || 0) - amount) }));
+      // fallback sombra mínimo
+      setS((prev) => ({ ...prev, shadowMode: true, shadowBalanceUsd: Math.max(0, Number(prev.shadowBalanceUsd || 0) - amount) }));
     }
 
     return { ok: true, activation_id: aCreated.id };
   };
 
   const pauseBot = async (activationId) => {
-    persist((prev) => {
+    setS((prev) => {
       const next = { ...prev };
       next.activations = prev.activations.map(a => a.id === activationId ? { ...a, status: 'paused' } : a);
-      next.events[activationId] = [{ id: uid(), kind: 'pause', created_at: new Date().toISOString(), payload: { reason: 'user' } }, ...(next.events[activationId] || [])].slice(0, 100);
+      const evs = [{ id: uid(), kind: 'pause', created_at: new Date().toISOString(), payload: { reason: 'user' } }, ...(prev.events[activationId] || [])].slice(0, MAX_ROWS);
+      next.events = { ...prev.events, [activationId]: evs };
+      requestLSFlush(next);
       return next;
     });
     return { ok: true };
   };
 
   const resumeBot = async (activationId) => {
-    persist((prev) => {
+    setS((prev) => {
       const next = { ...prev };
       next.activations = prev.activations.map(a => a.id === activationId ? { ...a, status: 'active' } : a);
-      next.events[activationId] = [{ id: uid(), kind: 'resume', created_at: new Date().toISOString(), payload: { reason: 'user' } }, ...(next.events[activationId] || [])].slice(0, 100);
+      const evs = [{ id: uid(), kind: 'resume', created_at: new Date().toISOString(), payload: { reason: 'user' } }, ...(prev.events[activationId] || [])].slice(0, MAX_ROWS);
+      next.events = { ...prev.events, [activationId]: evs };
+      requestLSFlush(next);
       return next;
     });
     return { ok: true };
   };
 
   const cancelBot = async (activationId) => {
-    // Calcula PnL bruto, fee fijo $5, neto y refund. Enlaza a transacciones reales para stats y saldo.
     let payload = null;
 
-    persist((prev) => {
-      const next = { ...prev };
-      const act = next.activations.find(a => a.id === activationId);
+    // cerrar y calcular
+    persistImmediate((prev) => {
+      const act = prev.activations.find(a => a.id === activationId);
       if (!act) return prev;
 
-      const list = next.trades[activationId] || [];
+      const prices = prev.prices;
+      const list = prev.trades[activationId] || [];
       let gross = 0;
       const nowIso = new Date().toISOString();
       const closedList = list.map(t => {
         if ((t.status || '').toLowerCase() === 'open') {
-          const px = next.prices[t.pair] ?? t.entry;
+          const px = prices[t.pair] ?? t.entry;
           const pnl = mtmPnl(t, px);
           gross += pnl;
           return { ...t, status: 'closed', closed_at: nowIso, pnl };
         }
         return t;
       });
-      next.trades[activationId] = closedList;
 
-      // Fee fijo 5 USD (según requerimiento)
       let fee = Number(FIXED_CANCEL_FEE_USD || 0);
-      // El fee no puede exceder capital+gross (para no dejar negativo imposible)
       const maxFee = Math.max(0, Number(act.amountUsd) + Math.max(0, gross));
       if (fee > maxFee) fee = maxFee;
 
       const net = gross - fee;
       const refund = Math.max(0, Number(act.amountUsd) + net);
-
       payload = { act, gross, fee, net, refund };
 
-      next.activations = next.activations.map(a => a.id === activationId ? { ...a, status: 'canceled' } : a);
-      next.events[activationId] = [{ id: uid(), kind: 'cancel', created_at: nowIso, payload: { reason: 'user', pnl: net } }, ...(next.events[activationId] || [])].slice(0, 100);
-
-      const prevPay = next.payouts[activationId] || { profit: 0, fees: 0, net: 0, refunds: 0 };
-      next.payouts[activationId] = {
-        profit: prevPay.profit + gross,
-        fees: prevPay.fees + fee,
-        net: prevPay.net + net,
-        refunds: prevPay.refunds + refund,
+      const next = { ...prev };
+      next.trades = { ...prev.trades, [activationId]: closedList.slice(0, MAX_ROWS) };
+      next.activations = prev.activations.map(a => a.id === activationId ? { ...a, status: 'canceled' } : a);
+      const evs = [{ id: uid(), kind: 'cancel', created_at: nowIso, payload: { reason: 'user', pnl: net } }, ...(prev.events[activationId] || [])].slice(0, MAX_ROWS);
+      next.events = { ...prev.events, [activationId]: evs };
+      const prevPay = prev.payouts[activationId] || { profit: 0, fees: 0, net: 0, refunds: 0 };
+      next.payouts = {
+        ...prev.payouts,
+        [activationId]: {
+          profit: prevPay.profit + gross,
+          fees: prevPay.fees + fee,
+          net: prevPay.net + net,
+          refunds: prevPay.refunds + refund,
+        }
       };
-
       return next;
     });
 
     if (payload) {
       const { act, gross, fee, refund } = payload;
-
-      // 1) Registrar PnL como bot_profit (para que DataContext lo lea en dashboards)
       if (Math.abs(gross) > 0.0001) {
         await applyWalletTx(realDC, {
           amount: gross,
@@ -316,8 +347,6 @@ function useSimData(realDataSettings = {}, realDC) {
           status: 'completed',
         });
       }
-
-      // 2) Registrar fee fijo de 5 USD
       if (fee > 0) {
         await applyWalletTx(realDC, {
           amount: -fee,
@@ -329,8 +358,6 @@ function useSimData(realDataSettings = {}, realDC) {
           status: 'completed',
         });
       }
-
-      // 3) Registrar refund (capital + neto)
       if (refund > 0) {
         const ok = await applyWalletTx(realDC, {
           amount: refund,
@@ -342,20 +369,18 @@ function useSimData(realDataSettings = {}, realDC) {
           status: 'completed',
         });
         if (!ok) {
-          // modo sombra si el wallet real no existe
-          persist((prev) => ({ ...prev, shadowMode: true, shadowBalanceUsd: Number(prev.shadowBalanceUsd || 0) + Number(refund || 0) }));
+          setS((prev) => ({ ...prev, shadowMode: true, shadowBalanceUsd: Number(prev.shadowBalanceUsd || 0) + Number(refund || 0) }));
         }
       }
     }
-
     return { ok: true };
   };
 
-  // Listados / subs
-  const listBotTrades = async (activationId, limit = 100) => (s.trades[activationId] || []).slice(0, limit);
-  const subscribeBotTrades = (activationId, cb) => { const int = setInterval(() => cb?.(), 2500); return { unsubscribe: () => clearInterval(int) }; };
-  const listBotEvents = async (activationId, limit = 100) => (s.events[activationId] || []).slice(0, limit);
-  const subscribeBotEvents = (activationId, cb) => { const int = setInterval(() => cb?.(), 2500); return { unsubscribe: () => clearInterval(int) }; };
+  // Listados / subs — en SIM no creamos timers extra (no-op)
+  const listBotTrades = async (activationId, limit = MAX_ROWS) => (s.trades[activationId] || []).slice(0, limit);
+  const subscribeBotTrades = () => ({ unsubscribe: () => {} });
+  const listBotEvents = async (activationId, limit = MAX_ROWS) => (s.events[activationId] || []).slice(0, limit);
+  const subscribeBotEvents = () => ({ unsubscribe: () => {} });
   const getPairInfo = (pair) => ({ symbol: pair, price: s.prices[pair] ?? 1 });
   const getBotPnl = (activationId) => s.payouts[activationId] || { profit: 0, fees: 0, net: 0, refunds: 0 };
 
@@ -489,8 +514,13 @@ const TradingBotsPage = () => {
   const [busyBrain, setBusyBrain] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(null);
   const [tradesByActivation, setTradesByActivation] = useState({});
-  const subsRef = useRef({});
   const [eventsByActivation, setEventsByActivation] = useState({});
+
+  // Defer lists to keep UI responsive while typing/animating
+  const deferredTrades = useDeferredValue(tradesByActivation);
+  const deferredEvents = useDeferredValue(eventsByActivation);
+
+  const subsRef = useRef({});
   const eventsSubsRef = useRef({});
 
   const setRowBusy = useCallback((id, val) => {
@@ -551,7 +581,7 @@ const TradingBotsPage = () => {
   useEffect(() => { refreshAvailable(); }, [refreshAvailable, botActivations, totalBotNet]);
 
   const loadTrades = useCallback(async (activationId) => {
-    try { const rows = await listBotTrades?.(activationId, 100); setTradesByActivation((p) => ({ ...p, [activationId]: rows || [] })); } catch {}
+    try { const rows = await listBotTrades?.(activationId, MAX_ROWS); setTradesByActivation((p) => ({ ...p, [activationId]: rows || [] })); } catch {}
   }, [listBotTrades]);
 
   useEffect(() => {
@@ -559,7 +589,7 @@ const TradingBotsPage = () => {
       const id = a.id;
       if (!id || subsRef.current[id]) return;
       loadTrades(id);
-      const ch = subscribeBotTrades?.(id, () => loadTrades(id));
+      const ch = subscribeBotTrades?.(id, () => loadTrades(id)); // no-op en SIM
       subsRef.current[id] = ch;
     });
     return () => {
@@ -569,7 +599,7 @@ const TradingBotsPage = () => {
   }, [botActivations, subscribeBotTrades, loadTrades]);
 
   const loadEvents = useCallback(async (activationId) => {
-    try { const rows = await listBotEvents?.(activationId, 100); setEventsByActivation((p) => ({ ...p, [activationId]: rows || [] })); } catch {}
+    try { const rows = await listBotEvents?.(activationId, MAX_ROWS); setEventsByActivation((p) => ({ ...p, [activationId]: rows || [] })); } catch {}
   }, [listBotEvents]);
 
   useEffect(() => {
@@ -577,7 +607,7 @@ const TradingBotsPage = () => {
       const id = a.id;
       if (!id || eventsSubsRef.current[id]) return;
       loadEvents(id);
-      const ch = subscribeBotEvents?.(id, () => loadEvents(id));
+      const ch = subscribeBotEvents?.(id, () => loadEvents(id)); // no-op en SIM
       eventsSubsRef.current[id] = ch;
     });
     return () => {
@@ -587,7 +617,7 @@ const TradingBotsPage = () => {
   }, [botActivations, subscribeBotEvents, loadEvents]);
 
   const calcUnrealizedAndPair = useCallback((activationId, fallbackName) => {
-    const rows = tradesByActivation[activationId] || [];
+    const rows = deferredTrades[activationId] || [];
     let u = 0;
     const lastOpen = rows.find((r) => String(r.status).toLowerCase() === 'open');
     let mainPair = lastOpen?.pair;
@@ -606,7 +636,7 @@ const TradingBotsPage = () => {
       if (Number.isFinite(uPnL)) u += uPnL;
     }
     return { unrealized: u, mainPair };
-  }, [tradesByActivation, getPairInfo]);
+  }, [deferredTrades, getPairInfo]);
 
   const EventRow = ({ ev }) => {
     const kind = String(ev.kind || '').toLowerCase();
@@ -678,17 +708,14 @@ const TradingBotsPage = () => {
         toast({ title: 'Monto insuficiente', description: `El mínimo para ${selectedBot.name} es $${selectedBot.minInvestment}.`, variant: 'destructive' });
         return;
       }
-      if (amount > availableUsd) {
-        toast({ title: 'Saldo insuficiente', description: `Tu saldo USDC es $${fmt(availableUsd)}.`, variant: 'destructive' });
+      const v = await getAvailableBalance?.('USDC');
+      if (amount > Number(v || 0)) {
+        toast({ title: 'Saldo insuficiente', description: `Tu saldo USDC es $${fmt(Number(v || 0))}.`, variant: 'destructive' });
         return;
       }
 
       setBusyActivate(true);
       const res = await activateBot?.({ botId: selectedBot.id, botName: selectedBot.name, strategy: selectedBot.strategy, amountUsd: amount });
-      if (res?.code === 'INSUFFICIENT_FUNDS') {
-        toast({ title: 'Saldo insuficiente', description: `Te faltan $${fmt(Number(res?.needed || 0))}.`, variant: 'destructive' });
-        return;
-      }
       if (!res?.ok) {
         toast({ title: 'No se pudo activar', description: res?.msg || 'Intentá nuevamente.', variant: 'destructive' });
         return;
@@ -1059,7 +1086,6 @@ const TradingBotsPage = () => {
               busyActivate ||
               !amountNum ||
               amountNum < selectedBot.minInvestment ||
-              amountNum > availableUsd ||
               amountNum <= 0;
 
             return (
@@ -1103,11 +1129,11 @@ const TradingBotsPage = () => {
                         step="0.01"
                         value={investmentAmount}
                         onChange={(e) => setInvestmentAmount(e.target.value)}
-                        placeholder={`Mínimo $${selectedBot.minInvestment}, Disponible: $${fmt(availableUsd)}`}
+                        placeholder={`Mínimo $${selectedBot.minInvestment}`}
                         className="bg-slate-800 border-slate-600 text-white"
                       />
                       <div className="flex flex-wrap gap-2">
-                        {quickAmounts.map((v) => (
+                        {[250, 500, 1000, 2000].map((v) => (
                           <Button key={v} size="sm" variant="secondary" onClick={() => setInvestmentAmount(String(v))}>
                             ${fmt(v, 0)}
                           </Button>
@@ -1169,11 +1195,27 @@ const TradingBotsPage = () => {
                   a.createdAt || a.created_at || (a.created_at_ms ? new Date(a.created_at_ms) : null);
 
                 const { profit: grossProfit = 0, fees = 0, net: realizedNet = 0 } = getBotPnl?.(a.id) || {};
-                const { unrealized = 0, mainPair } = calcUnrealizedAndPair(a.id, a.botName);
+                const { unrealized = 0, mainPair } = (() => {
+                  const rows = deferredTrades[a.id] || [];
+                  let u = 0;
+                  const lastOpen = rows.find((r) => String(r.status).toLowerCase() === 'open');
+                  let main = lastOpen?.pair || (cat?.pairs?.[0] || 'BTC/USDT');
+                  for (const t of rows) {
+                    if (String(t.status).toLowerCase() !== 'open') continue;
+                    const info = getPairInfo?.(t.pair) || {};
+                    const last = Number(info.price);
+                    if (!Number.isFinite(last) || !Number.isFinite(Number(t.entry))) continue;
+                    const sideMul = String(t.side).toLowerCase() === 'short' ? -1 : 1;
+                    const pct = (last - Number(t.entry)) / Number(t.entry);
+                    const uPnL = sideMul * pct * Number(t.leverage || 1) * Number(t.amount_usd || 0);
+                    if (Number.isFinite(uPnL)) u += uPnL;
+                  }
+                  return { unrealized: u, mainPair: main };
+                })();
                 const totalNet = Number(realizedNet) + Number(unrealized);
                 const roiNet = a.amountUsd > 0 ? (totalNet / Number(a.amountUsd)) * 100 : 0;
 
-                const open = (tradesByActivation[a.id] || []).filter(
+                const open = (deferredTrades[a.id] || []).filter(
                   (t) => String(t.status).toLowerCase() === 'open'
                 );
                 const exposure = open.reduce(
@@ -1266,13 +1308,13 @@ const TradingBotsPage = () => {
                         </div>
                       </div>
 
-                      <EventTimeline list={eventsByActivation[a.id]} />
+                      <EventTimeline list={deferredEvents[a.id]} />
 
-                      {(tradesByActivation[a.id] || []).length > 0 && (
+                      {(deferredTrades[a.id] || []).length > 0 && (
                         <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
                           <div className="text-xs text-slate-400 mb-1">Últimos trades</div>
                           <div className="space-y-1 max-h-36 overflow-auto">
-                            {(tradesByActivation[a.id] || []).slice(0, 6).map((t) => (
+                            {(deferredTrades[a.id] || []).slice(0, 6).map((t) => (
                               <div key={t.id} className="flex items-center justify-between text-xs">
                                 <span className="text-slate-300">
                                   {t.opened_at ? new Date(t.opened_at).toLocaleTimeString() : '—'} · {t.pair}
@@ -1328,7 +1370,7 @@ const TradingBotsPage = () => {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {myCanceledBots.map((a) => {
-                const { profit = 0, fees = 0, net = 0, refunds = 0 } = getBotPnl?.(a.id) || {};
+                const { profit = 0, fees = 0, net = 0, refunds = 0 } = data.getBotPnl?.(a.id) || {};
                 return (
                   <Card key={a.id} className="crypto-card border-l-4 border-rose-500/40">
                     <CardHeader>
@@ -1362,7 +1404,7 @@ const TradingBotsPage = () => {
                         </div>
                       </div>
 
-                      <EventTimeline list={eventsByActivation[a.id]} />
+                      <EventTimeline list={deferredEvents[a.id]} />
                     </CardContent>
                   </Card>
                 );
