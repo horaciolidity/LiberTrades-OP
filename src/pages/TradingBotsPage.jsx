@@ -34,7 +34,7 @@ import MiniSparkline from '@/components/bots/MiniSparkline';
 import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 
 // 💡 Hook que encapsula la simulación + Web Worker (el que te pasé)
-import { useBotSimWorker } from '@/hooks/useBotSimWorker';
+import useBotSimWorker from '@/hooks/useBotSimWorker';
 
 /* ===================== CONFIG ===================== */
 // La UI usa siempre el DataContext real para tocar saldo (lock/fees/refunds).
