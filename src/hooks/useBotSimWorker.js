@@ -1,19 +1,6 @@
-// src/hooks/useBotSimWorker.js
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 
-/**
- * Hook que envuelve tu DataContext real con una simulación de mercado/trades en WebWorker.
- * - Sincroniza activaciones reales -> worker
- * - Mantiene trades simulados y "payouts" por activación
- * - Expone list/subscribe de trades y eventos (para tu TradingBotsPage)
- * - Implementa takeProfit simulando un retiro y acreditándolo en el saldo real vía DataContext
- *
- * Uso en la page:
- *   const realData = useData();
- *   const data     = SIM_MODE ? useBotSimWorker(realData) : realData;
- */
 export default function useBotSimWorker(ctx) {
-  // Data reales
   const {
     botActivations = [],
     activateBot,
@@ -23,28 +10,36 @@ export default function useBotSimWorker(ctx) {
     refreshTransactions,
     getAvailableBalance,
     getPairInfo,
-    ...rest // el resto lo re-exponemos tal cual
+
+    // PnL real (desde transacciones)
+    getBotPnl: getBotPnlReal = () => ({ profit:0, fees:0, refunds:0, net:0 }),
+    totalBotProfit: totalProfitReal = 0,
+    totalBotFees: totalFeesReal = 0,
+    totalBotNet: totalNetReal = 0,
+
+    ...rest
   } = ctx || {};
 
   const workerRef = useRef(null);
 
+  // Estado sim
   const [running, setRunning] = useState(false);
   const [prices, setPrices] = useState({});
-  const [tradesById, setTradesById] = useState({});   // id -> [{...}]
-  const [payoutsById, setPayoutsById] = useState({}); // id -> {profit, fees, net, withdrawn}
-  const [eventsById, setEventsById] = useState({});   // id -> [{id, kind, created_at, payload}]
+  const [tradesById, setTradesById] = useState({});
+  const [payoutsById, setPayoutsById] = useState({}); // {actId:{profit,net,withdrawn}}
+  const [eventsById, setEventsById] = useState({});
 
-  // Subscripciones en memoria
-  const tradeSubsRef = useRef({}); // id -> Set<cb>
-  const eventSubsRef = useRef({}); // id -> Set<cb>
+  // subs
+  const tradeSubsRef = useRef({});
+  const eventSubsRef = useRef({});
 
-  // Bucket para agrupar deltas desde el worker y flushear en lote
+  // bucket deltas → flush
   const bucketRef = useRef({ priceDelta:{}, tradeDeltas:[], payoutDeltas:[] });
   const flushTimerRef = useRef(null);
 
   const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-  /* ---------- Worker boot ---------- */
+  /* ---------- Boot worker (¡ahora arranca solo!) ---------- */
   useEffect(() => {
     const w = new Worker(new URL('@/workers/botSim.worker.js', import.meta.url), { type:'module' });
     workerRef.current = w;
@@ -61,45 +56,35 @@ export default function useBotSimWorker(ctx) {
     };
 
     w.postMessage({ type:'init' });
+    // 🔥 antes faltaba esto
+    w.postMessage({ type:'start' });
 
     const flush = () => {
       const b = bucketRef.current;
-
-      const have =
+      const has =
         Object.keys(b.priceDelta).length ||
         b.tradeDeltas.length ||
         b.payoutDeltas.length;
-
-      if (!have) return;
+      if (!has) return;
 
       if (Object.keys(b.priceDelta).length) {
         setPrices((prev) => ({ ...prev, ...b.priceDelta }));
       }
 
       if (b.tradeDeltas.length) {
-        // 1) trades
         setTradesById((prev) => {
           const next = { ...prev };
           for (const d of b.tradeDeltas) {
             const arr = next[d.actId] || [];
             if (d.change === 'open') {
-              next[d.actId] = [d.trade, ...arr].slice(0, 80);
-              // evento
-              pushEvent(d.actId, {
-                id: uid(),
-                kind: 'open',
-                created_at: new Date().toISOString(),
-                payload: { pair: d.trade.pair, side: d.trade.side, amount_usd: d.trade.amount_usd }
-              });
+              next[d.actId] = [d.trade, ...arr].slice(0, 120);
+              pushEvent(d.actId, { id: uid(), kind:'open', created_at: new Date().toISOString(),
+                payload: { pair:d.trade.pair, side:d.trade.side, amount_usd:d.trade.amount_usd } });
             } else if (d.change === 'close') {
-              next[d.actId] = arr.map(t => t.id === d.id ? { ...t, status:'closed', pnl:d.pnl, closed_at:Date.now() } : t);
-              // evento
-              pushEvent(d.actId, {
-                id: uid(),
-                kind: 'close',
-                created_at: new Date().toISOString(),
-                payload: { pair: d.pair, pnl: d.pnl }
-              });
+              next[d.actId] = arr.map(t => t.id === d.id
+                ? { ...t, status:'closed', pnl:d.pnl, closed_at:Date.now() } : t);
+              pushEvent(d.actId, { id: uid(), kind:'close', created_at: new Date().toISOString(),
+                payload: { pair:d.pair, pnl:d.pnl } });
             }
           }
           return next;
@@ -107,11 +92,10 @@ export default function useBotSimWorker(ctx) {
       }
 
       if (b.payoutDeltas.length) {
-        // 2) payouts simulados (profit/net)
         setPayoutsById((prev) => {
           const next = { ...prev };
           for (const d of b.payoutDeltas) {
-            const p = next[d.actId] || { profit:0, fees:0, net:0, withdrawn:0 };
+            const p = next[d.actId] || { profit:0, net:0, withdrawn:0 };
             next[d.actId] = {
               ...p,
               profit: p.profit + (d.profitDelta || 0),
@@ -122,14 +106,11 @@ export default function useBotSimWorker(ctx) {
         });
       }
 
-      // Vaciar bucket
       bucketRef.current = { priceDelta:{}, tradeDeltas:[], payoutDeltas:[] };
-
-      // Notificar subscriptores
       notifySubs();
     };
 
-    const scheduleFlush = () => {
+    const schedule = () => {
       if ('requestIdleCallback' in window) {
         // @ts-ignore
         flushTimerRef.current = requestIdleCallback(flush, { timeout: 1800 });
@@ -137,12 +118,18 @@ export default function useBotSimWorker(ctx) {
         flushTimerRef.current = setTimeout(flush, 1800);
       }
     };
+    schedule();
+    const id = setInterval(schedule, 2000);
 
-    scheduleFlush();
-    const id = setInterval(scheduleFlush, 2000);
+    const onVis = () => {
+      if (document.hidden) w.postMessage({ type:'stop' });
+      else w.postMessage({ type:'start' });
+    };
+    document.addEventListener('visibilitychange', onVis);
 
     return () => {
       clearInterval(id);
+      document.removeEventListener('visibilitychange', onVis);
       if (flushTimerRef.current) {
         // @ts-ignore
         window.cancelIdleCallback?.(flushTimerRef.current);
@@ -153,128 +140,133 @@ export default function useBotSimWorker(ctx) {
     };
   }, []);
 
-  /* ---------- Helpers de eventos/subs ---------- */
-  const pushEvent = useCallback((activationId, ev) => {
+  /* ---------- Helpers events/subs ---------- */
+  const pushEvent = useCallback((aid, ev) => {
     setEventsById((prev) => {
-      const list = prev[activationId] || [];
-      const next = [ev, ...list].slice(0, 120);
-      return { ...prev, [activationId]: next };
+      const list = prev[aid] || [];
+      return { ...prev, [aid]: [ev, ...list].slice(0, 200) };
     });
   }, []);
 
   const notifySubs = useCallback(() => {
     // trades
-    try {
-      Object.entries(tradeSubsRef.current).forEach(([id, set]) => {
-        if (!set?.size) return;
-        const rows = (tradesById[id] || []).slice(0, 80);
-        set.forEach((cb) => { try { cb(rows); } catch {} });
-      });
-    } catch {}
+    for (const [id, set] of Object.entries(tradeSubsRef.current)) {
+      if (!set?.size) continue;
+      const rows = (tradesById[id] || []).slice(0, 120);
+      set.forEach((cb) => { try { cb(rows); } catch {} });
+    }
     // events
-    try {
-      Object.entries(eventSubsRef.current).forEach(([id, set]) => {
-        if (!set?.size) return;
-        const rows = (eventsById[id] || []).slice(0, 80);
-        set.forEach((cb) => { try { cb(rows); } catch {} });
-      });
-    } catch {}
+    for (const [id, set] of Object.entries(eventSubsRef.current)) {
+      if (!set?.size) continue;
+      const rows = (eventsById[id] || []).slice(0, 120);
+      set.forEach((cb) => { try { cb(rows); } catch {} });
+    }
   }, [tradesById, eventsById]);
 
-  /* ---------- Sincronizar activaciones reales -> worker ---------- */
+  /* ---------- Seed activaciones reales al worker y ¡arrancar! ---------- */
   useEffect(() => {
     const w = workerRef.current;
     if (!w) return;
+    let seeded = false;
 
     (botActivations || [])
       .filter((a) => String(a.status || '').toLowerCase() === 'active')
       .forEach((a) => {
-        // si el worker no tiene aún cache para esa activación, la seed-eamos
-        const haveTrades = !!(tradesById[a.id]);
-        const havePayout = !!(payoutsById[a.id]);
-        if (!haveTrades && !havePayout) {
-          w.postMessage({
-            type: 'addActivation',
-            payload: { id: a.id, amountUsd: a.amountUsd, botName: a.botName, status: 'active' }
-          });
+        const have = tradesById[a.id] || payoutsById[a.id];
+        if (!have) {
+          w.postMessage({ type:'addActivation',
+            payload: { id:a.id, amountUsd:a.amountUsd, botName:a.botName, status:'active' } });
+          seeded = true;
         }
       });
+
+    // 🔥 si recién seed-eamos, aseguramos que corra
+    if (seeded) { try { w.postMessage({ type:'start' }); } catch {} }
   }, [botActivations, tradesById, payoutsById]);
 
-  /* ---------- API simulada que pide la page ---------- */
-
-  // Trades
-  const listBotTrades = useCallback(async (activationId, limit = 80) => {
-    const arr = tradesById[activationId] || [];
-    return arr.slice(0, limit);
+  /* ---------- API que usa la página ---------- */
+  const listBotTrades = useCallback(async (aid, limit = 80) => {
+    return (tradesById[aid] || []).slice(0, limit);
   }, [tradesById]);
 
-  const subscribeBotTrades = useCallback((activationId, cb) => {
-    if (!activationId || !cb) return () => {};
-    const set = (tradeSubsRef.current[activationId] ||= new Set());
+  const subscribeBotTrades = useCallback((aid, cb) => {
+    if (!aid || !cb) return () => {};
+    const set = (tradeSubsRef.current[aid] ||= new Set());
     set.add(cb);
-    // entrega inmediata del snapshot
-    try { cb((tradesById[activationId] || []).slice(0, 80)); } catch {}
-    return () => { set.delete(cb); };
+    try { cb((tradesById[aid] || []).slice(0, 80)); } catch {}
+    return () => set.delete(cb);
   }, [tradesById]);
 
-  // Eventos
-  const listBotEvents = useCallback(async (activationId, limit = 80) => {
-    const arr = eventsById[activationId] || [];
-    return arr.slice(0, limit);
+  const listBotEvents = useCallback(async (aid, limit = 80) => {
+    return (eventsById[aid] || []).slice(0, limit);
   }, [eventsById]);
 
-  const subscribeBotEvents = useCallback((activationId, cb) => {
-    if (!activationId || !cb) return () => {};
-    const set = (eventSubsRef.current[activationId] ||= new Set());
+  const subscribeBotEvents = useCallback((aid, cb) => {
+    if (!aid || !cb) return () => {};
+    const set = (eventSubsRef.current[aid] ||= new Set());
     set.add(cb);
-    try { cb((eventsById[activationId] || []).slice(0, 80)); } catch {}
-    return () => { set.delete(cb); };
+    try { cb((eventsById[aid] || []).slice(0, 80)); } catch {}
+    return () => set.delete(cb);
   }, [eventsById]);
 
-  // Tomar ganancias (usa PnL "realizado" simulado y acredita en saldo real)
-  const takeProfit = useCallback(async (activationId) => {
-    const p = payoutsById[activationId];
-    if (!p) return { ok: false, code: 'NO_PNL' };
+  // Tomar ganancias: acredita en saldo real + marca withdrawn local
+  const takeProfit = useCallback(async (aid) => {
+    const p = payoutsById[aid];
+    const withdrawable = Math.max(0, Number(p?.net || 0) - Number(p?.withdrawn || 0));
+    if (withdrawable <= 0) return { ok:false, code:'NO_PNL' };
 
-    const withdrawable = Math.max(0, Number(p.net || 0) - Number(p.withdrawn || 0));
-    if (withdrawable <= 0) return { ok: false, code: 'NO_PNL' };
-
-    // Acredita en el saldo real usando tu DataContext
-    const r = await creditBotProfit?.(activationId, withdrawable, 'Take Profit (simulado)');
+    const r = await creditBotProfit?.(aid, withdrawable, 'Take Profit (sim)');
     if (r?.ok === false) return r;
 
-    // Marca como retirado localmente y emite evento
     setPayoutsById((prev) => {
-      const cur = prev[activationId] || { profit: 0, fees: 0, net: 0, withdrawn: 0 };
-      return {
-        ...prev,
-        [activationId]: { ...cur, withdrawn: Number(cur.withdrawn || 0) + withdrawable }
-      };
+      const cur = prev[aid] || { profit:0, net:0, withdrawn:0 };
+      return { ...prev, [aid]: { ...cur, withdrawn: Number(cur.withdrawn || 0) + withdrawable } };
     });
-    try { workerRef.current?.postMessage({ type:'takeProfitMarked', payload: activationId }); } catch {}
-    pushEvent(activationId, {
-      id: uid(),
-      kind: 'withdraw',
-      created_at: new Date().toISOString(),
-      payload: { amount_usd: withdrawable }
+    try { workerRef.current?.postMessage({ type:'takeProfitMarked', payload: aid }); } catch {}
+
+    pushEvent(aid, { id: uid(), kind:'withdraw', created_at:new Date().toISOString(),
+      payload: { amount_usd: withdrawable } });
+
+    await refreshTransactions?.();
+    return { ok:true };
+  }, [payoutsById, creditBotProfit, refreshTransactions]);
+
+  /* ---------- PnL fusionado (real + sim) ---------- */
+  const getBotPnl = useCallback((aid) => {
+    const base = getBotPnlReal?.(aid) || { profit:0, fees:0, refunds:0, net:0 };
+    const sim  = payoutsById[aid] || { profit:0, net:0, withdrawn:0 };
+    return {
+      ...base,
+      // sumamos lo simulado
+      profit: Number(base.profit || 0) + Number(sim.profit || 0),
+      net:    Number(base.net    || 0) + Number(sim.net    || 0),
+      // este campo no lo trae el DataContext: lo agregamos
+      withdrawn: Number(sim.withdrawn || 0),
+    };
+  }, [getBotPnlReal, payoutsById]);
+
+  const simTotals = useMemo(() => {
+    let profit = 0, net = 0, withdrawn = 0;
+    Object.values(payoutsById).forEach((x) => {
+      profit += Number(x?.profit || 0);
+      net    += Number(x?.net    || 0);
+      withdrawn += Number(x?.withdrawn || 0);
     });
+    return { profit, net, withdrawn };
+  }, [payoutsById]);
 
-    await Promise.all([refreshTransactions?.()]);
-    return { ok: true };
-  }, [payoutsById, creditBotProfit, refreshTransactions, pushEvent]);
+  const totalBotProfit = Number(totalProfitReal) + simTotals.profit;
+  const totalBotFees   = Number(totalFeesReal); // no agregamos fees “sim”
+  // “Neto no retirado” → sumamos el net simulado y le restamos lo ya retirado simulado
+  const totalBotNet    = Number(totalNetReal) + (simTotals.net - simTotals.withdrawn);
 
-  // Controles básicos del worker
+  /* ---------- Controles ---------- */
   const controls = useMemo(() => ({
     start: () => workerRef.current?.postMessage({ type:'start' }),
     stop:  () => workerRef.current?.postMessage({ type:'stop' }),
     setTick: (ms) => workerRef.current?.postMessage({ type:'setTick', payload: ms }),
-    // expone add/cancel directo al worker (normalmente no hace falta llamarlos desde la UI)
-    _simAddActivation: (a) => workerRef.current?.postMessage({ type:'addActivation', payload: a }),
-    _simCancelActivation: (id) => workerRef.current?.postMessage({ type:'cancelActivation', payload: id }),
   }), []);
 
-  // Re-expone todo lo real + lo simulado que la página necesita
   return {
     ...rest,
     botActivations,
@@ -286,17 +278,19 @@ export default function useBotSimWorker(ctx) {
     getAvailableBalance,
     getPairInfo,
 
-    // Estado sim
     running, prices, tradesById, payoutsById, eventsById,
 
-    // API que usa TradingBotsPage
     listBotTrades,
     subscribeBotTrades,
     listBotEvents,
     subscribeBotEvents,
     takeProfit,
 
-    // Controles sim
+    getBotPnl,
+    totalBotProfit,
+    totalBotFees,
+    totalBotNet,
+
     ...controls,
   };
 }
