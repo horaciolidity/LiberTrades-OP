@@ -102,7 +102,6 @@ async function bridgeWallet(realData, action, payload) {
   if (!realData) return { ok: false };
   try {
     if (action === 'activate') {
-      // lock negativo (capital asignado)
       await realData.addTransaction({
         amount: -Number(payload.amount || 0),
         type: 'bot_lock',
@@ -114,7 +113,6 @@ async function bridgeWallet(realData, action, payload) {
       return { ok: true };
     }
     if (action === 'cancel') {
-      // bruto (puede ser negativo/positivo)
       if (Number.isFinite(payload.gross)) {
         await realData.addTransaction({
           amount: Number(payload.gross),
@@ -148,7 +146,6 @@ async function bridgeWallet(realData, action, payload) {
       return { ok: true };
     }
     if (action === 'withdraw_profit') {
-      // preferimos creditBotProfit (tu DataContext hace recálculo)
       const amount = Number(payload.amount || 0);
       let ok = false;
       try {
@@ -182,21 +179,22 @@ function useSimData(realData) {
     return fromLS?.userId === userId ? fromLS : seedState(userId);
   });
 
-  // ticker 2s
+  // ticker (más liviano)
   useEffect(() => {
     let mounted = true;
+    let tickCount = 0;
     const int = setInterval(() => {
       if (!mounted) return;
       setS(prev => {
         const next = { ...prev, prices: { ...prev.prices } };
-        Object.keys(next.prices).forEach(k => { next.prices[k] = stepPrice(next.prices[k], 0.0045); });
+        Object.keys(next.prices).forEach(k => { next.prices[k] = stepPrice(next.prices[k], 0.003); });
         for (const act of next.activations) {
           const st = String(act.status).toLowerCase();
-          if (st !== 'active') continue; // ya no usamos pausa en UI
+          if (st !== 'active') continue;
           const list = next.trades[act.id] || [];
 
           // cerrar 1 trade abierto random
-          if (Math.random() < 0.16) {
+          if (Math.random() < 0.08) {
             const idx = list.findIndex(t => (t.status || '').toLowerCase() === 'open');
             if (idx >= 0) {
               const t = list[idx];
@@ -205,11 +203,11 @@ function useSimData(realData) {
               list[idx] = { ...t, status: 'closed', closed_at: new Date().toISOString(), pnl };
               const prevPay = next.payouts[act.id] || { profit: 0, fees: 0, net: 0, refunds: 0, withdrawn: 0 };
               next.payouts[act.id] = { ...prevPay, profit: prevPay.profit + pnl, net: prevPay.net + pnl };
-              next.events[act.id] = [{ id: uid(), kind: 'close', created_at: new Date().toISOString(), payload: { pair: t.pair, pnl } }, ...(next.events[act.id] || [])].slice(0, 80);
+              next.events[act.id] = [{ id: uid(), kind: 'close', created_at: new Date().toISOString(), payload: { pair: t.pair, pnl } }, ...(next.events[act.id] || [])].slice(0, 40);
             }
           }
           // abrir si está activo
-          if (Math.random() < 0.22) {
+          if (Math.random() < 0.12) {
             const pool = ['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT','ALTCOINS/USDT','MEMES/USDT'];
             const pair = pool[Math.floor(Math.random() * pool.length)];
             const side = Math.random() < 0.5 ? 'long' : 'short';
@@ -217,14 +215,16 @@ function useSimData(realData) {
             const amount_usd = Math.max(10, Math.min(act.amountUsd * 0.3, 200));
             const entry = next.prices[pair] ?? defaultPairs[pair] ?? 1;
             const trade = { id: uid(), pair, side, leverage, amount_usd, entry, status: 'open', opened_at: new Date().toISOString() };
-            next.trades[act.id] = [trade, ...(next.trades[act.id] || [])].slice(0, 80);
-            next.events[act.id] = [{ id: uid(), kind: 'open', created_at: new Date().toISOString(), payload: { pair } }, ...(next.events[act.id] || [])].slice(0, 80);
+            next.trades[act.id] = [trade, ...(next.trades[act.id] || [])].slice(0, 40);
+            next.events[act.id] = [{ id: uid(), kind: 'open', created_at: new Date().toISOString(), payload: { pair } }, ...(next.events[act.id] || [])].slice(0, 40);
           }
         }
-        writeLS(next);
+        // throttle LS
+        tickCount = (tickCount + 1) % 3;
+        if (tickCount === 0) writeLS(next);
         return next;
       });
-    }, 2000);
+    }, 4000);
     return () => { clearInterval(int); mounted = false; };
   }, []);
 
@@ -283,21 +283,19 @@ function useSimData(realData) {
       // fee fijo 5 USD
       const fee = 5;
       const prevPay = next.payouts[activationId] || { profit: 0, fees: 0, net: 0, refunds: 0, withdrawn: 0 };
-      // sumar gross nuevo a payout
       const netAdd = gross - fee;
       const newProfit = prevPay.profit + gross;
       const newFees = prevPay.fees + fee;
       const newNet = prevPay.net + netAdd;
 
-      // se devuelve capital + net total (no retirado)
+      // capital + net no retirado
       const withdrawable = Math.max(0, newNet - (prevPay.withdrawn || 0));
       const refund = Math.max(0, act.amountUsd + withdrawable);
 
       bridgePayload = { gross, fee, net: netAdd, refund, botName: act.botName, activationId };
 
-      // actualizar estado y payouts
       next.activations = next.activations.map(a => a.id === activationId ? { ...a, status: 'canceled' } : a);
-      next.events[activationId] = [{ id: uid(), kind: 'cancel', created_at: nowIso, payload: { reason: 'user', pnl: netAdd } }, ...(next.events[activationId] || [])].slice(0, 80);
+      next.events[activationId] = [{ id: uid(), kind: 'cancel', created_at: nowIso, payload: { reason: 'user', pnl: netAdd } }, ...(next.events[activationId] || [])].slice(0, 40);
       next.payouts[activationId] = { profit: newProfit, fees: newFees, net: newNet, refunds: (prevPay.refunds || 0) + refund, withdrawn: prevPay.withdrawn || 0 };
 
       if (!realData) {
@@ -321,7 +319,7 @@ function useSimData(realData) {
     return { ok: true };
   };
 
-  // NUEVO: tomar ganancias (pasa neto realizado acumulado no retirado al saldo real)
+  // tomar ganancias (pasa neto realizado acumulado no retirado al saldo real)
   const takeProfit = async (activationId) => {
     let amount = 0;
     let botName = '';
@@ -334,16 +332,12 @@ function useSimData(realData) {
       amount = withdrawable;
       if (withdrawable <= 0) return prev;
 
-      // marcar retiro en el sim
       next.payouts[activationId] = { ...p, withdrawn: Number(p.withdrawn || 0) + withdrawable };
-
-      // evento
       next.events[activationId] = [
         { id: uid(), kind: 'withdraw', created_at: new Date().toISOString(), payload: { reason: 'take_profit', pnl: withdrawable } },
         ...(next.events[activationId] || []),
-      ].slice(0, 80);
+      ].slice(0, 40);
 
-      // sombra si no podemos acreditar real
       if (!realData) {
         next.shadowMode = true;
         next.shadowBalanceUsd = Number(next.shadowBalanceUsd || 0) + withdrawable;
@@ -358,7 +352,7 @@ function useSimData(realData) {
         note: `Take Profit ${botName}`,
       });
       if (!ok.ok) {
-        // si falló crédito real, devolvemos el withdrawn en el sim
+        // revertir withdrawn si falló
         setS(prev => {
           const p = prev.payouts[activationId] || { profit: 0, fees: 0, net: 0, withdrawn: 0 };
           const next = { ...prev, payouts: { ...prev.payouts, [activationId]: { ...p, withdrawn: Math.max(0, Number(p.withdrawn || 0) - amount) } } };
@@ -703,7 +697,8 @@ const TradingBotsPage = () => {
         toast({ title: 'No se pudo activar', description: res?.msg || 'Intentá nuevamente.', variant: 'destructive' });
         return;
       }
-
+      // descuento optimista
+      setAvailableUsd((v) => Math.max(0, Number(v || 0) - amount));
       toast({ title: 'Bot activado', description: `${bot.name} por $${fmt(amount)}.` });
       setSelectedBot(null);
       setInvestmentAmount('');
@@ -746,7 +741,7 @@ const TradingBotsPage = () => {
     }
   };
 
-  // NUEVO: tomar ganancias handler
+  // tomar ganancias handler
   const doTakeProfit = async (a) => {
     if (!a?.id) return;
     setRowBusy(a.id, true);
@@ -1198,8 +1193,8 @@ const TradingBotsPage = () => {
                       )}
 
                       <div className="flex flex-wrap gap-2">
-                        <Button onClick={() => doTakeProfit(a)} disabled={rowBusy || withdrawable <= 0}>
-                          <CircleDollarSign className="w-4 h-4 mr-1" /> {withdrawable > 0 ? `Tomar ganancias $${fmt(withdrawable)}` : 'Sin ganancias'}
+                        <Button onClick={() => doTakeProfit(a)} disabled={rowBusy || Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)) <= 0}>
+                          <CircleDollarSign className="w-4 h-4 mr-1" /> {Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)) > 0 ? `Tomar ganancias $${fmt(Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)))}` : 'Sin ganancias'}
                         </Button>
                         <Button variant="destructive" onClick={() => askCancel(a)} disabled={rowBusy}>
                           <XCircle className="w-4 h-4 mr-1" /> {rowBusy ? 'Cancelando…' : 'Cancelar'}
