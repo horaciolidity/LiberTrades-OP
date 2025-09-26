@@ -34,7 +34,7 @@ import MiniSparkline from '@/components/bots/MiniSparkline';
 import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 
 // 💡 Hook que encapsula la simulación + Web Worker (el que te pasé)
-import { useBotsSim } from '@/hooks/useBotsSim';
+import { useBotSimWorker } from '@/hooks/useBotSimWorker';
 
 /* ===================== CONFIG ===================== */
 // La UI usa siempre el DataContext real para tocar saldo (lock/fees/refunds).
@@ -164,7 +164,7 @@ const TradingBotsPage = () => {
   // DataContext real (saldo/txns reales)
   const realData = useData();
   // Simulación (en Worker) via hook. Si desactivás SIM_MODE, podrías usar directamente realData.
-  const data = SIM_MODE ? useBotsSim(realData) : realData;
+  const data = SIM_MODE ? useBotSimWorker(realData) : realData;
 
   const {
     botActivations,
