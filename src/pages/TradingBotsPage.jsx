@@ -33,11 +33,13 @@ import { Link } from 'react-router-dom';
 import MiniSparkline from '@/components/bots/MiniSparkline';
 import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 
+// 💡 Hook que encapsula la simulación + Web Worker (el que te pasé)
+import { useBotsSim } from '@/hooks/useBotsSim';
+
 /* ===================== CONFIG ===================== */
-// Seguimos con simulación en esta vista. Sólo tocamos saldo real vía DataContext.
+// La UI usa siempre el DataContext real para tocar saldo (lock/fees/refunds).
+// La simulación de precios/trades se hace en el Worker vía el hook.
 const SIM_MODE = true;
-const LS_KEY = 'libertrades_sim';
-const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 /* ===================== Utils ===================== */
 const fmt = (n, dec = 2) => (Number.isFinite(+n) ? (+n).toFixed(dec) : (0).toFixed(dec));
@@ -58,348 +60,14 @@ const normStatus = (s) => String(s || '').trim().toLowerCase();
 const pnlColor = (n) => (n > 0 ? 'text-emerald-400' : n < 0 ? 'text-rose-400' : 'text-slate-200');
 const riskBase = (r) => (r === 'Alto' ? 65 : r === 'Medio' ? 45 : 25);
 
-/* ===================== Catálogo ===================== */
+/* ===================== Catálogo (UI) ===================== */
 const tradingBots = [
   { id: 1, name: 'Bot Conservador Alfa', risk: 'Bajo', strategy: 'Bajo Riesgo, Ingresos Estables', monthlyReturn: '~5-8%', minInvestment: 250, pairs: ['BTC/USDT','ETH/USDT'], icon: BarChart2, color: 'text-blue-400', bgColor: 'bg-blue-500/10', features: ['Stop-loss dinámico','Análisis de sentimiento básico','Rebalanceo semanal'] },
   { id: 2, name: 'Bot Agresivo Beta', risk: 'Alto', strategy: 'Alto Riesgo, Alto Rendimiento Potencial', monthlyReturn: '~15-25%', minInvestment: 1000, pairs: ['ALTCOINS/USDT','MEMES/USDT'], icon: Zap, color: 'text-red-400', bgColor: 'bg-red-500/10', features: ['Trading de alta frecuencia','Detección de pumps','Scalping en M1/M5'] },
   { id: 3, name: 'Bot Balanceado Gamma', risk: 'Medio', strategy: 'Riesgo Moderado, Crecimiento Constante', monthlyReturn: '~8-12%', minInvestment: 500, pairs: ['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT'], icon: TrendingUp, color: 'text-green-400', bgColor: 'bg-green-500/10', features: ['Grid trading','Dollar Cost Averaging (DCA)','Seguimiento de tendencia'] },
 ];
 
-/* ===================== Simulador local ===================== */
-const defaultPairs = {
-  'BTC/USDT': 60000,
-  'ETH/USDT': 2500,
-  'BNB/USDT': 350,
-  'ADA/USDT': 0.45,
-  'ALTCOINS/USDT': 1.0,
-  'MEMES/USDT': 0.01,
-};
-function stepPrice(p, vol = 0.003) {
-  const shock = (Math.random() - 0.5) * 2 * vol;
-  const next = p * (1 + shock);
-  return Math.max(0.00001, next);
-}
-function mtmPnl(t, px) {
-  const sideMul = String(t.side).toLowerCase() === 'short' ? -1 : 1;
-  const pct = (px - t.entry) / t.entry;
-  return sideMul * pct * (t.leverage || 1) * (t.amount_usd || 0);
-}
-const readLS = () => { try { return JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch { return null; } };
-const writeLS = (s) => { try { localStorage.setItem(LS_KEY, JSON.stringify(s)); } catch {} };
-const seedState = (userId) => ({
-  userId,
-  prices: { ...defaultPairs },
-  activations: [],
-  trades: {},
-  events: {},
-  payouts: {}, // {profit, fees, net, refunds, withdrawn}
-  shadowMode: false,
-  shadowBalanceUsd: 0,
-});
-
-/** integra con DataContext para tocar saldo real */
-async function bridgeWallet(realData, action, payload) {
-  if (!realData) return { ok: false };
-  try {
-    if (action === 'activate') {
-      await realData.addTransaction({
-        amount: -Number(payload.amount || 0),
-        type: 'bot_lock',
-        currency: 'USDC',
-        description: `Capital asignado a ${payload.botName}`,
-        referenceType: 'bot_activation_sim',
-        referenceId: payload.activationId || 'sim',
-      });
-      return { ok: true };
-    }
-    if (action === 'cancel') {
-      if (Number.isFinite(payload.gross)) {
-        await realData.addTransaction({
-          amount: Number(payload.gross),
-          type: 'bot_profit',
-          currency: 'USDC',
-          description: `PnL bruto ${payload.botName}`,
-          referenceType: 'bot_profit_sim',
-          referenceId: payload.activationId || 'sim',
-        });
-      }
-      if (Number.isFinite(payload.fee) && payload.fee > 0) {
-        await realData.addTransaction({
-          amount: -Number(payload.fee),
-          type: 'bot_fee',
-          currency: 'USDC',
-          description: `Fee uso bot ${payload.botName}`,
-          referenceType: 'bot_fee_sim',
-          referenceId: payload.activationId || 'sim',
-        });
-      }
-      if (Number.isFinite(payload.refund) && payload.refund > 0) {
-        await realData.addTransaction({
-          amount: Number(payload.refund),
-          type: 'bot_refund',
-          currency: 'USDC',
-          description: `Devolución ${payload.botName}`,
-          referenceType: 'bot_refund_sim',
-          referenceId: payload.activationId || 'sim',
-        });
-      }
-      return { ok: true };
-    }
-    if (action === 'withdraw_profit') {
-      const amount = Number(payload.amount || 0);
-      let ok = false;
-      try {
-        const r = await realData.creditBotProfit?.(payload.activationId || 'sim', amount, payload.note || 'Take Profit');
-        ok = !!(r?.ok ?? true);
-      } catch { ok = false; }
-      if (!ok) {
-        await realData.addTransaction({
-          amount,
-          type: 'bot_profit',
-          currency: 'USDC',
-          description: payload.note || 'Take Profit',
-          referenceType: 'bot_profit_sim',
-          referenceId: payload.activationId || 'sim',
-        });
-      }
-      return { ok: true };
-    }
-  } catch (e) {
-    console.error('[wallet-bridge]', e);
-  }
-  return { ok: false };
-}
-
-/** useSimData: simula activaciones/trades y usa bridgeWallet */
-function useSimData(realData) {
-  const { user } = useAuth();
-  const userId = user?.id || 'sim-user';
-  const [s, setS] = useState(() => {
-    const fromLS = readLS();
-    return fromLS?.userId === userId ? fromLS : seedState(userId);
-  });
-
-  // ticker (más liviano)
-  useEffect(() => {
-    let mounted = true;
-    let tickCount = 0;
-    const int = setInterval(() => {
-      if (!mounted) return;
-      setS(prev => {
-        const next = { ...prev, prices: { ...prev.prices } };
-        Object.keys(next.prices).forEach(k => { next.prices[k] = stepPrice(next.prices[k], 0.003); });
-        for (const act of next.activations) {
-          const st = String(act.status).toLowerCase();
-          if (st !== 'active') continue;
-          const list = next.trades[act.id] || [];
-
-          // cerrar 1 trade abierto random
-          if (Math.random() < 0.08) {
-            const idx = list.findIndex(t => (t.status || '').toLowerCase() === 'open');
-            if (idx >= 0) {
-              const t = list[idx];
-              const px = next.prices[t.pair] ?? t.entry;
-              const pnl = mtmPnl(t, px);
-              list[idx] = { ...t, status: 'closed', closed_at: new Date().toISOString(), pnl };
-              const prevPay = next.payouts[act.id] || { profit: 0, fees: 0, net: 0, refunds: 0, withdrawn: 0 };
-              next.payouts[act.id] = { ...prevPay, profit: prevPay.profit + pnl, net: prevPay.net + pnl };
-              next.events[act.id] = [{ id: uid(), kind: 'close', created_at: new Date().toISOString(), payload: { pair: t.pair, pnl } }, ...(next.events[act.id] || [])].slice(0, 40);
-            }
-          }
-          // abrir si está activo
-          if (Math.random() < 0.12) {
-            const pool = ['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT','ALTCOINS/USDT','MEMES/USDT'];
-            const pair = pool[Math.floor(Math.random() * pool.length)];
-            const side = Math.random() < 0.5 ? 'long' : 'short';
-            const leverage = [1,2,3,5][Math.floor(Math.random()*4)];
-            const amount_usd = Math.max(10, Math.min(act.amountUsd * 0.3, 200));
-            const entry = next.prices[pair] ?? defaultPairs[pair] ?? 1;
-            const trade = { id: uid(), pair, side, leverage, amount_usd, entry, status: 'open', opened_at: new Date().toISOString() };
-            next.trades[act.id] = [trade, ...(next.trades[act.id] || [])].slice(0, 40);
-            next.events[act.id] = [{ id: uid(), kind: 'open', created_at: new Date().toISOString(), payload: { pair } }, ...(next.events[act.id] || [])].slice(0, 40);
-          }
-        }
-        // throttle LS
-        tickCount = (tickCount + 1) % 3;
-        if (tickCount === 0) writeLS(next);
-        return next;
-      });
-    }, 4000);
-    return () => { clearInterval(int); mounted = false; };
-  }, []);
-
-  const persist = (fn) => setS(prev => { const next = fn(prev); writeLS(next); return next; });
-
-  const getAvailableBalance = async () => {
-    let real = 0;
-    try { real = Number(await realData?.getAvailableBalance?.('USDC')) || 0; } catch {}
-    return real + (s.shadowMode ? Number(s.shadowBalanceUsd || 0) : 0);
-  };
-
-  const activateBot = async ({ botId, botName, strategy, amountUsd }) => {
-    const amount = Number(amountUsd || 0);
-    if (!(amount > 0)) return { ok: false, msg: 'Monto inválido' };
-
-    const actId = uid();
-    const bridged = await bridgeWallet(realData, 'activate', { amount, botName, activationId: actId });
-
-    persist(prev => {
-      const next = { ...prev };
-      if (!bridged.ok) { next.shadowMode = true; next.shadowBalanceUsd = Math.max(0, Number(next.shadowBalanceUsd || 0) - amount); }
-      const a = { id: actId, userId, botId, botName, strategy, amountUsd: amount, status: 'active', created_at: new Date().toISOString() };
-      next.activations = [a, ...prev.activations];
-      next.trades[a.id] = [];
-      next.events[a.id] = [{ id: uid(), kind: 'resume', created_at: new Date().toISOString(), payload: { reason: 'activate' } }];
-      next.payouts[a.id] = { profit: 0, fees: 0, net: 0, refunds: 0, withdrawn: 0 };
-      return next;
-    });
-
-    return { ok: true };
-  };
-
-  const cancelBot = async (activationId) => {
-    let bridgePayload = null;
-
-    persist(prev => {
-      const next = { ...prev };
-      const act = next.activations.find(a => a.id === activationId);
-      if (!act) return prev;
-
-      // cerrar todo y computar bruto
-      const list = next.trades[activationId] || [];
-      const nowIso = new Date().toISOString();
-      let gross = 0;
-      const closed = list.map(t => {
-        if ((t.status || '').toLowerCase() === 'open') {
-          const px = next.prices[t.pair] ?? t.entry;
-          const pnl = mtmPnl(t, px);
-          gross += pnl;
-          return { ...t, status: 'closed', closed_at: nowIso, pnl };
-        }
-        return t;
-      });
-      next.trades[activationId] = closed;
-
-      // fee fijo 5 USD
-      const fee = 5;
-      const prevPay = next.payouts[activationId] || { profit: 0, fees: 0, net: 0, refunds: 0, withdrawn: 0 };
-      const netAdd = gross - fee;
-      const newProfit = prevPay.profit + gross;
-      const newFees = prevPay.fees + fee;
-      const newNet = prevPay.net + netAdd;
-
-      // capital + net no retirado
-      const withdrawable = Math.max(0, newNet - (prevPay.withdrawn || 0));
-      const refund = Math.max(0, act.amountUsd + withdrawable);
-
-      bridgePayload = { gross, fee, net: netAdd, refund, botName: act.botName, activationId };
-
-      next.activations = next.activations.map(a => a.id === activationId ? { ...a, status: 'canceled' } : a);
-      next.events[activationId] = [{ id: uid(), kind: 'cancel', created_at: nowIso, payload: { reason: 'user', pnl: netAdd } }, ...(next.events[activationId] || [])].slice(0, 40);
-      next.payouts[activationId] = { profit: newProfit, fees: newFees, net: newNet, refunds: (prevPay.refunds || 0) + refund, withdrawn: prevPay.withdrawn || 0 };
-
-      if (!realData) {
-        next.shadowMode = true;
-        next.shadowBalanceUsd = Number(next.shadowBalanceUsd || 0) + refund;
-      }
-      return next;
-    });
-
-    if (realData && bridgePayload) {
-      const ok = await bridgeWallet(realData, 'cancel', bridgePayload);
-      if (!ok.ok) {
-        setS(prev => {
-          const next = { ...prev, shadowMode: true };
-          next.shadowBalanceUsd = Number(next.shadowBalanceUsd || 0) + Number(bridgePayload.refund || 0);
-          writeLS(next);
-          return next;
-        });
-      }
-    }
-    return { ok: true };
-  };
-
-  // tomar ganancias (pasa neto realizado acumulado no retirado al saldo real)
-  const takeProfit = async (activationId) => {
-    let amount = 0;
-    let botName = '';
-    persist(prev => {
-      const next = { ...prev };
-      const p = next.payouts[activationId] || { profit: 0, fees: 0, net: 0, withdrawn: 0 };
-      const a = next.activations.find(x => x.id === activationId);
-      botName = a?.botName || 'Bot';
-      const withdrawable = Math.max(0, Number(p.net || 0) - Number(p.withdrawn || 0));
-      amount = withdrawable;
-      if (withdrawable <= 0) return prev;
-
-      next.payouts[activationId] = { ...p, withdrawn: Number(p.withdrawn || 0) + withdrawable };
-      next.events[activationId] = [
-        { id: uid(), kind: 'withdraw', created_at: new Date().toISOString(), payload: { reason: 'take_profit', pnl: withdrawable } },
-        ...(next.events[activationId] || []),
-      ].slice(0, 40);
-
-      if (!realData) {
-        next.shadowMode = true;
-        next.shadowBalanceUsd = Number(next.shadowBalanceUsd || 0) + withdrawable;
-      }
-      return next;
-    });
-
-    if (amount > 0 && realData) {
-      const ok = await bridgeWallet(realData, 'withdraw_profit', {
-        activationId,
-        amount,
-        note: `Take Profit ${botName}`,
-      });
-      if (!ok.ok) {
-        // revertir withdrawn si falló
-        setS(prev => {
-          const p = prev.payouts[activationId] || { profit: 0, fees: 0, net: 0, withdrawn: 0 };
-          const next = { ...prev, payouts: { ...prev.payouts, [activationId]: { ...p, withdrawn: Math.max(0, Number(p.withdrawn || 0) - amount) } } };
-          writeLS(next);
-          return next;
-        });
-        return { ok: false };
-      }
-    }
-    return { ok: amount > 0 };
-  };
-
-  const listBotTrades = async (activationId, limit = 60) => (s.trades[activationId] || []).slice(0, limit);
-  const subscribeBotTrades = (activationId, cb) => { const int = setInterval(() => cb?.(), 2500); return { unsubscribe: () => clearInterval(int) }; };
-  const listBotEvents = async (activationId, limit = 60) => (s.events[activationId] || []).slice(0, limit);
-  const subscribeBotEvents = (activationId, cb) => { const int = setInterval(() => cb?.(), 2500); return { unsubscribe: () => clearInterval(int) }; };
-
-  const getPairInfo = (pair) => ({ symbol: pair, price: s.prices[pair] ?? 1 });
-  const getBotPnl = (activationId) => s.payouts[activationId] || { profit: 0, fees: 0, net: 0, refunds: 0, withdrawn: 0 };
-
-  const acts = s.activations.filter(a => a.userId === userId);
-  const activeBots = acts.filter(a => ['active'].includes(normStatus(a.status))); // sin pausa en UI
-  const canceledBots = acts.filter(a => ['canceled', 'cancelled'].includes(normStatus(a.status)));
-  const botActivations = acts;
-
-  const totals = acts.reduce((agg, a) => {
-    const p = s.payouts[a.id] || { profit: 0, fees: 0, net: 0, withdrawn: 0 };
-    agg.profit += p.profit; agg.fees += p.fees; agg.net += p.net - (p.withdrawn || 0); // neto no retirado
-    return agg;
-  }, { profit: 0, fees: 0, net: 0 });
-
-  // settings: fee fijo 5 USD
-  const settings = { 'trading.bot_cancel_fee_pct': 0, 'trading.bot_cancel_fee_usd': 5 };
-
-  return {
-    botActivations, activeBots, canceledBots,
-    activateBot, cancelBot, takeProfit,
-    refreshBotActivations: async () => {}, refreshTransactions: async () => {},
-    settings,
-    getBotPnl, totalBotProfit: totals.profit, totalBotFees: totals.fees, totalBotNet: totals.net,
-    listBotTrades, subscribeBotTrades, getPairInfo,
-    listBotEvents, subscribeBotEvents,
-    getAvailableBalance,
-  };
-}
-
-/* ===================== Confirm Modal ===================== */
+/* ===================== Subcomponentes UI ===================== */
 function ConfirmModal({
   open, title, description, confirmText = 'Confirmar', cancelText = 'Cancelar',
   onConfirm, onCancel, destructive = false, children,
@@ -440,6 +108,54 @@ function ConfirmModal({
   );
 }
 
+const EventRow = ({ ev }) => {
+  const kind = String(ev.kind || '').toLowerCase();
+  const at = ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : '—';
+  const p = ev.payload || {};
+  const pnl = Number(p?.pnl);
+  const pair = p?.pair || p?.symbol || p?.pair_symbol || '';
+  const reason = p?.reason || '';
+  const Icon =
+    kind === 'open' ? Activity :
+    kind === 'close' ? CheckCircle :
+    kind === 'cancel' ? XCircle :
+    kind === 'withdraw' ? CircleDollarSign :
+    Clock;
+  const color =
+    kind === 'open' ? 'text-sky-300' :
+    kind === 'close' ? 'text-emerald-300' :
+    kind === 'cancel' ? 'text-rose-300' :
+    kind === 'withdraw' ? 'text-amber-300' :
+    'text-slate-300';
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-slate-400">{at}</span>
+      <div className="flex items-center gap-2">
+        <Icon className={`w-3.5 h-3.5 ${color}`} />
+        <span className="text-slate-200 capitalize">{kind}</span>
+        {pair && <span className="text-slate-400">{pair}</span>}
+        {reason && <span className="text-slate-500">({reason})</span>}
+      </div>
+      {Number.isFinite(pnl) && (
+        <span className={pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+          {pnl >= 0 ? `+${fmt(pnl)}` : `${fmt(pnl)}`}
+        </span>
+      )}
+    </div>
+  );
+};
+const EventTimeline = ({ list = [] }) => {
+  if (!list?.length) return null;
+  return (
+    <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
+      <div className="text-xs text-slate-400 mb-1">Actividad</div>
+      <div className="space-y-1 max-h-36 overflow-auto">
+        {list.slice(0, 8).map((ev) => (<EventRow key={ev.id} ev={ev} />))}
+      </div>
+    </div>
+  );
+};
+
 /* ===================== Página ===================== */
 const TradingBotsPage = () => {
   const { user } = useAuth();
@@ -447,8 +163,8 @@ const TradingBotsPage = () => {
 
   // DataContext real (saldo/txns reales)
   const realData = useData();
-  // Sim data (vista usa la sim, pero toca saldo real en activar/cancelar/tomar ganancias)
-  const data = SIM_MODE ? useSimData(realData) : realData;
+  // Simulación (en Worker) via hook. Si desactivás SIM_MODE, podrías usar directamente realData.
+  const data = SIM_MODE ? useBotsSim(realData) : realData;
 
   const {
     botActivations,
@@ -456,7 +172,7 @@ const TradingBotsPage = () => {
     canceledBots,
     activateBot,
     cancelBot,
-    takeProfit,             // <-- NUEVO
+    takeProfit,
     refreshBotActivations,
     refreshTransactions,
     settings,
@@ -538,20 +254,29 @@ const TradingBotsPage = () => {
 
   const [availableUsd, setAvailableUsd] = useState(0);
   const refreshAvailable = useCallback(async () => {
+    // El hook expone getAvailableBalance y acepta 'USDC' (compatibles con DataContext)
     const v = await getAvailableBalance?.('USDC');
     setAvailableUsd(Number(v || 0));
   }, [getAvailableBalance]);
-  useEffect(() => { refreshAvailable(); }, [refreshAvailable, botActivations, totalBotNet]);
+
+  useEffect(() => {
+    refreshAvailable();
+    // Recalcular cuando cambien activaciones o el neto (para pintar saldo tras TP/cancel)
+  }, [refreshAvailable, botActivations, totalBotNet]);
 
   useEffect(() => {
     if (!user?.id) return;
+    // Trae estado inicial desde el hook/worker + refresca movimientos reales
     refreshBotActivations?.();
     refreshTransactions?.();
   }, [user?.id]); // eslint-disable-line
 
-  // trades & eventos (subs con cleanup)
+  // ===== Trades & Eventos (subs provenientes del hook/worker) =====
   const loadTrades = useCallback(async (activationId) => {
-    try { const rows = await listBotTrades?.(activationId, 80); setTradesByActivation(p => ({ ...p, [activationId]: rows || [] })); } catch {}
+    try {
+      const rows = await listBotTrades?.(activationId, 80);
+      setTradesByActivation(p => ({ ...p, [activationId]: rows || [] }));
+    } catch {}
   }, [listBotTrades]);
 
   useEffect(() => {
@@ -569,7 +294,10 @@ const TradingBotsPage = () => {
   }, [botActivations, subscribeBotTrades, loadTrades]);
 
   const loadEvents = useCallback(async (activationId) => {
-    try { const rows = await listBotEvents?.(activationId, 80); setEventsByActivation(p => ({ ...p, [activationId]: rows || [] })); } catch {}
+    try {
+      const rows = await listBotEvents?.(activationId, 80);
+      setEventsByActivation(p => ({ ...p, [activationId]: rows || [] }));
+    } catch {}
   }, [listBotEvents]);
 
   useEffect(() => {
@@ -608,56 +336,7 @@ const TradingBotsPage = () => {
     return { unrealized: u, mainPair };
   }, [tradesByActivation, getPairInfo]);
 
-  const EventRow = ({ ev }) => {
-    const kind = String(ev.kind || '').toLowerCase();
-    const at = ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : '—';
-    const p = ev.payload || {};
-    const pnl = Number(p?.pnl);
-    const pair = p?.pair || p?.symbol || p?.pair_symbol || '';
-    const reason = p?.reason || '';
-    const Icon =
-      kind === 'open' ? Activity :
-      kind === 'close' ? CheckCircle :
-      kind === 'cancel' ? XCircle :
-      kind === 'withdraw' ? CircleDollarSign :
-      Clock;
-    const color =
-      kind === 'open' ? 'text-sky-300' :
-      kind === 'close' ? 'text-emerald-300' :
-      kind === 'cancel' ? 'text-rose-300' :
-      kind === 'withdraw' ? 'text-amber-300' :
-      'text-slate-300';
-    return (
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-slate-400">{at}</span>
-        <div className="flex items-center gap-2">
-          <Icon className={`w-3.5 h-3.5 ${color}`} />
-          <span className="text-slate-200 capitalize">{kind}</span>
-          {pair && <span className="text-slate-400">{pair}</span>}
-          {reason && <span className="text-slate-500">({reason})</span>}
-        </div>
-        {Number.isFinite(pnl) && (
-          <span className={pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-            {pnl >= 0 ? `+${fmt(pnl)}` : `${fmt(pnl)}`}
-          </span>
-        )}
-      </div>
-    );
-  };
-  const EventTimeline = ({ list = [] }) => {
-    if (!list?.length) return null;
-    return (
-      <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-3">
-        <div className="text-xs text-slate-400 mb-1">Actividad</div>
-        <div className="space-y-1 max-h-36 overflow-auto">
-          {list.slice(0, 8).map((ev) => (<EventRow key={ev.id} ev={ev} />))}
-        </div>
-      </div>
-    );
-  };
-
   /* ===================== Handlers ===================== */
-
   const handleActivateBot = async () => {
     try {
       playSound?.('invest');
@@ -741,7 +420,6 @@ const TradingBotsPage = () => {
     }
   };
 
-  // tomar ganancias handler
   const doTakeProfit = async (a) => {
     if (!a?.id) return;
     setRowBusy(a.id, true);
@@ -809,7 +487,7 @@ const TradingBotsPage = () => {
                 <BotIcon className="h-8 w-8 mr-3 text-purple-400" />
                 Bots de Trading Automatizado
               </h1>
-              <p className="text-slate-300">Simulación visual + saldo real para movimientos de capital.</p>
+              <p className="text-slate-300">Simulación visual (en segundo plano) + saldo real para movimientos de capital.</p>
             </div>
             <div className="flex items-center gap-2">
               {cancelFeeLabel && (
@@ -1098,7 +776,6 @@ const TradingBotsPage = () => {
                 const { profit: grossProfit = 0, fees = 0, net: realizedNet = 0, withdrawn = 0 } = getBotPnl?.(a.id) || {};
                 const { unrealized = 0, mainPair } = calcUnrealizedAndPair(a.id, a.botName);
 
-                const withdrawable = Math.max(0, realizedNet - withdrawn);
                 const totalNet = Number(realizedNet) + Number(unrealized);
                 const roiNet = a.amountUsd > 0 ? (totalNet / Number(a.amountUsd)) * 100 : 0;
 
@@ -1193,8 +870,14 @@ const TradingBotsPage = () => {
                       )}
 
                       <div className="flex flex-wrap gap-2">
-                        <Button onClick={() => doTakeProfit(a)} disabled={rowBusy || Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)) <= 0}>
-                          <CircleDollarSign className="w-4 h-4 mr-1" /> {Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)) > 0 ? `Tomar ganancias $${fmt(Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)))}` : 'Sin ganancias'}
+                        <Button
+                          onClick={() => doTakeProfit(a)}
+                          disabled={rowBusy || Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)) <= 0}
+                        >
+                          <CircleDollarSign className="w-4 h-4 mr-1" />
+                          {Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)) > 0
+                            ? `Tomar ganancias $${fmt(Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)))}`
+                            : 'Sin ganancias'}
                         </Button>
                         <Button variant="destructive" onClick={() => askCancel(a)} disabled={rowBusy}>
                           <XCircle className="w-4 h-4 mr-1" /> {rowBusy ? 'Cancelando…' : 'Cancelar'}
