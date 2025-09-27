@@ -1,17 +1,11 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 
-const AUTO_SETTLE = true;                 // asentar PnL de cada cierre a la wallet
-const TAKEPROFIT_COOLDOWN_MS = 60_000;    // 60s de enfriamiento para "Tomar ganancias"
-const WITHDRAW_MIN_STEP_USD = 5;          // no habilita TP si no hay al menos esto
-
 export default function useBotSimWorker(ctx) {
   const {
-    // negocio/base
     botActivations = [],
     activateBot,
     cancelBot,
     creditBotProfit,
-    addTransaction,                   // ⬅️ necesario para asentar pérdidas
     refreshBotActivations,
     refreshTransactions,
     getAvailableBalance,
@@ -43,14 +37,9 @@ export default function useBotSimWorker(ctx) {
   const bucketRef = useRef({ priceDelta:{}, tradeDeltas:[], payoutDeltas:[] });
   const flushTimerRef = useRef(null);
 
-  // idempotencia de cierres asentados
-  const persistedTradeIdsRef = useRef(new Set());
-  // cooldown de takeProfit por activación
-  const tpCooldownRef = useRef(new Map());
-
   const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-  /* ---------- Boot worker ---------- */
+  /* ---------- Boot worker (¡ahora arranca solo!) ---------- */
   useEffect(() => {
     const w = new Worker(new URL('@/workers/botSim.worker.js', import.meta.url), { type:'module' });
     workerRef.current = w;
@@ -67,23 +56,10 @@ export default function useBotSimWorker(ctx) {
     };
 
     w.postMessage({ type:'init' });
+    // 🔥 antes faltaba esto
     w.postMessage({ type:'start' });
 
-    // perfil más realista: 46% winrate, R medio 1.1, 1-3 trades vivos, etc.
-    w.postMessage({
-      type:'setProfile',
-      payload:{
-        winRate: 0.46,
-        avgR: 1.1,
-        maxConcurrent: 3,
-        baseHoldMs: 45_000,
-        jitterMs: 25_000,
-        tradeEveryMs: 15_000,
-        feeBps: 8,         // 0.08% por lado aprox
-      }
-    });
-
-    const flush = async () => {
+    const flush = () => {
       const b = bucketRef.current;
       const has =
         Object.keys(b.priceDelta).length ||
@@ -94,9 +70,6 @@ export default function useBotSimWorker(ctx) {
       if (Object.keys(b.priceDelta).length) {
         setPrices((prev) => ({ ...prev, ...b.priceDelta }));
       }
-
-      // guardamos para persistir cierres fuera del setState
-      const closedForPersist = [];
 
       if (b.tradeDeltas.length) {
         setTradesById((prev) => {
@@ -112,9 +85,6 @@ export default function useBotSimWorker(ctx) {
                 ? { ...t, status:'closed', pnl:d.pnl, closed_at:Date.now() } : t);
               pushEvent(d.actId, { id: uid(), kind:'close', created_at: new Date().toISOString(),
                 payload: { pair:d.pair, pnl:d.pnl } });
-
-              // para persistencia (una sola vez por trade)
-              closedForPersist.push(d);
             }
           }
           return next;
@@ -138,45 +108,18 @@ export default function useBotSimWorker(ctx) {
 
       bucketRef.current = { priceDelta:{}, tradeDeltas:[], payoutDeltas:[] };
       notifySubs();
-
-      // ======= Persistencia (auto-settle) de cierres =======
-      if (AUTO_SETTLE && closedForPersist.length) {
-        for (const d of closedForPersist) {
-          const key = String(d.id);
-          if (persistedTradeIdsRef.current.has(key)) continue; // idempotencia
-          persistedTradeIdsRef.current.add(key);
-
-          // d.pnl es neto; si >0 acreditamos profit, si <0 lo asentamos como pérdida
-          try {
-            if (d.pnl > 0) {
-              await creditBotProfit?.(d.actId, d.pnl, `PnL sim ${d.pair}`);
-            } else if (d.pnl < 0 && typeof addTransaction === 'function') {
-              await addTransaction({
-                amount: Number(d.pnl),               // negativo
-                type: 'bot_loss',
-                currency: 'USDC',
-                description: `Loss sim ${d.pair}`,
-                referenceType: 'bot_trade',
-                referenceId: key,
-                status: 'completed',
-              });
-            }
-          } catch {}
-        }
-        try { await refreshTransactions?.(); } catch {}
-      }
     };
 
     const schedule = () => {
       if ('requestIdleCallback' in window) {
         // @ts-ignore
-        flushTimerRef.current = requestIdleCallback(flush, { timeout: 1500 });
+        flushTimerRef.current = requestIdleCallback(flush, { timeout: 1800 });
       } else {
-        flushTimerRef.current = setTimeout(flush, 1500);
+        flushTimerRef.current = setTimeout(flush, 1800);
       }
     };
     schedule();
-    const id = setInterval(schedule, 1800);
+    const id = setInterval(schedule, 2000);
 
     const onVis = () => {
       if (document.hidden) w.postMessage({ type:'stop' });
@@ -195,7 +138,7 @@ export default function useBotSimWorker(ctx) {
       try { w.terminate(); } catch {}
       workerRef.current = null;
     };
-  }, [addTransaction, creditBotProfit, refreshTransactions]);
+  }, []);
 
   /* ---------- Helpers events/subs ---------- */
   const pushEvent = useCallback((aid, ev) => {
@@ -220,7 +163,7 @@ export default function useBotSimWorker(ctx) {
     }
   }, [tradesById, eventsById]);
 
-  /* ---------- Seed activaciones reales al worker ---------- */
+  /* ---------- Seed activaciones reales al worker y ¡arrancar! ---------- */
   useEffect(() => {
     const w = workerRef.current;
     if (!w) return;
@@ -237,6 +180,7 @@ export default function useBotSimWorker(ctx) {
         }
       });
 
+    // 🔥 si recién seed-eamos, aseguramos que corra
     if (seeded) { try { w.postMessage({ type:'start' }); } catch {} }
   }, [botActivations, tradesById, payoutsById]);
 
@@ -265,18 +209,11 @@ export default function useBotSimWorker(ctx) {
     return () => set.delete(cb);
   }, [eventsById]);
 
-  // Tomar ganancias (con cooldown)
+  // Tomar ganancias: acredita en saldo real + marca withdrawn local
   const takeProfit = useCallback(async (aid) => {
-    const now = Date.now();
-    const last = tpCooldownRef.current.get(aid) || 0;
-    if (now - last < TAKEPROFIT_COOLDOWN_MS) {
-      const left = Math.ceil((TAKEPROFIT_COOLDOWN_MS - (now - last))/1000);
-      return { ok:false, code:'COOLDOWN', left };
-    }
-
     const p = payoutsById[aid];
     const withdrawable = Math.max(0, Number(p?.net || 0) - Number(p?.withdrawn || 0));
-    if (withdrawable < WITHDRAW_MIN_STEP_USD) return { ok:false, code:'NO_PNL' };
+    if (withdrawable <= 0) return { ok:false, code:'NO_PNL' };
 
     const r = await creditBotProfit?.(aid, withdrawable, 'Take Profit (sim)');
     if (r?.ok === false) return r;
@@ -285,8 +222,6 @@ export default function useBotSimWorker(ctx) {
       const cur = prev[aid] || { profit:0, net:0, withdrawn:0 };
       return { ...prev, [aid]: { ...cur, withdrawn: Number(cur.withdrawn || 0) + withdrawable } };
     });
-    tpCooldownRef.current.set(aid, now);
-
     try { workerRef.current?.postMessage({ type:'takeProfitMarked', payload: aid }); } catch {}
 
     pushEvent(aid, { id: uid(), kind:'withdraw', created_at:new Date().toISOString(),
@@ -302,8 +237,10 @@ export default function useBotSimWorker(ctx) {
     const sim  = payoutsById[aid] || { profit:0, net:0, withdrawn:0 };
     return {
       ...base,
+      // sumamos lo simulado
       profit: Number(base.profit || 0) + Number(sim.profit || 0),
       net:    Number(base.net    || 0) + Number(sim.net    || 0),
+      // este campo no lo trae el DataContext: lo agregamos
       withdrawn: Number(sim.withdrawn || 0),
     };
   }, [getBotPnlReal, payoutsById]);
@@ -319,7 +256,8 @@ export default function useBotSimWorker(ctx) {
   }, [payoutsById]);
 
   const totalBotProfit = Number(totalProfitReal) + simTotals.profit;
-  const totalBotFees   = Number(totalFeesReal);
+  const totalBotFees   = Number(totalFeesReal); // no agregamos fees “sim”
+  // “Neto no retirado” → sumamos el net simulado y le restamos lo ya retirado simulado
   const totalBotNet    = Number(totalNetReal) + (simTotals.net - simTotals.withdrawn);
 
   /* ---------- Controles ---------- */
@@ -327,7 +265,6 @@ export default function useBotSimWorker(ctx) {
     start: () => workerRef.current?.postMessage({ type:'start' }),
     stop:  () => workerRef.current?.postMessage({ type:'stop' }),
     setTick: (ms) => workerRef.current?.postMessage({ type:'setTick', payload: ms }),
-    setProfile: (p) => workerRef.current?.postMessage({ type:'setProfile', payload: p }),
   }), []);
 
   return {
@@ -336,7 +273,6 @@ export default function useBotSimWorker(ctx) {
     activateBot,
     cancelBot,
     creditBotProfit,
-    addTransaction,
     refreshBotActivations,
     refreshTransactions,
     getAvailableBalance,
