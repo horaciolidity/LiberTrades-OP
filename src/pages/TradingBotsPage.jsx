@@ -163,9 +163,22 @@ const TradingBotsPage = () => {
   // Negocio real (saldo/txns/activaciones)
   const api = useData();
 
-  // Simulación visual (no toca saldo). Si no querés sim, desactiva SIM_MODE y no uses este hook.
+  // Simulación visual (no toca saldo)
   const sim = SIM_MODE ? useBotSimWorker() : null;
-  // (En esta página usamos api.* para todo movimiento de dinero)
+
+  // Arranca/pará el worker y dale un tick ágil
+  useEffect(() => {
+    if (!SIM_MODE || !sim) return;
+    sim.setTick?.(1500);
+    sim.start?.();
+    return () => sim.stop?.();
+  }, [sim]);
+
+  // Escogemos de dónde leer trades/eventos (sim o API real)
+  const listTrades = (SIM_MODE && sim?.listBotTrades) ? sim.listBotTrades : api.listBotTrades;
+  const subTrades  = (SIM_MODE && sim?.subscribeBotTrades) ? sim.subscribeBotTrades : api.subscribeBotTrades;
+  const listEvents = (SIM_MODE && sim?.listBotEvents) ? sim.listBotEvents : api.listBotEvents;
+  const subEvents  = (SIM_MODE && sim?.subscribeBotEvents) ? sim.subscribeBotEvents : api.subscribeBotEvents;
 
   const {
     botActivations,
@@ -173,7 +186,7 @@ const TradingBotsPage = () => {
     canceledBots,
     activateBot,
     cancelBot,
-    creditBotProfit,          // ← para “Tomar ganancias”
+    creditBotProfit,
     refreshBotActivations,
     refreshTransactions,
     settings,
@@ -183,14 +196,7 @@ const TradingBotsPage = () => {
     totalBotFees = 0,
     totalBotNet = 0,
 
-    listBotTrades,
-    subscribeBotTrades,
     getPairInfo,
-
-    // Puede que no exista aún en tu backend; lo hacemos opcional
-    listBotEvents,
-    subscribeBotEvents,
-
     getAvailableBalance,
   } = api;
 
@@ -228,8 +234,16 @@ const TradingBotsPage = () => {
 
   const myCanceledBots = useMemo(() => {
     if (Array.isArray(canceledBots)) return canceledBots;
-    return (botActivations || []).filter((b) => ['canceled', 'cancelled', 'archived', 'stopped', 'ended', 'inactive'].includes(normStatus(b?.status)));
+    return (botActivations || []).filter((b) =>
+      ['canceled', 'cancelled', 'archived', 'stopped', 'ended', 'inactive'].includes(normStatus(b?.status))
+    );
   }, [canceledBots, botActivations]);
+
+  // si el worker expone una API para "sembrar" activaciones, la llamamos
+  useEffect(() => {
+    if (!SIM_MODE || !sim) return;
+    sim.setActiveBots?.(myActiveBots);
+  }, [sim, myActiveBots]);
 
   const botsAllocated = useMemo(
     () => myActiveBots.reduce((a, b) => a + Number(b?.amountUsd || 0), 0),
@@ -279,48 +293,49 @@ const TradingBotsPage = () => {
   // ===== Trades & Eventos =====
   const loadTrades = useCallback(async (activationId) => {
     try {
-      const rows = await listBotTrades?.(activationId, 80);
+      const rows = await listTrades?.(activationId, 80);
       setTradesByActivation(p => ({ ...p, [activationId]: rows || [] }));
     } catch {}
-  }, [listBotTrades]);
+  }, [listTrades]);
 
   useEffect(() => {
     (botActivations || []).forEach((a) => {
       const id = a.id;
       if (!id || subsRef.current[id]) return;
       loadTrades(id);
-      const ch = subscribeBotTrades?.(id, () => loadTrades(id));
+      const ch = subTrades?.(id, () => loadTrades(id));
       subsRef.current[id] = ch;
     });
     return () => {
       Object.values(subsRef.current).forEach((ch) => { try { ch?.unsubscribe?.(); } catch {} });
       subsRef.current = {};
     };
-  }, [botActivations, subscribeBotTrades, loadTrades]);
+  }, [botActivations, subTrades, loadTrades]);
 
   const loadEvents = useCallback(async (activationId) => {
-    if (!listBotEvents) return;
+    if (!listEvents) return;
     try {
-      const rows = await listBotEvents?.(activationId, 80);
+      const rows = await listEvents?.(activationId, 80);
       setEventsByActivation(p => ({ ...p, [activationId]: rows || [] }));
     } catch {}
-  }, [listBotEvents]);
+  }, [listEvents]);
 
   useEffect(() => {
-    if (!subscribeBotEvents) return;
+    if (!subEvents) return;
     (botActivations || []).forEach((a) => {
       const id = a.id;
       if (!id || eventsSubsRef.current[id]) return;
       loadEvents(id);
-      const ch = subscribeBotEvents?.(id, () => loadEvents(id));
+      const ch = subEvents?.(id, () => loadEvents(id));
       eventsSubsRef.current[id] = ch;
     });
     return () => {
       Object.values(eventsSubsRef.current).forEach((ch) => { try { ch?.unsubscribe?.(); } catch {} });
       eventsSubsRef.current = {};
     };
-  }, [botActivations, subscribeBotEvents, loadEvents]);
+  }, [botActivations, subEvents, loadEvents]);
 
+  // MTM con fallback a precios del worker
   const calcUnrealizedAndPair = useCallback((activationId, fallbackName) => {
     const rows = tradesByActivation[activationId] || [];
     let u = 0;
@@ -332,8 +347,22 @@ const TradingBotsPage = () => {
     }
     for (const t of rows) {
       if (String(t.status).toLowerCase() !== 'open') continue;
+
       const info = getPairInfo?.(t.pair) || {};
-      const last = Number(info.price);
+      let last = Number(info.price);
+
+      if (!Number.isFinite(last)) {
+        // 🔥 fallback worker
+        const key1 = t.pair;
+        const key2 = t.pair?.replace('/', '');
+        const key3 = t.pair?.split('/')?.[0];
+        last = Number(
+          sim?.prices?.[key1] ??
+          sim?.prices?.[key2] ??
+          sim?.prices?.[key3]
+        );
+      }
+
       if (!Number.isFinite(last) || !Number.isFinite(Number(t.entry))) continue;
       const sideMul = String(t.side).toLowerCase() === 'short' ? -1 : 1;
       const pct = (last - Number(t.entry)) / Number(t.entry);
@@ -341,7 +370,7 @@ const TradingBotsPage = () => {
       if (Number.isFinite(uPnL)) u += uPnL;
     }
     return { unrealized: u, mainPair };
-  }, [tradesByActivation, getPairInfo]);
+  }, [tradesByActivation, getPairInfo, sim?.prices]);
 
   /* ===================== Handlers ===================== */
   const handleActivateBot = async () => {
@@ -438,7 +467,6 @@ const TradingBotsPage = () => {
         setRowBusy(a.id, false);
         return;
       }
-      // Usa DataContext: acredita PnL al saldo
       const r = await creditBotProfit?.(a.id, withdrawable, `Take profit ${a.botName}`);
       if (r?.ok || r?.via === 'fallback') {
         toast({ title: 'Ganancias acreditadas', description: `Se pasaron $${fmt(withdrawable)} al saldo.` });

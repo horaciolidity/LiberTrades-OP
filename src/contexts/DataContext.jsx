@@ -1078,56 +1078,12 @@ export function DataProvider({ children }) {
     return best;
   }
 
- // Busca balance disponible por RPC primero; AuthContext queda de fallback
+// Reemplazá TODO el getAvailableBalance por esto (temporal pero consistente)
 async function getAvailableBalance(currency = 'USDC') {
-  const C = String(currency || 'USDC').toUpperCase();
-  const aliases =
-    C === 'USDC' ? ['USDC', 'USD', 'USDT'] :
-    C === 'USDT' ? ['USDT', 'USD', 'USDC'] :
-    C === 'USD'  ? ['USD', 'USDC', 'USDT'] :
-                   [C, 'USDC', 'USD', 'USDT'];
-
-  if (!user?.id) return 0;
-
-  // 1) RPC oficial (disponible real que descuenta capital en bots)
-  try {
-    const { data: fast } = await rpcGetBalanceRobust({ user_id: user.id, currency: C });
-    if (fast != null && Number.isFinite(Number(fast))) return Number(fast);
-  } catch {}
-
-  // 2) RPCs alternativas por alias
-  for (const cur of aliases) {
-    try {
-      const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency: cur });
-      if (data != null && Number.isFinite(Number(data))) return Number(data);
-    } catch {}
-  }
-
-  // 3) Fallback: AuthContext (puede estar desfasado, por eso lo dejamos al final)
-  let best = -Infinity;
-  for (const cur of aliases) {
-    const fromAuth = pickAuthAvailable(cur);
-    if (fromAuth != null) best = Math.max(best, Number(fromAuth));
-  }
-  if (Number.isFinite(best) && best >= 0) return best;
-
-  // 4) Fallback adicional: sumar txns completed de esa moneda
-  for (const cur of aliases) {
-    try {
-      const { data } = await supabase
-        .from('wallet_transactions')
-        .select('amount, status, currency')
-        .eq('user_id', user.id)
-        .eq('currency', cur)
-        .eq('status', 'completed');
-
-      const total = ensureArray(data).reduce((s, r) => s + (parseNum(r.amount) || 0), 0);
-      if (Number.isFinite(total)) best = Math.max(best, total);
-    } catch {}
-  }
-
-  return Number.isFinite(best) && best >= 0 ? best : 0;
+  const v = pickAuthAvailable(currency);
+  return Number(v || 0);
 }
+
 
  async function recalcAndRefreshBalances() {
   if (!user?.id) return;
