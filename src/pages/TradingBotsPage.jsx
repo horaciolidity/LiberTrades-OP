@@ -37,8 +37,8 @@ import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 import useBotSimWorker from '@/hooks/useBotSimWorker';
 
 /* ===================== CONFIG ===================== */
-const SIM_MODE = true;           // sólo visual
-const CURRENCY = 'USDC';         // cambia a 'USD' si tu wallet usa USD
+const SIM_MODE = true;            // Simulación visual
+const CURRENCY = 'USDC';          // Cambia a 'USD' si tu wallet usa USD
 
 /* ===================== Utils ===================== */
 const fmt = (n, dec = 2) => (Number.isFinite(+n) ? (+n).toFixed(dec) : (0).toFixed(dec));
@@ -66,7 +66,7 @@ const tradingBots = [
   { id: 3, name: 'Bot Balanceado Gamma', risk: 'Medio', strategy: 'Riesgo Moderado, Crecimiento Constante', monthlyReturn: '~8-12%', minInvestment: 500, pairs: ['BTC/USDT','ETH/USDT','BNB/USDT','ADA/USDT'], icon: TrendingUp, color: 'text-green-400', bgColor: 'bg-green-500/10', features: ['Grid trading','Dollar Cost Averaging (DCA)','Seguimiento de tendencia'] },
 ];
 
-/* ===================== Subcomponentes UI ===================== */
+/* ===================== Subcomponentes ===================== */
 function ConfirmModal({
   open, title, description, confirmText = 'Confirmar', cancelText = 'Cancelar',
   onConfirm, onCancel, destructive = false, children,
@@ -143,6 +143,7 @@ const EventRow = ({ ev }) => {
     </div>
   );
 };
+
 const EventTimeline = ({ list = [] }) => {
   if (!list?.length) return null;
   return (
@@ -160,25 +161,10 @@ const TradingBotsPage = () => {
   const { user } = useAuth();
   const { playSound } = useSound();
 
-  // Negocio real (saldo/txns/activaciones)
-  const api = useData();
-
-  // Simulación visual (no toca saldo)
-  const sim = SIM_MODE ? useBotSimWorker() : null;
-
-  // Arranca/pará el worker y dale un tick ágil
-  useEffect(() => {
-    if (!SIM_MODE || !sim) return;
-    sim.setTick?.(1500);
-    sim.start?.();
-    return () => sim.stop?.();
-  }, [sim]);
-
-  // Escogemos de dónde leer trades/eventos (sim o API real)
-  const listTrades = (SIM_MODE && sim?.listBotTrades) ? sim.listBotTrades : api.listBotTrades;
-  const subTrades  = (SIM_MODE && sim?.subscribeBotTrades) ? sim.subscribeBotTrades : api.subscribeBotTrades;
-  const listEvents = (SIM_MODE && sim?.listBotEvents) ? sim.listBotEvents : api.listBotEvents;
-  const subEvents  = (SIM_MODE && sim?.subscribeBotEvents) ? sim.subscribeBotEvents : api.subscribeBotEvents;
+  // Estado real (saldo/txns/activaciones)
+  const real = useData();
+  // Wrapper de simulación para PnL/Trades/Events (NO toca saldo)
+  const data = SIM_MODE ? useBotSimWorker(real) : real;
 
   const {
     botActivations,
@@ -196,9 +182,15 @@ const TradingBotsPage = () => {
     totalBotFees = 0,
     totalBotNet = 0,
 
+    listBotTrades,
+    subscribeBotTrades,
     getPairInfo,
+
+    listBotEvents,
+    subscribeBotEvents,
+
     getAvailableBalance,
-  } = api;
+  } = data;
 
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
@@ -235,15 +227,8 @@ const TradingBotsPage = () => {
   const myCanceledBots = useMemo(() => {
     if (Array.isArray(canceledBots)) return canceledBots;
     return (botActivations || []).filter((b) =>
-      ['canceled', 'cancelled', 'archived', 'stopped', 'ended', 'inactive'].includes(normStatus(b?.status))
-    );
+      ['canceled', 'cancelled', 'archived', 'stopped', 'ended', 'inactive'].includes(normStatus(b?.status)));
   }, [canceledBots, botActivations]);
-
-  // si el worker expone una API para "sembrar" activaciones, la llamamos
-  useEffect(() => {
-    if (!SIM_MODE || !sim) return;
-    sim.setActiveBots?.(myActiveBots);
-  }, [sim, myActiveBots]);
 
   const botsAllocated = useMemo(
     () => myActiveBots.reduce((a, b) => a + Number(b?.amountUsd || 0), 0),
@@ -290,52 +275,51 @@ const TradingBotsPage = () => {
     refreshTransactions?.();
   }, [user?.id]); // eslint-disable-line
 
-  // ===== Trades & Eventos =====
+  // ===== Trades & Eventos (de DataContext o del Worker wrapper) =====
   const loadTrades = useCallback(async (activationId) => {
     try {
-      const rows = await listTrades?.(activationId, 80);
+      const rows = await listBotTrades?.(activationId, 80);
       setTradesByActivation(p => ({ ...p, [activationId]: rows || [] }));
     } catch {}
-  }, [listTrades]);
+  }, [listBotTrades]);
 
   useEffect(() => {
     (botActivations || []).forEach((a) => {
       const id = a.id;
       if (!id || subsRef.current[id]) return;
       loadTrades(id);
-      const ch = subTrades?.(id, () => loadTrades(id));
+      const ch = subscribeBotTrades?.(id, () => loadTrades(id));
       subsRef.current[id] = ch;
     });
     return () => {
       Object.values(subsRef.current).forEach((ch) => { try { ch?.unsubscribe?.(); } catch {} });
       subsRef.current = {};
     };
-  }, [botActivations, subTrades, loadTrades]);
+  }, [botActivations, subscribeBotTrades, loadTrades]);
 
   const loadEvents = useCallback(async (activationId) => {
-    if (!listEvents) return;
+    if (!listBotEvents) return;
     try {
-      const rows = await listEvents?.(activationId, 80);
+      const rows = await listBotEvents?.(activationId, 80);
       setEventsByActivation(p => ({ ...p, [activationId]: rows || [] }));
     } catch {}
-  }, [listEvents]);
+  }, [listBotEvents]);
 
   useEffect(() => {
-    if (!subEvents) return;
+    if (!subscribeBotEvents) return;
     (botActivations || []).forEach((a) => {
       const id = a.id;
       if (!id || eventsSubsRef.current[id]) return;
       loadEvents(id);
-      const ch = subEvents?.(id, () => loadEvents(id));
+      const ch = subscribeBotEvents?.(id, () => loadEvents(id));
       eventsSubsRef.current[id] = ch;
     });
     return () => {
       Object.values(eventsSubsRef.current).forEach((ch) => { try { ch?.unsubscribe?.(); } catch {} });
       eventsSubsRef.current = {};
     };
-  }, [botActivations, subEvents, loadEvents]);
+  }, [botActivations, subscribeBotEvents, loadEvents]);
 
-  // MTM con fallback a precios del worker
   const calcUnrealizedAndPair = useCallback((activationId, fallbackName) => {
     const rows = tradesByActivation[activationId] || [];
     let u = 0;
@@ -347,22 +331,8 @@ const TradingBotsPage = () => {
     }
     for (const t of rows) {
       if (String(t.status).toLowerCase() !== 'open') continue;
-
       const info = getPairInfo?.(t.pair) || {};
-      let last = Number(info.price);
-
-      if (!Number.isFinite(last)) {
-        // 🔥 fallback worker
-        const key1 = t.pair;
-        const key2 = t.pair?.replace('/', '');
-        const key3 = t.pair?.split('/')?.[0];
-        last = Number(
-          sim?.prices?.[key1] ??
-          sim?.prices?.[key2] ??
-          sim?.prices?.[key3]
-        );
-      }
-
+      const last = Number(info.price);
       if (!Number.isFinite(last) || !Number.isFinite(Number(t.entry))) continue;
       const sideMul = String(t.side).toLowerCase() === 'short' ? -1 : 1;
       const pct = (last - Number(t.entry)) / Number(t.entry);
@@ -370,7 +340,7 @@ const TradingBotsPage = () => {
       if (Number.isFinite(uPnL)) u += uPnL;
     }
     return { unrealized: u, mainPair };
-  }, [tradesByActivation, getPairInfo, sim?.prices]);
+  }, [tradesByActivation, getPairInfo]);
 
   /* ===================== Handlers ===================== */
   const handleActivateBot = async () => {
@@ -460,7 +430,7 @@ const TradingBotsPage = () => {
     if (!a?.id) return;
     setRowBusy(a.id, true);
     try {
-      const before = api.getBotPnl?.(a.id) || {};
+      const before = data.getBotPnl?.(a.id) || {};
       const withdrawable = Math.max(0, Number(before.net || 0) - Number(before.withdrawn || 0));
       if (withdrawable <= 0) {
         toast({ title: 'Sin ganancias para retirar', description: 'Aún no hay PnL realizado disponible.', variant: 'destructive' });
@@ -758,11 +728,14 @@ const TradingBotsPage = () => {
                         className="bg-slate-800 border-slate-600 text-white"
                       />
                       <div className="flex flex-wrap gap-2">
-                        {quickAmounts.map((v) => (
-                          <Button key={v} size="sm" variant="secondary" onClick={() => setInvestmentAmount(String(v))}>
-                            ${fmt(v, 0)}
-                          </Button>
-                        ))}
+                        {[250, 500, 1000, 2000, Math.min(availableUsd, 5000)].filter(Boolean).map((v, i, arr) => {
+                          const unique = arr.indexOf(v) === i;
+                          return unique ? (
+                            <Button key={v} size="sm" variant="secondary" onClick={() => setInvestmentAmount(String(v))}>
+                              ${fmt(v, 0)}
+                            </Button>
+                          ) : null;
+                        })}
                       </div>
                     </div>
 
