@@ -1078,11 +1078,97 @@ export function DataProvider({ children }) {
     return best;
   }
 
-// Reemplazá TODO el getAvailableBalance por esto (temporal pero consistente)
+// ---------------- Helpers de saldo ----------------
+
+// Lee balances expuestos por AuthContext con múltiples formatos
+function pickAuthAvailable(currency = 'USDC') {
+  const c = String(currency).toUpperCase();
+  const b = balances || {};
+
+  const byCurrency = [
+    b?.available?.[c],
+    b?.[c]?.available,
+    b?.[c]?.balance,
+    b?.[c]?.free,
+    b?.[c]?.amount,
+    b?.[c],
+  ]
+    .map(parseNum)
+    .find((v) => v != null);
+  if (byCurrency != null) return byCurrency;
+
+  const totals = [b?.net, b?.netUsd, b?.net_usd, b?.total, b?.totalUsd, b?.total_usd, b?.usd, b?.USDC, b?.USDT]
+    .map(parseNum)
+    .find((v) => v != null);
+  if (totals != null) return totals;
+
+  let best = null;
+  try {
+    Object.values(b).forEach((v) => {
+      const n = parseNum(v);
+      if (n != null) best = best == null ? n : Math.max(best, n);
+    });
+  } catch {}
+  return best;
+}
+
+// ✅ Reemplaza TODO tu getAvailableBalance por este (robusto)
 async function getAvailableBalance(currency = 'USDC') {
-  const v = pickAuthAvailable(currency);
+  if (!user?.id) return 0;
+  const CUR = String(currency || 'USDC').toUpperCase();
+  const ALIAS = new Set(['USDC', 'USD', 'USDT']);
+
+  // 1) RPCs conocidas (devuelven disponible real si existen)
+  try {
+    const { data } = await rpcGetBalanceRobust({ user_id: user.id, currency: CUR });
+    if (data != null && Number.isFinite(Number(data))) return Number(data);
+  } catch {}
+
+  // 2) Tabla wallet_balances (si existe en tu esquema)
+  try {
+    const { data } = await supabase
+      .from('wallet_balances')
+      .select('*')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (data) {
+      let v =
+        parseNum(data.available) ??
+        parseNum(data.balance) ??
+        parseNum(data.amount) ??
+        parseNum(data[CUR]);
+      if (v == null && ALIAS.has(CUR)) {
+        v = parseNum(data.USDC) ?? parseNum(data.USD) ?? parseNum(data.USDT);
+      }
+      if (v != null) return Number(v);
+    }
+  } catch {}
+
+  // 3) Suma de transacciones confirmadas
+  try {
+    const { data } = await supabase
+      .from('wallet_transactions')
+      .select('amount, currency, status')
+      .eq('user_id', user.id)
+      .eq('status', 'completed');
+
+    let sum = 0;
+    for (const t of ensureArray(data)) {
+      const cur = String(t.currency || 'USDC').toUpperCase();
+      if (cur === CUR || (ALIAS.has(CUR) && ALIAS.has(cur))) {
+        const n = Number(t.amount || 0);
+        if (Number.isFinite(n)) sum += n;
+      }
+    }
+    return Number(sum.toFixed(2));
+  } catch {}
+
+  // 4) Fallback: AuthContext (si ya está cargado)
+  const v = pickAuthAvailable(CUR);
   return Number(v || 0);
 }
+
 
 
  async function recalcAndRefreshBalances() {
