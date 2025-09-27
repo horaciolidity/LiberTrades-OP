@@ -253,17 +253,39 @@ const TradingBotsPage = () => {
   const pctBotsUsd = clamp((botsAllocated / GOALS.botsUsd) * 100);
   const energyBots = clamp((pctBotsCount + pctBotsUsd) / 2);
 
-  // Saldo disponible real
+  /* -------- Saldo disponible real (con fallbacks y sin degradar a 0) -------- */
   const [availableUsd, setAvailableUsd] = useState(0);
+
   const refreshAvailable = useCallback(async () => {
-    try {
-      let v = await getAvailableBalance?.(CURRENCY);
-      if (v == null) v = await getAvailableBalance?.(); // firma alternativa
-      setAvailableUsd(Number(v || 0));
-    } catch {
-      setAvailableUsd(0);
-    }
-  }, [getAvailableBalance]);
+    const candidates = [];
+    const push = (v) => {
+      const n = Number(v);
+      if (Number.isFinite(n)) candidates.push(n);
+    };
+
+    try { push(await getAvailableBalance?.(CURRENCY)); } catch {}
+    try { push(await getAvailableBalance?.()); } catch {}
+
+    // Fallbacks desde el DataContext real
+    try { push(await real?.getAvailableBalance?.(CURRENCY)); } catch {}
+    push(real?.balances?.[CURRENCY]);
+    push(real?.balances?.USDC);
+    push(real?.balances?.USD);
+    push(real?.wallet?.available);
+    push(real?.availableUsd);
+    push(real?.profile?.availableUsd);
+
+    // Fallbacks del usuario si tu AuthContext guarda algo
+    push(user?.balances?.[CURRENCY]);
+    push(user?.balances?.available);
+    push(user?.wallet?.available);
+
+    // No degradar: si todo vino 0 o undefined, mantener el último valor bueno
+    push(availableUsd);
+
+    const best = candidates.filter(Number.isFinite).reduce((m, v) => Math.max(m, v), 0);
+    setAvailableUsd(best);
+  }, [getAvailableBalance, real, user, availableUsd]);
 
   useEffect(() => {
     refreshAvailable();
@@ -372,6 +394,7 @@ const TradingBotsPage = () => {
       }
 
       setBusyActivate(true);
+      const prev = availableUsd;
 
       const res = await activateBot?.({ botId: bot.id, botName: bot.name, strategy: bot.strategy, amountUsd: amount });
       if (res?.code === 'INSUFFICIENT_FUNDS') {
@@ -382,13 +405,19 @@ const TradingBotsPage = () => {
         toast({ title: 'No se pudo activar', description: res?.msg || 'Intentá nuevamente.', variant: 'destructive' });
         return;
       }
-      // descuento optimista
+
+      // Descuento optimista
       setAvailableUsd((v) => Math.max(0, Number(v || 0) - amount));
+
       toast({ title: 'Bot activado', description: `${bot.name} por $${fmt(amount)}.` });
       setSelectedBot(null);
       setInvestmentAmount('');
+
       await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
       await refreshAvailable();
+
+      // Si algo salió mal y el server no descontó, volvemos (raro, pero seguro)
+      setAvailableUsd((v) => (v > prev ? prev : v));
     } catch (e) {
       console.error('[handleActivateBot]', e);
       toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
@@ -411,7 +440,14 @@ const TradingBotsPage = () => {
     try {
       const r = await cancelBot?.(id);
       if (r?.ok) {
-        toast({ title: 'Bot cancelado' });
+        // Si el backend devuelve cuánto se devolvió, lo sumamos optimistamente
+        const refunded = Number(r?.refundedUsd ?? r?.refundUsd ?? r?.refunded ?? 0);
+        if (Number.isFinite(refunded) && refunded > 0) {
+          setAvailableUsd((v) => Number(v || 0) + refunded);
+          toast({ title: 'Bot cancelado', description: `Se liberaron $${fmt(refunded)} al saldo.` });
+        } else {
+          toast({ title: 'Bot cancelado' });
+        }
         await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
         await refreshAvailable();
       } else {
@@ -439,6 +475,8 @@ const TradingBotsPage = () => {
       }
       const r = await creditBotProfit?.(a.id, withdrawable, `Take profit ${a.botName}`);
       if (r?.ok || r?.via === 'fallback') {
+        // Acreditamos optimistamente
+        setAvailableUsd((v) => Number(v || 0) + withdrawable);
         toast({ title: 'Ganancias acreditadas', description: `Se pasaron $${fmt(withdrawable)} al saldo.` });
         await Promise.all([refreshTransactions?.()]);
         await refreshAvailable();
@@ -728,14 +766,14 @@ const TradingBotsPage = () => {
                         className="bg-slate-800 border-slate-600 text-white"
                       />
                       <div className="flex flex-wrap gap-2">
-                        {[250, 500, 1000, 2000, Math.min(availableUsd, 5000)].filter(Boolean).map((v, i, arr) => {
-                          const unique = arr.indexOf(v) === i;
-                          return unique ? (
+                        {[250, 500, 1000, 2000, Math.min(availableUsd, 5000)]
+                          .filter((v) => Number.isFinite(v) && v > 0)
+                          .filter((v, i, arr) => arr.indexOf(v) === i)
+                          .map((v) => (
                             <Button key={v} size="sm" variant="secondary" onClick={() => setInvestmentAmount(String(v))}>
                               ${fmt(v, 0)}
                             </Button>
-                          ) : null;
-                        })}
+                          ))}
                       </div>
                     </div>
 
