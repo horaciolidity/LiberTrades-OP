@@ -158,7 +158,7 @@ const EventTimeline = ({ list = [] }) => {
 
 /* ===================== Página ===================== */
 const TradingBotsPage = () => {
-  const { user } = useAuth();
+  const { user, refreshBalances } = useAuth();
   const { playSound } = useSound();
 
   // Estado real (saldo/txns/activaciones)
@@ -415,7 +415,7 @@ const TradingBotsPage = () => {
 
       await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
       await refreshAvailable();
-
+      await refreshBalances?.();
       // Si algo salió mal y el server no descontó, volvemos (raro, pero seguro)
       setAvailableUsd((v) => (v > prev ? prev : v));
     } catch (e) {
@@ -450,6 +450,7 @@ const TradingBotsPage = () => {
         }
         await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
         await refreshAvailable();
+        await refreshBalances?.();
       } else {
         toast({ title: 'No se pudo cancelar', description: r?.msg || '', variant: 'destructive' });
       }
@@ -480,6 +481,7 @@ const TradingBotsPage = () => {
         toast({ title: 'Ganancias acreditadas', description: `Se pasaron $${fmt(withdrawable)} al saldo.` });
         await Promise.all([refreshTransactions?.()]);
         await refreshAvailable();
+        await refreshBalances?.();
       } else {
         toast({ title: 'No se pudo tomar ganancias', variant: 'destructive' });
       }
