@@ -407,7 +407,6 @@ const TradingBotsPage = () => {
       }
 
       // Descuento optimista
-      setAvailableUsd((v) => Math.max(0, Number(v || 0) - amount));
 
       toast({ title: 'Bot activado', description: `${bot.name} por $${fmt(amount)}.` });
       setSelectedBot(null);
