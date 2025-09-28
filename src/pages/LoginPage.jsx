@@ -66,13 +66,15 @@ export default function LoginPage() {
 
         <Card className="crypto-card">
           <CardHeader className="text-center">
-            {/* Logo fusionado con óvalo degradado */}
-            <div className="mx-auto w-20 h-20 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4 overflow-hidden shadow-lg">
+            {/* Logo dentro del óvalo, más grande y con fusión a negro en bordes */}
+            <div className="mx-auto w-24 h-24 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4 overflow-hidden shadow-lg relative">
               <img
                 alt="LiberTrades logo"
                 src="/logo-libertrades.png"
-                className="h-full w-full object-contain mix-blend-screen"
+                className="h-full w-full object-cover scale-110"
               />
+              {/* capa de fusión negra en bordes */}
+              <div className="absolute inset-0 bg-gradient-to-r from-black via-transparent to-black opacity-60 rounded-full pointer-events-none"></div>
             </div>
             <CardTitle className="text-2xl text-white">Iniciar Sesión</CardTitle>
             <CardDescription className="text-slate-300">
