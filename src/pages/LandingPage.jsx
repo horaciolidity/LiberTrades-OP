@@ -110,7 +110,6 @@ const FAQItem = ({ q, a }) => (
 );
 
 export default function LandingPage() {
-  // sólo para animaciones entrada en viewport
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
@@ -123,10 +122,9 @@ export default function LandingPage() {
       <nav className="sticky top-0 w-full z-50 bg-slate-900/80 backdrop-blur-xl border-b border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            <Link to="/" className="flex items-center">
-              <span className="text-2xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-                LiberTrades
-              </span>
+            <Link to="/" className="flex items-center gap-2">
+              <img src="/logo-libertrades.png" alt="LiberTrades" className="h-8" />
+              <span className="text-xl font-bold text-white">LiberTrades</span>
             </Link>
             <div className="flex items-center space-x-3">
               <Link to="/login">
@@ -142,36 +140,57 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero */}
-      <section className="pt-24 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto">
-          <motion.div
+      {/* Hero con logo grande */}
+      <section className="relative pt-24 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8">
+        {/* Imagen de fondo */}
+        <div className="absolute inset-0">
+          <img
+            src="/src/assets/logo-libertrades.png"
+            alt="Trading Background"
+            className="w-full h-full object-cover opacity-20"
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-slate-950/70 via-slate-900/60 to-slate-950/90" />
+        </div>
+
+        <div className="relative max-w-5xl mx-auto text-center">
+          <motion.img
+            src="/logo-libertrades.png"
+            alt="LiberTrades Logo"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={mounted ? { opacity: 1, scale: 1 } : {}}
+            transition={{ duration: 0.8 }}
+            className="h-40 sm:h-52 mx-auto mb-6 drop-shadow-2xl"
+          />
+
+          <motion.h1
             initial={{ opacity: 0, y: 20 }}
             animate={mounted ? { opacity: 1, y: 0 } : {}}
-            transition={{ duration: 0.7 }}
-            className="text-center"
+            transition={{ duration: 0.7, delay: 0.2 }}
+            className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight"
           >
-            <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
-              Invierte en el
-              <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">{' '}Futuro Digital</span>
-            </h1>
-            <p className="text-xl text-slate-300 mb-8 max-w-3xl mx-auto">
-              Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
-            </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Link to="/register">
-                <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
-                  Comenzar Ahora
-                  <ArrowRight className="ml-2 h-5 w-5" />
-                </Button>
-              </Link>
-              <Link to="/simulator">
-                <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
-                  Ver Demo
-                </Button>
-              </Link>
-            </div>
-          </motion.div>
+            Invierte en el
+            <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+              {' '}Futuro Digital
+            </span>
+          </motion.h1>
+
+          <p className="text-xl text-slate-300 mb-8 max-w-3xl mx-auto">
+            Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <Link to="/register">
+              <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
+                Comenzar Ahora
+                <ArrowRight className="ml-2 h-5 w-5" />
+              </Button>
+            </Link>
+            <Link to="/simulator">
+              <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
+                Ver Demo
+              </Button>
+            </Link>
+          </div>
         </div>
       </section>
 
@@ -264,7 +283,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Social Proof / Métricas animadas */}
+      {/* Social Proof */}
       <section className="py-16 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
@@ -302,22 +321,10 @@ export default function LandingPage() {
           </motion.h2>
 
           <div className="space-y-4">
-            <FAQItem
-              q="¿Cómo funcionan los planes?"
-              a="Elegís un plan, invertís el monto deseado y recibís un rendimiento diario fijo durante la duración del plan."
-            />
-            <FAQItem
-              q="¿Puedo practicar antes de invertir?"
-              a="Sí. Tenés acceso a un simulador de trading en tiempo real para practicar estrategias sin riesgo."
-            />
-            <FAQItem
-              q="¿Cómo invito a amigos?"
-              a="Cada usuario tiene un enlace de referido. Compartilo y ganá comisiones cuando se registren e inviertan."
-            />
-            <FAQItem
-              q="¿Qué criptomonedas soportan?"
-              a="Actualmente USDT, BTC y ETH para depósitos e inversiones. Seguimos agregando nuevas opciones."
-            />
+            <FAQItem q="¿Cómo funcionan los planes?" a="Elegís un plan, invertís el monto deseado y recibís un rendimiento diario fijo durante la duración del plan." />
+            <FAQItem q="¿Puedo practicar antes de invertir?" a="Sí. Tenés acceso a un simulador de trading en tiempo real para practicar estrategias sin riesgo." />
+            <FAQItem q="¿Cómo invito a amigos?" a="Cada usuario tiene un enlace de referido. Compartilo y ganá comisiones cuando se registren e inviertan." />
+            <FAQItem q="¿Qué criptomonedas soportan?" a="Actualmente USDT, BTC y ETH para depósitos e inversiones. Seguimos agregando nuevas opciones." />
           </div>
 
           <p className="mt-6 text-xs text-slate-400 text-center">
