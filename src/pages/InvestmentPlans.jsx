@@ -1,5 +1,5 @@
 // src/pages/InvestmentPlans.jsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
   Wallet,
@@ -13,7 +13,7 @@ import {
   BarChart2,
   LineChart as LineChartIcon,
   Info,
-  Star, // 👈 FIX: importado para Plan Básico
+  Star, // Plan Básico
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -66,6 +66,7 @@ export default function InvestmentPlans() {
     refreshInvestments,
     refreshTransactions,
     getInvestments,
+    getTransactions, // 👈 para calcular lo ya pagado
   } = useData();
 
   const { user, balances, refreshBalances } = useAuth();
@@ -75,7 +76,6 @@ export default function InvestmentPlans() {
   const [adminSettings, setAdminSettings] = useState(SETTINGS_FALLBACK);
   const fetchAdminSettings = async () => {
     try {
-      // Si tenés la RPC get_admin_settings, la usamos; si no, cae al fallback
       const { data, error } = await supabase.rpc('get_admin_settings', { prefix: 'plans.' });
       if (error) throw error;
       const map = { ...SETTINGS_FALLBACK };
@@ -84,7 +84,6 @@ export default function InvestmentPlans() {
       });
       setAdminSettings(map);
     } catch {
-      // silence: seguimos con fallback
       setAdminSettings(SETTINGS_FALLBACK);
     }
   };
@@ -98,7 +97,6 @@ export default function InvestmentPlans() {
     const defaultDaily = Number(adminSettings['plans.default_daily_return_pct'] ?? 1.2);
     return (defaultPlans || []).map((plan) => ({
       ...plan,
-      // si un plan no define dailyReturn, usamos el de Configuración
       dailyReturn: Number(plan.dailyReturn ?? defaultDaily),
       currencies: ['USDT', 'BTC', 'ETH'],
     }));
@@ -225,7 +223,7 @@ export default function InvestmentPlans() {
     playSound?.('invest');
 
     try {
-      // ===== Opción 1: flujo server-side (si existe la RPC; si falla, vamos a Opción 2) =====
+      // ===== Opción 1: RPC server-side =====
       try {
         const { data: rpc, error: rpcErr } = await supabase.rpc('invest_in_plan_v1', {
           p_user_id: user.id,
@@ -235,7 +233,7 @@ export default function InvestmentPlans() {
           p_duration_days: Number(selectedPlan.duration),
         });
         if (!rpcErr && rpc?.ok) {
-          await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
+          await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.() ]);
           const arr = (getInvestments?.() || []).filter(
             (it) => (it.user_id ?? it.userId) === user.id
           );
@@ -255,12 +253,10 @@ export default function InvestmentPlans() {
           return;
         }
       } catch {
-        // si la RPC no existe o falla, seguimos con el flujo local
+        // sigue al flujo local
       }
 
-      // ===== Opción 2: flujo actual (client-side + DataContext) =====
-
-      // 1) Crear inversión
+      // ===== Opción 2: flujo client-side =====
       const inv = await addInvestment?.({
         planName: selectedPlan.name,
         amount: amountInUSD,
@@ -270,7 +266,6 @@ export default function InvestmentPlans() {
       });
       if (!inv) throw new Error('No se pudo crear la inversión');
 
-      // 2) Registrar movimiento (tipo permitido por tu CHECK)
       await addTransaction?.({
         amount: amountInUSD,
         type: 'plan_purchase',
@@ -283,7 +278,6 @@ export default function InvestmentPlans() {
         status: 'completed',
       });
 
-      // 3) Descontar saldo interno (USDC) y refrescar
       const { error: balErr } = await supabase
         .from('balances')
         .update({ usdc: Math.max(0, usdBalance - amountInUSD), updated_at: new Date().toISOString() })
@@ -353,7 +347,7 @@ export default function InvestmentPlans() {
   const maxWarning =
     selectedPlan && Number(selectedPlan.maxAmount || 0) > 0 && amountUsd > Number(selectedPlan.maxAmount);
 
-  // ================= Helpers de progreso para mis inversiones =================
+  // ================= Helpers de progreso =================
   const computeStats = (inv) => {
     const amount = Number(inv?.amount ?? 0);
     const dailyPct = Number(inv?.dailyReturn ?? inv?.daily_return ?? 0);
@@ -395,6 +389,66 @@ export default function InvestmentPlans() {
     return out;
   };
 
+  // ========= AUTO-ACREDITAR PLAN PAYOUTS (idempotente) =========
+  const syncingRef = useRef(false);
+
+  const syncPlanPayouts = useCallback(async () => {
+    if (!user?.id || syncingRef.current) return;
+    syncingRef.current = true;
+    try {
+      await Promise.all([refreshInvestments?.(), refreshTransactions?.()]);
+
+      const invs = (getInvestments?.() || []).filter(
+        (inv) => (inv.user_id ?? inv.userId) === user.id
+      );
+
+      const txns = (getTransactions?.() || []).filter(
+        (t) => (t.user_id ?? t.userId) === user.id && String(t.status || '').toLowerCase() === 'completed'
+      );
+
+      for (const inv of invs) {
+        const s = computeStats(inv);
+        const expected = Number((s.dailyUsd * s.elapsed).toFixed(2));
+        const already = txns
+          .filter((t) => String(t.type).toLowerCase() === 'plan_payout' && String(t.referenceId) === String(inv.id))
+          .reduce((acc, t) => acc + Number(t.amount || 0), 0);
+
+        const delta = Number((expected - already).toFixed(2));
+        if (delta >= 0.01) {
+          await addTransaction?.({
+            amount: delta,
+            type: 'plan_payout',
+            currency: 'USDC',
+            description: `Rendimiento diario ${inv.planName || inv.plan_name}`,
+            referenceType: 'investment_payout',
+            referenceId: inv.id,
+            status: 'completed',
+          });
+        }
+      }
+
+      await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
+      const arr = (getInvestments?.() || []).filter(
+        (it) => (it.user_id ?? it.userId) === user.id
+      );
+      setMyInvestments(arr);
+    } finally {
+      syncingRef.current = false;
+    }
+  }, [user?.id, getInvestments, getTransactions, refreshInvestments, refreshTransactions, refreshBalances, addTransaction]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    syncPlanPayouts();
+  }, [user?.id, syncPlanPayouts]);
+
+  useEffect(() => {
+    const onVis = () => { if (!document.hidden) syncPlanPayouts(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [syncPlanPayouts]);
+
+  // ================= UI =================
   return (
     <div className="space-y-8">
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8 }}>
@@ -506,7 +560,7 @@ export default function InvestmentPlans() {
         })}
       </div>
 
-      {/* Mis Planes Activos (progreso y estadísticas) */}
+      {/* Mis Planes Activos */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.25 }}>
         <Card className="crypto-card">
           <CardHeader>
@@ -755,7 +809,7 @@ export default function InvestmentPlans() {
         </motion.div>
       )}
 
-      {/* Modal Detalle del Plan (gráficos + estadísticas) */}
+      {/* Modal Detalle del Plan */}
       {inspectInvestment && (() => {
         const s = computeStats(inspectInvestment);
         const data = buildSeries(inspectInvestment);
