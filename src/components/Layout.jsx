@@ -134,12 +134,6 @@ const Layout = () => {
 
   return (
     <div className="min-h-screen app-bg-saiyan">
-      {/* Banner Superior */}
-      <div className="banner-libertrades">
-        <img src="/logo-libertrades.png" alt="LiberTrades Logo" className="h-10 drop-shadow-lg" />
-        <h1>LiberTrades OP</h1>
-      </div>
-
       {/* Sidebar mobile */}
       <motion.div
         initial={false}
@@ -233,37 +227,29 @@ const Layout = () => {
 
       {/* Topbar + content */}
       <div className="lg:pl-64">
-        <div className="sticky top-0 z-40 flex h-20 shrink-0 items-center gap-x-4 border-b border-slate-700 bg-slate-800/95 backdrop-blur-xl px-4 shadow-sm sm:gap-x-6 sm:px-6 lg:px-8">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => { playSound('click'); setSidebarOpen(true); }}
-            className="lg:hidden"
-          >
-            <Menu className="h-6 w-6" />
-          </Button>
+        <div className="sticky top-0 z-40 flex h-16 items-center gap-x-4 border-b border-slate-700 bg-slate-900/90 backdrop-blur-xl px-4 shadow-sm sm:gap-x-6 sm:px-6 lg:px-8">
+          
+          {/* Logo y título */}
+          <div className="flex items-center gap-3">
+            <img src="/logo-libertrades.png" alt="LiberTrades Logo" className="h-8" />
+            <span className="text-lg font-bold text-white tracking-wide">LiberTrades OP</span>
+          </div>
 
-          <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
-            <div className="flex flex-1 items-center">
+          {/* resto de elementos */}
+          <div className="flex flex-1 gap-x-4 justify-end items-center">
+            {web3Account ? (
               <div className="text-sm text-slate-300">
-                Bienvenido, <span className="font-semibold text-white">{displayName}</span>
+                <p>ETH: <span className="font-semibold text-yellow-400">{fmt(ethBalance, 4)}</span></p>
+                <p>USDT: <span className="font-semibold text-green-400">{fmt(usdtBalance, 2)}</span></p>
+                <p className="text-xs text-slate-500">Wallet: {shortAddr}</p>
               </div>
-            </div>
-            <div className="flex items-center gap-x-4 lg:gap-x-6">
-              {web3Account ? (
-                <div className="text-sm text-slate-300">
-                  <p>ETH: <span className="font-semibold text-yellow-400">{fmt(ethBalance, 4)}</span></p>
-                  <p>USDT: <span className="font-semibold text-green-400">{fmt(usdtBalance, 2)}</span></p>
-                  <p className="text-xs text-slate-500">Wallet: {shortAddr}</p>
-                </div>
-              ) : (
-                <Button onClick={connectWallet} size="sm" className="bg-blue-500 hover:bg-blue-600">
-                  Conectar Wallet
-                </Button>
-              )}
-              <div className="text-sm text-slate-300">
-                Saldo App: <span className="font-semibold text-green-400">${fmt(balances?.usdc, 2)}</span>
-              </div>
+            ) : (
+              <Button onClick={connectWallet} size="sm" className="bg-blue-500 hover:bg-blue-600">
+                Conectar Wallet
+              </Button>
+            )}
+            <div className="text-sm text-slate-300">
+              Saldo App: <span className="font-semibold text-green-400">${fmt(balances?.usdc, 2)}</span>
             </div>
           </div>
         </div>
