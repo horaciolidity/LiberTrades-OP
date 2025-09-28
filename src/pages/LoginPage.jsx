@@ -1,3 +1,4 @@
+// src/pages/LoginPage.jsx
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -54,7 +55,10 @@ export default function LoginPage() {
         className="w-full max-w-md"
       >
         <div className="mb-8">
-          <Link to="/" className="inline-flex items-center text-slate-300 hover:text-white transition-colors">
+          <Link
+            to="/"
+            className="inline-flex items-center text-slate-300 hover:text-white transition-colors"
+          >
             <ArrowLeft className="h-4 w-4 mr-2" />
             Volver al inicio
           </Link>
@@ -62,11 +66,12 @@ export default function LoginPage() {
 
         <Card className="crypto-card">
           <CardHeader className="text-center">
-            <div className="mx-auto w-16 h-16 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4">
+            {/* Logo fusionado con óvalo degradado */}
+            <div className="mx-auto w-20 h-20 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4 overflow-hidden shadow-lg">
               <img
                 alt="LiberTrades logo"
                 src="/logo-libertrades.png"
-                className="h-10 w-10 object-contain"
+                className="h-full w-full object-contain mix-blend-screen"
               />
             </div>
             <CardTitle className="text-2xl text-white">Iniciar Sesión</CardTitle>
@@ -78,7 +83,9 @@ export default function LoginPage() {
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="space-y-2">
-                <Label htmlFor="email" className="text-white">Email</Label>
+                <Label htmlFor="email" className="text-white">
+                  Email
+                </Label>
                 <Input
                   id="email"
                   name="email"
@@ -93,7 +100,9 @@ export default function LoginPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="password" className="text-white">Contraseña</Label>
+                <Label htmlFor="password" className="text-white">
+                  Contraseña
+                </Label>
                 <div className="relative">
                   <Input
                     id="password"
@@ -129,7 +138,10 @@ export default function LoginPage() {
             <div className="mt-6 text-center">
               <p className="text-slate-300">
                 ¿No tienes cuenta?{' '}
-                <Link to="/register" className="text-green-400 hover:text-green-300 font-medium">
+                <Link
+                  to="/register"
+                  className="text-green-400 hover:text-green-300 font-medium"
+                >
                   Regístrate aquí
                 </Link>
               </p>
