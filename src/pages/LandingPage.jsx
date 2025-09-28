@@ -115,7 +115,6 @@ export default function LandingPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-900">
-      {/* Ticker */}
       <CryptoTicker />
 
       {/* Navbar */}
@@ -141,31 +140,28 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero */}
-      <section className="relative pt-20 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={mounted ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.8 }}
-          className="relative w-full max-w-3xl mx-auto"
+      {/* Hero con logo de fondo */}
+      <section className="relative pt-20 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center overflow-hidden">
+        {/* Fondo con logo */}
+        <div
+          className="absolute inset-0 flex items-center justify-center pointer-events-none"
+          style={{
+            background: "radial-gradient(circle, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0.95) 80%)",
+          }}
         >
           <img
             src="/logo-libertrades.png"
             alt="LiberTrades"
-            className="w-full h-auto object-contain mx-auto rounded-full shadow-2xl"
-            style={{
-              maskImage: "radial-gradient(circle, rgba(0,0,0,1) 85%, rgba(0,0,0,0) 100%)",
-              WebkitMaskImage: "radial-gradient(circle, rgba(0,0,0,1) 85%, rgba(0,0,0,0) 100%)",
-              backgroundColor: "black"
-            }}
+            className="max-w-xl w-full h-auto opacity-30 object-contain"
           />
-        </motion.div>
+        </div>
 
+        {/* Contenido encima */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={mounted ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.7, delay: 0.3 }}
-          className="text-center mt-10"
+          transition={{ duration: 0.7 }}
+          className="relative text-center z-10"
         >
           <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
             Invierte en el
