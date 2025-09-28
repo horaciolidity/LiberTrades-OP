@@ -15,7 +15,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { FaTelegramPlane, FaYoutube, FaTwitter, FaFacebookF, FaInstagram, FaDiscord } from 'react-icons/fa';
 import { useData } from '@/contexts/DataContext';
-import logo from '@/assets/logo-libertrades.png'; // Ajusta la ruta si está en otra carpeta
 
 const plans = [
   { name: 'Básico',   price: '$100 - $999',     ret: '1.5% diario', duration: '30 días' },
@@ -151,7 +150,7 @@ export default function LandingPage() {
           className="relative w-full max-w-3xl mx-auto"
         >
           <img
-            src={logo}
+            src="/logo-libertrades.png"
             alt="LiberTrades"
             className="w-full h-auto object-contain mx-auto rounded-full shadow-2xl"
             style={{
