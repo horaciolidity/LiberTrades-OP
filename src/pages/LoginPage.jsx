@@ -36,9 +36,8 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       const email = formData.email.trim().toLowerCase();
-      const password = formData.password; // no trim si permitís espacios
+      const password = formData.password;
       await login(email, password); // el toast de error lo maneja AuthContext
-      // NO navegamos acá; el useEffect hace la redirección usando "from"
     } catch {
       /* ya hay toast en login() */
     } finally {
@@ -64,7 +63,11 @@ export default function LoginPage() {
         <Card className="crypto-card">
           <CardHeader className="text-center">
             <div className="mx-auto w-16 h-16 bg-gradient-to-r from-green-500 to-blue-500 rounded-full flex items-center justify-center mb-4">
-              <img alt="LiberTrades logo" src="https://images.unsplash.com/photo-1639916909400-40d53a2edd72" />
+              <img
+                alt="LiberTrades logo"
+                src="/logo-libertrades.png"
+                className="h-10 w-10 object-contain"
+              />
             </div>
             <CardTitle className="text-2xl text-white">Iniciar Sesión</CardTitle>
             <CardDescription className="text-slate-300">
@@ -130,14 +133,6 @@ export default function LoginPage() {
                   Regístrate aquí
                 </Link>
               </p>
-            </div>
-
-            <div className="mt-4 p-4 bg-slate-800/50 rounded-lg">
-              <p className="text-xs text-slate-400 mb-2">Cuentas de prueba:</p>
-              <div className="text-xs text-slate-300 space-y-1">
-                <div>Admin: admin@test.com / admin123</div>
-                <div>Usuario: user@test.com / user123</div>
-              </div>
             </div>
           </CardContent>
         </Card>
