@@ -24,7 +24,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { ethers } from 'ethers';
 import { toast } from '@/components/ui/use-toast';
 
-// helper numérico seguro
+// Importa el logo desde assets
+import logo from '@/assets/logo-libertrades.png';
+
+// Helper numérico seguro
 const fmt = (n, dec = 2) => {
   const num = Number(n);
   if (!isFinite(num)) return '0.00';
@@ -33,7 +36,7 @@ const fmt = (n, dec = 2) => {
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { user, profile, balances, displayName, logout, updateUser } = useAuth();
+  const { profile, balances, displayName, logout, updateUser } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -134,6 +137,12 @@ const Layout = () => {
 
   return (
     <div className="min-h-screen app-bg-saiyan">
+      {/* Banner Superior */}
+      <div className="banner-libertrades">
+        <img src={logo} alt="LiberTrades Logo" />
+        <h1>LiberTrades OP</h1>
+      </div>
+
       {/* Sidebar mobile */}
       <motion.div
         initial={false}
@@ -141,9 +150,7 @@ const Layout = () => {
         className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-800/95 backdrop-blur-xl border-r border-slate-700 lg:hidden flex flex-col"
       >
         <div className="flex items-center justify-between p-4">
-          <span className="text-xl font-bold brand-title">
-            LiberTrades
-          </span>
+          <span className="text-xl font-bold brand-title">LiberTrades</span>
           <Button variant="ghost" size="icon" onClick={() => { playSound('click'); setSidebarOpen(false); }}>
             <X className="h-6 w-6" />
           </Button>
@@ -164,7 +171,6 @@ const Layout = () => {
               >
                 <Icon className="h-5 w-5 mr-3" />
                 <span>{item.name}</span>
-
                 {item.showBalance && (
                   <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
                     ${fmt(balances?.usdc ?? 0, 2)}
@@ -192,9 +198,7 @@ const Layout = () => {
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
         <div className="flex flex-col flex-grow bg-slate-800/95 backdrop-blur-xl border-r border-slate-700">
           <div className="flex items-center h-16 px-4">
-            <span className="text-xl font-bold brand-title">
-              LiberTrades
-            </span>
+            <span className="text-xl font-bold brand-title">LiberTrades</span>
           </div>
 
           <nav className="mt-8 flex-1 px-4">
@@ -211,7 +215,6 @@ const Layout = () => {
                 >
                   <Icon className="h-5 w-5 mr-3" />
                   <span>{item.name}</span>
-
                   {item.showBalance && (
                     <span className="ml-auto text-xs rounded px-2 py-0.5 bg-slate-700">
                       ${fmt(balances?.usdc ?? 0, 2)}
