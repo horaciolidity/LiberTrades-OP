@@ -13,7 +13,7 @@ import {
   BarChart2,
   LineChart as LineChartIcon,
   Info,
-  Star, // Plan Básico
+  Star,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -54,7 +54,7 @@ const addDays = (d, days) => {
 const shortDate = (d) =>
   new Date(d).toLocaleDateString(undefined, { month: 'short', day: '2-digit' });
 
-// ===== % diarios desde Admin Settings (fallback si no existe) =====
+// Fallback para settings
 const SETTINGS_FALLBACK = { 'plans.default_daily_return_pct': 1.2 };
 
 export default function InvestmentPlans() {
@@ -66,33 +66,33 @@ export default function InvestmentPlans() {
     refreshInvestments,
     refreshTransactions,
     getInvestments,
-    getTransactions, // 👈 para calcular lo ya pagado
+    getTransactions,
   } = useData();
 
   const { user, balances, refreshBalances } = useAuth();
   const { playSound } = useSound();
 
-  // Admin settings (para % diarios por defecto)
+  // ===== Admin settings =====
   const [adminSettings, setAdminSettings] = useState(SETTINGS_FALLBACK);
-  const fetchAdminSettings = async () => {
-    try {
-      const { data, error } = await supabase.rpc('get_admin_settings', { prefix: 'plans.' });
-      if (error) throw error;
-      const map = { ...SETTINGS_FALLBACK };
-      (data || []).forEach((row) => {
-        map[row.setting_key] = Number(row.setting_value);
-      });
-      setAdminSettings(map);
-    } catch {
-      setAdminSettings(SETTINGS_FALLBACK);
-    }
-  };
 
   useEffect(() => {
-    fetchAdminSettings().catch(() => {});
+    (async () => {
+      try {
+        const { data, error } = await supabase.rpc('get_admin_settings', { prefix: 'plans.' });
+        if (error) throw error;
+        const map = { ...SETTINGS_FALLBACK };
+        (data || []).forEach((row) => {
+          // la función expone setting_key y setting_value
+          map[row.setting_key] = Number(row.setting_value);
+        });
+        setAdminSettings(map);
+      } catch {
+        setAdminSettings(SETTINGS_FALLBACK);
+      }
+    })();
   }, []);
 
-  // ================= Plans (catálogo) =================
+  // ===== Catálogo de planes =====
   const investmentPlans = useMemo(() => {
     const defaultDaily = Number(adminSettings['plans.default_daily_return_pct'] ?? 1.2);
     return (defaultPlans || []).map((plan) => ({
@@ -102,28 +102,26 @@ export default function InvestmentPlans() {
     }));
   }, [defaultPlans, adminSettings]);
 
-  // ================= Mi portfolio (del usuario) =================
+  // ===== Mis inversiones =====
   const [myInvestments, setMyInvestments] = useState([]);
 
   useEffect(() => {
     if (!user?.id) return;
     (async () => {
       await refreshInvestments?.();
-      const arr = (getInvestments?.() || []).filter(
-        (inv) => (inv.user_id ?? inv.userId) === user.id
-      );
+      const arr = (getInvestments?.() || []).filter((inv) => (inv.user_id ?? inv.userId) === user.id);
       setMyInvestments(arr);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // ================= Comprar plan (modal) =================
+  // ===== Estado de compra =====
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
   const [selectedCurrency, setSelectedCurrency] = useState('USDT');
   const [isInvesting, setIsInvesting] = useState(false);
 
-  // ================= Detalle de progreso (modal) =================
+  // ===== Modal detalle =====
   const [inspectInvestment, setInspectInvestment] = useState(null);
 
   const usdBalance = Number(balances?.usdc ?? 0);
@@ -165,6 +163,7 @@ export default function InvestmentPlans() {
     setInvestmentAmount(selectedCurrency === 'USDT' ? fmt(inCurr, 2) : fmt(inCurr, 8));
   };
 
+  // ===== Comprar plan =====
   const handleInvest = async () => {
     if (!user?.id) {
       playSound?.('error');
@@ -203,7 +202,9 @@ export default function InvestmentPlans() {
       playSound?.('error');
       toast({
         title: 'Monto fuera de rango',
-        description: `El monto en USD ($${fmt(amountInUSD)}) debe estar entre $${fmt(min)} y ${max > 0 ? `$${fmt(max)}` : 'sin tope'}.`,
+        description: `El monto en USD ($${fmt(amountInUSD)}) debe estar entre $${fmt(min)} y ${
+          max > 0 ? `$${fmt(max)}` : 'sin tope'
+        }.`,
         variant: 'destructive',
       });
       return;
@@ -223,20 +224,21 @@ export default function InvestmentPlans() {
     playSound?.('invest');
 
     try {
-      // ===== Opción 1: RPC server-side =====
+      // ===== 1) Intento server-side (RPC). Usa la versión con p_currency para evitar ambigüedad de firmas.
       try {
-        const { data: rpc, error: rpcErr } = await supabase.rpc('invest_in_plan_v1', {
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('invest_in_plan_v1', {
           p_user_id: user.id,
           p_plan_name: selectedPlan.name,
           p_amount_usd: amountInUSD,
           p_daily_pct: Number(selectedPlan.dailyReturn),
           p_duration_days: Number(selectedPlan.duration),
+          p_currency: selectedCurrency,
         });
-        if (!rpcErr && rpc?.ok) {
-          await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.() ]);
-          const arr = (getInvestments?.() || []).filter(
-            (it) => (it.user_id ?? it.userId) === user.id
-          );
+
+        // Si no hubo error, consideramos éxito (la función puede devolver void o un objeto {ok: true})
+        if (!rpcErr) {
+          await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
+          const arr = (getInvestments?.() || []).filter((it) => (it.user_id ?? it.userId) === user.id);
           setMyInvestments(arr);
 
           toast({
@@ -253,10 +255,10 @@ export default function InvestmentPlans() {
           return;
         }
       } catch {
-        // sigue al flujo local
+        // continúa al flujo local
       }
 
-      // ===== Opción 2: flujo client-side =====
+      // ===== 2) Fallback client-side (para modo demo / sin RPC)
       const inv = await addInvestment?.({
         planName: selectedPlan.name,
         amount: amountInUSD,
@@ -270,14 +272,16 @@ export default function InvestmentPlans() {
         amount: amountInUSD,
         type: 'plan_purchase',
         currency: 'USDC',
-        description: `Compra de ${selectedPlan.name} (${fmt(amt, selectedCurrency === 'USDT' ? 2 : 8)} ${selectedCurrency} ≈ $${fmt(
-          amountInUSD
-        )})`,
+        description: `Compra de ${selectedPlan.name} (${fmt(
+          amt,
+          selectedCurrency === 'USDT' ? 2 : 8
+        )} ${selectedCurrency} ≈ $${fmt(amountInUSD)})`,
         referenceType: 'investment',
         referenceId: inv.id,
         status: 'completed',
       });
 
+      // En prod esto lo hace el RPC; aquí sólo como fallback.
       const { error: balErr } = await supabase
         .from('balances')
         .update({ usdc: Math.max(0, usdBalance - amountInUSD), updated_at: new Date().toISOString() })
@@ -285,9 +289,7 @@ export default function InvestmentPlans() {
       if (balErr) console.error('[balances update] error:', balErr);
 
       await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
-      const arr = (getInvestments?.() || []).filter(
-        (it) => (it.user_id ?? it.userId) === user.id
-      );
+      const arr = (getInvestments?.() || []).filter((it) => (it.user_id ?? it.userId) === user.id);
       setMyInvestments(arr);
 
       toast({
@@ -347,7 +349,7 @@ export default function InvestmentPlans() {
   const maxWarning =
     selectedPlan && Number(selectedPlan.maxAmount || 0) > 0 && amountUsd > Number(selectedPlan.maxAmount);
 
-  // ================= Helpers de progreso =================
+  // ===== Helpers progreso =====
   const computeStats = (inv) => {
     const amount = Number(inv?.amount ?? 0);
     const dailyPct = Number(inv?.dailyReturn ?? inv?.daily_return ?? 0);
@@ -389,7 +391,7 @@ export default function InvestmentPlans() {
     return out;
   };
 
-  // ========= AUTO-ACREDITAR PLAN PAYOUTS (idempotente) =========
+  // ===== Sincronizar payouts (idempotente en cliente) =====
   const syncingRef = useRef(false);
 
   const syncPlanPayouts = useCallback(async () => {
@@ -398,10 +400,7 @@ export default function InvestmentPlans() {
     try {
       await Promise.all([refreshInvestments?.(), refreshTransactions?.()]);
 
-      const invs = (getInvestments?.() || []).filter(
-        (inv) => (inv.user_id ?? inv.userId) === user.id
-      );
-
+      const invs = (getInvestments?.() || []).filter((inv) => (inv.user_id ?? inv.userId) === user.id);
       const txns = (getTransactions?.() || []).filter(
         (t) => (t.user_id ?? t.userId) === user.id && String(t.status || '').toLowerCase() === 'completed'
       );
@@ -428,14 +427,20 @@ export default function InvestmentPlans() {
       }
 
       await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
-      const arr = (getInvestments?.() || []).filter(
-        (it) => (it.user_id ?? it.userId) === user.id
-      );
+      const arr = (getInvestments?.() || []).filter((it) => (it.user_id ?? it.userId) === user.id);
       setMyInvestments(arr);
     } finally {
       syncingRef.current = false;
     }
-  }, [user?.id, getInvestments, getTransactions, refreshInvestments, refreshTransactions, refreshBalances, addTransaction]);
+  }, [
+    user?.id,
+    getInvestments,
+    getTransactions,
+    refreshInvestments,
+    refreshTransactions,
+    refreshBalances,
+    addTransaction,
+  ]);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -443,12 +448,14 @@ export default function InvestmentPlans() {
   }, [user?.id, syncPlanPayouts]);
 
   useEffect(() => {
-    const onVis = () => { if (!document.hidden) syncPlanPayouts(); };
+    const onVis = () => {
+      if (!document.hidden) syncPlanPayouts();
+    };
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
   }, [syncPlanPayouts]);
 
-  // ================= UI =================
+  // ===== UI =====
   return (
     <div className="space-y-8">
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8 }}>
@@ -457,7 +464,11 @@ export default function InvestmentPlans() {
       </motion.div>
 
       {/* Saldo */}
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.1 }}>
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, delay: 0.1 }}
+      >
         <Card className="crypto-card">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
@@ -568,9 +579,7 @@ export default function InvestmentPlans() {
               <BarChart2 className="h-5 w-5 mr-2 text-blue-400" />
               Mis Planes Activos
             </CardTitle>
-            <CardDescription className="text-slate-300">
-              Seguimiento en tiempo real de tus inversiones.
-            </CardDescription>
+            <CardDescription className="text-slate-300">Seguimiento en tiempo real de tus inversiones.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {myInvestments.length === 0 && (
@@ -594,12 +603,10 @@ export default function InvestmentPlans() {
                         <Icon className="h-5 w-5 text-slate-200" />
                       </div>
                       <div>
-                        <div className="text-white font-semibold">
-                          {inv.planName || inv.plan_name || 'Plan'}
-                        </div>
+                        <div className="text-white font-semibold">{inv.planName || inv.plan_name || 'Plan'}</div>
                         <div className="text-xs text-slate-400">
-                          Inicio: {new Date(inv.createdAt ?? inv.created_at).toLocaleDateString()} •
-                          Fin: {new Date(stats.endDate).toLocaleDateString()}
+                          Inicio: {new Date(inv.createdAt ?? inv.created_at).toLocaleDateString()} • Fin:{' '}
+                          {new Date(stats.endDate).toLocaleDateString()}
                         </div>
                       </div>
                     </div>
@@ -610,17 +617,16 @@ export default function InvestmentPlans() {
                     </div>
                   </div>
 
-                  {/* Barra de progreso */}
+                  {/* Progreso */}
                   <div className="mt-3">
                     <div className="flex justify-between text-xs mb-1">
                       <span className="text-slate-400">Progreso</span>
-                      <span className="text-slate-300">{daysLabel} • {fmt(pct, 1)}%</span>
+                      <span className="text-slate-300">
+                        {daysLabel} • {fmt(pct, 1)}%
+                      </span>
                     </div>
                     <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
-                      <div
-                        className="h-2 rounded-full bg-gradient-to-r from-green-500 to-blue-500"
-                        style={{ width: `${pct}%` }}
-                      />
+                      <div className="h-2 rounded-full bg-gradient-to-r from-green-500 to-blue-500" style={{ width: `${pct}%` }} />
                     </div>
                   </div>
 
@@ -722,16 +728,36 @@ export default function InvestmentPlans() {
 
               {/* Quick actions */}
               <div className="grid grid-cols-4 gap-2">
-                <Button type="button" variant="secondary" className="bg-slate-800 text-slate-200" onClick={() => handleQuickPct(0.25)}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="bg-slate-800 text-slate-200"
+                  onClick={() => handleQuickPct(0.25)}
+                >
                   25%
                 </Button>
-                <Button type="button" variant="secondary" className="bg-slate-800 text-slate-200" onClick={() => handleQuickPct(0.5)}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="bg-slate-800 text-slate-200"
+                  onClick={() => handleQuickPct(0.5)}
+                >
                   50%
                 </Button>
-                <Button type="button" variant="secondary" className="bg-slate-800 text-slate-200" onClick={() => handleQuickPct(0.75)}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="bg-slate-800 text-slate-200"
+                  onClick={() => handleQuickPct(0.75)}
+                >
                   75%
                 </Button>
-                <Button type="button" variant="secondary" className="bg-slate-800 text-slate-200" onClick={() => handleQuickPct(1)}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="bg-slate-800 text-slate-200"
+                  onClick={() => handleQuickPct(1)}
+                >
                   100%
                 </Button>
               </div>
@@ -766,8 +792,7 @@ export default function InvestmentPlans() {
                     <span className="text-green-400 font-semibold">
                       $
                       {fmt(
-                        (amountUsd * Number(selectedPlan.dailyReturn || 0) * Number(selectedPlan.duration || 0)) /
-                          100,
+                        (amountUsd * Number(selectedPlan.dailyReturn || 0) * Number(selectedPlan.duration || 0)) / 100,
                         2
                       )}
                     </span>
@@ -778,7 +803,10 @@ export default function InvestmentPlans() {
                       <AlertTriangle className="h-4 w-4 mt-0.5" />
                       <span>
                         El monto debe estar entre <b>${fmt(selectedPlan.minAmount)}</b> y{' '}
-                        <b>{Number(selectedPlan.maxAmount || 0) > 0 ? `$${fmt(selectedPlan.maxAmount)}` : 'sin tope'}</b> (equivalente en USD).
+                        <b>
+                          {Number(selectedPlan.maxAmount || 0) > 0 ? `$${fmt(selectedPlan.maxAmount)}` : 'sin tope'}
+                        </b>{' '}
+                        (equivalente en USD).
                       </span>
                     </div>
                   )}
@@ -810,93 +838,95 @@ export default function InvestmentPlans() {
       )}
 
       {/* Modal Detalle del Plan */}
-      {inspectInvestment && (() => {
-        const s = computeStats(inspectInvestment);
-        const data = buildSeries(inspectInvestment);
-        const planTitle = inspectInvestment.planName || inspectInvestment.plan_name || 'Plan';
+      {inspectInvestment &&
+        (() => {
+          const s = computeStats(inspectInvestment);
+          const data = buildSeries(inspectInvestment);
+          const planTitle = inspectInvestment.planName || inspectInvestment.plan_name || 'Plan';
 
-        return (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3 }}
-            className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-            onClick={() => setInspectInvestment(null)}
-          >
-            <Card className="crypto-card w-full max-w-3xl" onClick={(e) => e.stopPropagation()}>
-              <CardHeader>
-                <CardTitle className="text-white flex items-center">
-                  <LineChartIcon className="h-5 w-5 mr-2 text-cyan-400" />
-                  Progreso de {planTitle}
-                </CardTitle>
-                <CardDescription className="text-slate-300">
-                  Inicio {new Date(s.created).toLocaleDateString()} • Fin {new Date(s.endDate).toLocaleDateString()} • {fmt(s.progressPct, 1)}% completado
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-5">
-                {/* KPIs */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="p-3 bg-slate-800/50 rounded-md">
-                    <div className="text-xs text-slate-400">Capital</div>
-                    <div className="text-white font-semibold">${fmt(s.amount)}</div>
-                  </div>
-                  <div className="p-3 bg-slate-800/50 rounded-md">
-                    <div className="text-xs text-slate-400">Diario</div>
-                    <div className="text-slate-100 font-semibold">
-                      ${fmt(s.dailyUsd)} <span className="text-slate-400 text-xs">({fmt(s.dailyPct, 2)}%)</span>
+          return (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}
+              className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+              onClick={() => setInspectInvestment(null)}
+            >
+              <Card className="crypto-card w-full max-w-3xl" onClick={(e) => e.stopPropagation()}>
+                <CardHeader>
+                  <CardTitle className="text-white flex items-center">
+                    <LineChartIcon className="h-5 w-5 mr-2 text-cyan-400" />
+                    Progreso de {planTitle}
+                  </CardTitle>
+                  <CardDescription className="text-slate-300">
+                    Inicio {new Date(s.created).toLocaleDateString()} • Fin {new Date(s.endDate).toLocaleDateString()} •{' '}
+                    {fmt(s.progressPct, 1)}% completado
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {/* KPIs */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="p-3 bg-slate-800/50 rounded-md">
+                      <div className="text-xs text-slate-400">Capital</div>
+                      <div className="text-white font-semibold">${fmt(s.amount)}</div>
+                    </div>
+                    <div className="p-3 bg-slate-800/50 rounded-md">
+                      <div className="text-xs text-slate-400">Diario</div>
+                      <div className="text-slate-100 font-semibold">
+                        ${fmt(s.dailyUsd)} <span className="text-slate-400 text-xs">({fmt(s.dailyPct, 2)}%)</span>
+                      </div>
+                    </div>
+                    <div className="p-3 bg-slate-800/50 rounded-md">
+                      <div className="text-xs text-slate-400">Ganado</div>
+                      <div className="text-green-400 font-semibold">${fmt(s.earnedUsd)}</div>
+                    </div>
+                    <div className="p-3 bg-slate-800/50 rounded-md">
+                      <div className="text-xs text-slate-400">Proyectado</div>
+                      <div className="text-slate-100 font-semibold">${fmt(s.projectedTotal)}</div>
                     </div>
                   </div>
-                  <div className="p-3 bg-slate-800/50 rounded-md">
-                    <div className="text-xs text-slate-400">Ganado</div>
-                    <div className="text-green-400 font-semibold">${fmt(s.earnedUsd)}</div>
-                  </div>
-                  <div className="p-3 bg-slate-800/50 rounded-md">
-                    <div className="text-xs text-slate-400">Proyectado</div>
-                    <div className="text-slate-100 font-semibold">${fmt(s.projectedTotal)}</div>
-                  </div>
-                </div>
 
-                {/* Gráfico */}
-                <div className="h-[300px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="actual" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#22c55e" stopOpacity={0.8} />
-                          <stop offset="95%" stopColor="#22c55e" stopOpacity={0.05} />
-                        </linearGradient>
-                        <linearGradient id="proj" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.6} />
-                          <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.05} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid stroke="rgba(148,163,184,0.15)" />
-                      <XAxis dataKey="date" tick={{ fill: '#94a3b8', fontSize: 12 }} />
-                      <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(v) => `$${fmt(v, 0)}`} />
-                      <Tooltip
-                        cursor={{ fill: 'rgba(100,116,139,0.1)' }}
-                        contentStyle={{ backgroundColor: 'rgba(30,41,59,0.95)', border: 'none', borderRadius: 8 }}
-                        labelStyle={{ color: '#cbd5e1' }}
-                        formatter={(val, name) => [`$${fmt(val)}`, name === 'actual' ? 'Valor actual' : 'Proyección']}
-                      />
-                      <Legend wrapperStyle={{ color: '#cbd5e1' }} />
-                      <ReferenceLine x={shortDate(Date.now())} stroke="#eab308" strokeDasharray="3 3" />
-                      <Area type="monotone" dataKey="actual" name="Valor actual" stroke="#22c55e" fill="url(#actual)" strokeWidth={2} />
-                      <Area type="monotone" dataKey="projected" name="Proyección" stroke="#3b82f6" fill="url(#proj)" strokeWidth={2} />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
+                  {/* Gráfico */}
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="actual" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#22c55e" stopOpacity={0.8} />
+                            <stop offset="95%" stopColor="#22c55e" stopOpacity={0.05} />
+                          </linearGradient>
+                          <linearGradient id="proj" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.6} />
+                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.05} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid stroke="rgba(148,163,184,0.15)" />
+                        <XAxis dataKey="date" tick={{ fill: '#94a3b8', fontSize: 12 }} />
+                        <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} tickFormatter={(v) => `$${fmt(v, 0)}`} />
+                        <Tooltip
+                          cursor={{ fill: 'rgba(100,116,139,0.1)' }}
+                          contentStyle={{ backgroundColor: 'rgba(30,41,59,0.95)', border: 'none', borderRadius: 8 }}
+                          labelStyle={{ color: '#cbd5e1' }}
+                          formatter={(val, name) => [`$${fmt(val)}`, name === 'actual' ? 'Valor actual' : 'Proyección']}
+                        />
+                        <Legend wrapperStyle={{ color: '#cbd5e1' }} />
+                        <ReferenceLine x={shortDate(Date.now())} stroke="#eab308" strokeDasharray="3 3" />
+                        <Area type="monotone" dataKey="actual" name="Valor actual" stroke="#22c55e" fill="url(#actual)" strokeWidth={2} />
+                        <Area type="monotone" dataKey="projected" name="Proyección" stroke="#3b82f6" fill="url(#proj)" strokeWidth={2} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
 
-                <div className="flex flex-wrap gap-2 justify-end">
-                  <Button variant="outline" onClick={() => setInspectInvestment(null)}>
-                    Cerrar
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-        );
-      })()}
+                  <div className="flex flex-wrap gap-2 justify-end">
+                    <Button variant="outline" onClick={() => setInspectInvestment(null)}>
+                      Cerrar
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          );
+        })()}
     </div>
   );
 }
