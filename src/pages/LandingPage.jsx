@@ -140,59 +140,61 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero con logo grande */}
-      <section className="relative pt-24 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8">
-        {/* Imagen de fondo */}
-        <div className="absolute inset-0">
-          <img
-            src="/src/assets/logo-libertrades.png"
-            alt="Trading Background"
-            className="w-full h-full object-cover opacity-20"
-          />
-          <div className="absolute inset-0 bg-gradient-to-b from-slate-950/70 via-slate-900/60 to-slate-950/90" />
-        </div>
+      {/* Hero con fondo expandido */}
+<section className="relative min-h-screen flex items-center justify-center px-4 sm:px-6 lg:px-8">
+  {/* Imagen de fondo */}
+  <div className="absolute inset-0">
+    <img
+      src="/src/assets/logo-libertrades.png"
+      alt="Trading Background"
+      className="w-full h-full object-cover"
+    />
+    {/* Capa de degradado oscuro */}
+    <div className="absolute inset-0 bg-gradient-to-b from-slate-950/80 via-slate-900/70 to-slate-950/90" />
+  </div>
 
-        <div className="relative max-w-5xl mx-auto text-center">
-          <motion.img
-            src="/logo-libertrades.png"
-            alt="LiberTrades Logo"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={mounted ? { opacity: 1, scale: 1 } : {}}
-            transition={{ duration: 0.8 }}
-            className="h-40 sm:h-52 mx-auto mb-6 drop-shadow-2xl"
-          />
+  {/* Contenido */}
+  <div className="relative max-w-5xl mx-auto text-center">
+    <motion.img
+      src="/logo-libertrades.png"
+      alt="LiberTrades Logo"
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={mounted ? { opacity: 1, scale: 1 } : {}}
+      transition={{ duration: 0.8 }}
+      className="h-40 sm:h-52 mx-auto mb-6 drop-shadow-2xl"
+    />
 
-          <motion.h1
-            initial={{ opacity: 0, y: 20 }}
-            animate={mounted ? { opacity: 1, y: 0 } : {}}
-            transition={{ duration: 0.7, delay: 0.2 }}
-            className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight"
-          >
-            Invierte en el
-            <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-              {' '}Futuro Digital
-            </span>
-          </motion.h1>
+    <motion.h1
+      initial={{ opacity: 0, y: 20 }}
+      animate={mounted ? { opacity: 1, y: 0 } : {}}
+      transition={{ duration: 0.7, delay: 0.2 }}
+      className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight"
+    >
+      Invierte en el
+      <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+        {' '}Futuro Digital
+      </span>
+    </motion.h1>
 
-          <p className="text-xl text-slate-300 mb-8 max-w-3xl mx-auto">
-            Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
-          </p>
+    <p className="text-xl text-slate-200 mb-8 max-w-3xl mx-auto">
+      Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
+    </p>
 
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link to="/register">
-              <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
-                Comenzar Ahora
-                <ArrowRight className="ml-2 h-5 w-5" />
-              </Button>
-            </Link>
-            <Link to="/simulator">
-              <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
-                Ver Demo
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </section>
+    <div className="flex flex-col sm:flex-row gap-4 justify-center">
+      <Link to="/register">
+        <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
+          Comenzar Ahora
+          <ArrowRight className="ml-2 h-5 w-5" />
+        </Button>
+      </Link>
+      <Link to="/simulator">
+        <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
+          Ver Demo
+        </Button>
+      </Link>
+    </div>
+  </div>
+</section>
 
       {/* Features */}
       <section className="py-16 px-4 sm:px-6 lg:px-8">
