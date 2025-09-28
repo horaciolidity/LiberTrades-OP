@@ -24,9 +24,6 @@ import { useAuth } from '@/contexts/AuthContext';
 import { ethers } from 'ethers';
 import { toast } from '@/components/ui/use-toast';
 
-// Importa el logo desde assets
-import logo from '@/assets/logo-libertrades.png';
-
 // Helper numérico seguro
 const fmt = (n, dec = 2) => {
   const num = Number(n);
@@ -139,7 +136,7 @@ const Layout = () => {
     <div className="min-h-screen app-bg-saiyan">
       {/* Banner Superior */}
       <div className="banner-libertrades">
-        <img src={logo} alt="LiberTrades Logo" />
+        <img src="/logo-libertrades.png" alt="LiberTrades Logo" className="h-10 drop-shadow-lg" />
         <h1>LiberTrades OP</h1>
       </div>
 
