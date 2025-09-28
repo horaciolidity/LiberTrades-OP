@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { FaTelegramPlane, FaYoutube, FaTwitter, FaFacebookF, FaInstagram, FaDiscord } from 'react-icons/fa';
 import { useData } from '@/contexts/DataContext';
+import logo from '@/assets/logo-libertrades.png'; // Ajusta la ruta si está en otra carpeta
 
 const plans = [
   { name: 'Básico',   price: '$100 - $999',     ret: '1.5% diario', duration: '30 días' },
@@ -110,13 +111,12 @@ const FAQItem = ({ q, a }) => (
 );
 
 export default function LandingPage() {
-  // sólo para animaciones entrada en viewport
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-900">
-      {/* Ticker con cotización en tiempo real */}
+      {/* Ticker */}
       <CryptoTicker />
 
       {/* Navbar */}
@@ -143,36 +143,52 @@ export default function LandingPage() {
       </nav>
 
       {/* Hero */}
-      <section className="pt-24 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={mounted ? { opacity: 1, y: 0 } : {}}
-            transition={{ duration: 0.7 }}
-            className="text-center"
-          >
-            <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
-              Invierte en el
-              <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">{' '}Futuro Digital</span>
-            </h1>
-            <p className="text-xl text-slate-300 mb-8 max-w-3xl mx-auto">
-              Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
-            </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Link to="/register">
-                <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
-                  Comenzar Ahora
-                  <ArrowRight className="ml-2 h-5 w-5" />
-                </Button>
-              </Link>
-              <Link to="/simulator">
-                <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
-                  Ver Demo
-                </Button>
-              </Link>
-            </div>
-          </motion.div>
-        </div>
+      <section className="relative pt-20 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={mounted ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.8 }}
+          className="relative w-full max-w-3xl mx-auto"
+        >
+          <img
+            src={logo}
+            alt="LiberTrades"
+            className="w-full h-auto object-contain mx-auto rounded-full shadow-2xl"
+            style={{
+              maskImage: "radial-gradient(circle, rgba(0,0,0,1) 85%, rgba(0,0,0,0) 100%)",
+              WebkitMaskImage: "radial-gradient(circle, rgba(0,0,0,1) 85%, rgba(0,0,0,0) 100%)",
+              backgroundColor: "black"
+            }}
+          />
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={mounted ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.7, delay: 0.3 }}
+          className="text-center mt-10"
+        >
+          <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
+            Invierte en el
+            <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">{' '}Futuro Digital</span>
+          </h1>
+          <p className="text-xl text-slate-300 mb-8 max-w-3xl mx-auto">
+            Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <Link to="/register">
+              <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
+                Comenzar Ahora
+                <ArrowRight className="ml-2 h-5 w-5" />
+              </Button>
+            </Link>
+            <Link to="/simulator">
+              <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
+                Ver Demo
+              </Button>
+            </Link>
+          </div>
+        </motion.div>
       </section>
 
       {/* Features */}
@@ -264,7 +280,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Social Proof / Métricas animadas */}
+      {/* Métricas */}
       <section className="py-16 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
@@ -326,7 +342,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* CTA final */}
+      {/* CTA Final */}
       <section className="py-16 px-4 sm:px-6 lg:px-8 bg-gradient-to-r from-green-600 to-blue-600">
         <div className="max-w-4xl mx-auto text-center">
           <motion.div initial={{ opacity: 0, y: 16 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ duration: 0.6 }}>
