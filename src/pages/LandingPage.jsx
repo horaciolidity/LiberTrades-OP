@@ -1,4 +1,3 @@
-// src/pages/LandingPage.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -136,7 +135,7 @@ const TextImageCarousel = () => {
     {
       type: "text",
       content: (
-        <>
+        <div className="px-4">
           <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
             Invierte en el{" "}
             <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
@@ -146,27 +145,26 @@ const TextImageCarousel = () => {
           <p className="text-xl text-slate-300 max-w-3xl mx-auto">
             Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
           </p>
-        </>
+        </div>
       ),
     },
     {
       type: "image",
       content: (
         <div className="relative w-full flex items-center justify-center">
-          {/* Fondo expandido con blur */}
+          {/* Logo expandido con blur + bordes negros fundidos */}
           <img
             src="/logo-libertrades.png"
             alt="LiberTrades blurred"
-            className="absolute inset-0 w-full h-full object-cover opacity-25 blur-2xl scale-125"
+            className="absolute inset-0 w-full h-full object-contain opacity-20 blur-2xl scale-125"
           />
-          {/* Degradado negro en bordes */}
-          <div className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black opacity-70"></div>
-          <div className="absolute inset-0 bg-gradient-to-r from-black via-transparent to-black opacity-70"></div>
+          <div className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black opacity-80"></div>
+          <div className="absolute inset-0 bg-gradient-to-r from-black via-transparent to-black opacity-80"></div>
           {/* Logo nítido */}
           <img
             src="/logo-libertrades.png"
             alt="LiberTrades"
-            className="relative mx-auto max-w-xl w-full h-auto object-contain opacity-90 drop-shadow-2xl"
+            className="relative mx-auto max-w-xl w-full h-auto object-contain opacity-95 drop-shadow-2xl"
           />
         </div>
       ),
@@ -174,7 +172,6 @@ const TextImageCarousel = () => {
   ];
 
   const [index, setIndex] = useState(0);
-
   useEffect(() => {
     const interval = setInterval(() => {
       setIndex((prev) => (prev + 1) % items.length);
@@ -232,14 +229,13 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero con baraja infinita */}
+      {/* Hero con efecto baraja infinita */}
       <section className="relative pt-20 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center overflow-hidden">
-        {/* Carrusel */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={mounted ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.7 }}
-          className="relative text-center z-10 h-[300px] flex items-center justify-center"
+          className="relative text-center z-10 h-[320px] flex items-center justify-center"
         >
           <TextImageCarousel />
         </motion.div>
