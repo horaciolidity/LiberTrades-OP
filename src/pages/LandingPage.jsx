@@ -1,7 +1,7 @@
 // src/pages/LandingPage.jsx
-import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   TrendingUp,
   TrendingDown,
@@ -10,9 +10,15 @@ import {
   Wallet,
   ArrowRight,
   MessageSquare,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   FaTelegramPlane,
   FaYoutube,
@@ -20,42 +26,42 @@ import {
   FaFacebookF,
   FaInstagram,
   FaDiscord,
-} from 'react-icons/fa';
-import { useData } from '@/contexts/DataContext';
+} from "react-icons/fa";
+import { useData } from "@/contexts/DataContext";
 
-/* --------------------- Configuración --------------------- */
+/* ---------------- Configuración ---------------- */
 const plans = [
-  { name: 'Básico', price: '$100 - $999', ret: '1.5% diario', duration: '30 días' },
-  { name: 'Estándar', price: '$1,000 - $4,999', ret: '2.0% diario', duration: '30 días' },
-  { name: 'Premium', price: '$5,000 - $19,999', ret: '2.5% diario', duration: '30 días' },
-  { name: 'VIP', price: '$20,000+', ret: '3.0% diario', duration: '30 días' },
+  { name: "Básico", price: "$100 - $999", ret: "1.5% diario", duration: "30 días" },
+  { name: "Estándar", price: "$1,000 - $4,999", ret: "2.0% diario", duration: "30 días" },
+  { name: "Premium", price: "$5,000 - $19,999", ret: "2.5% diario", duration: "30 días" },
+  { name: "VIP", price: "$20,000+", ret: "3.0% diario", duration: "30 días" },
 ];
 
 const features = [
-  { icon: TrendingUp, title: 'Trading Simulado', description: 'Practica en tiempo real con nuestro simulador' },
-  { icon: Shield, title: 'Seguridad Avanzada', description: 'Infraestructura y custodia de nivel empresarial' },
-  { icon: Users, title: 'Referidos', description: 'Gana comisiones por invitar amigos' },
-  { icon: Wallet, title: 'Criptos Soportadas', description: 'Invierte con BTC, ETH, USDT y más' },
+  { icon: TrendingUp, title: "Trading Simulado", description: "Practica en tiempo real con nuestro simulador" },
+  { icon: Shield, title: "Seguridad Avanzada", description: "Infraestructura y custodia de nivel empresarial" },
+  { icon: Users, title: "Referidos", description: "Gana comisiones por invitar amigos" },
+  { icon: Wallet, title: "Criptos Soportadas", description: "Invierte con BTC, ETH, USDT y más" },
 ];
 
 const socialLinks = [
-  { icon: FaTelegramPlane, href: '#', name: 'Telegram' },
-  { icon: FaYoutube, href: '#', name: 'YouTube' },
-  { icon: FaTwitter, href: '#', name: 'Twitter/X' },
-  { icon: FaFacebookF, href: '#', name: 'Facebook' },
-  { icon: FaInstagram, href: '#', name: 'Instagram' },
-  { icon: FaDiscord, href: '#', name: 'Discord' },
+  { icon: FaTelegramPlane, href: "#", name: "Telegram" },
+  { icon: FaYoutube, href: "#", name: "YouTube" },
+  { icon: FaTwitter, href: "#", name: "Twitter/X" },
+  { icon: FaFacebookF, href: "#", name: "Facebook" },
+  { icon: FaInstagram, href: "#", name: "Instagram" },
+  { icon: FaDiscord, href: "#", name: "Discord" },
 ];
 
+/* ---------------- Utilidades ---------------- */
 const fmt = (n, d = 2) => {
   const x = Number(n);
   return Number.isFinite(x) ? x.toFixed(d) : (0).toFixed(d);
 };
 
-/* --------------------- Componentes auxiliares --------------------- */
 const CryptoTicker = () => {
   const { cryptoPrices = {} } = useData() || {};
-  const pairs = useMemo(() => ['BTC', 'ETH', 'USDT'], []);
+  const pairs = useMemo(() => ["BTC", "ETH", "USDT"], []);
   if (!pairs.length) return null;
 
   return (
@@ -70,7 +76,7 @@ const CryptoTicker = () => {
         {[...Array(2)].map((_, loop) => (
           <span key={loop}>
             {pairs.map((sym) => {
-              const price = Number(cryptoPrices?.[sym]?.price ?? (sym === 'USDT' ? 1 : 0));
+              const price = Number(cryptoPrices?.[sym]?.price ?? (sym === "USDT" ? 1 : 0));
               const chg = Number(cryptoPrices?.[sym]?.change ?? 0);
               const up = chg >= 0;
               return (
@@ -80,18 +86,14 @@ const CryptoTicker = () => {
                 >
                   <span className="font-semibold text-white">{sym}</span>
                   <span className="tabular-nums">
-                    ${fmt(sym === 'USDT' ? price : price, sym === 'USDT' ? 4 : 2)}
+                    ${fmt(sym === "USDT" ? price : price, sym === "USDT" ? 4 : 2)}
                   </span>
                   <span
                     className={`inline-flex items-center ${
-                      up ? 'text-green-400' : 'text-red-400'
+                      up ? "text-green-400" : "text-red-400"
                     }`}
                   >
-                    {up ? (
-                      <TrendingUp className="h-3 w-3 mr-1" />
-                    ) : (
-                      <TrendingDown className="h-3 w-3 mr-1" />
-                    )}
+                    {up ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
                     {fmt(Math.abs(chg), 2)}%
                   </span>
                 </span>
@@ -104,7 +106,7 @@ const CryptoTicker = () => {
   );
 };
 
-const Counter = ({ to = 0, prefix = '', suffix = '', duration = 1200, className = '' }) => {
+const Counter = ({ to = 0, prefix = "", suffix = "", duration = 1200, className = "" }) => {
   const [val, setVal] = useState(0);
   useEffect(() => {
     const start = performance.now();
@@ -128,7 +130,75 @@ const FAQItem = ({ q, a }) => (
   </details>
 );
 
-/* --------------------- LandingPage --------------------- */
+/* ---------------- Hero con carrusel ---------------- */
+const TextImageCarousel = () => {
+  const items = [
+    {
+      type: "text",
+      content: (
+        <>
+          <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
+            Invierte en el{" "}
+            <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+              Futuro Digital
+            </span>
+          </h1>
+          <p className="text-xl text-slate-300 max-w-3xl mx-auto">
+            Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
+          </p>
+        </>
+      ),
+    },
+    {
+      type: "image",
+      content: (
+        <div className="relative w-full flex items-center justify-center">
+          {/* Fondo expandido con blur */}
+          <img
+            src="/logo-libertrades.png"
+            alt="LiberTrades blurred"
+            className="absolute inset-0 w-full h-full object-cover opacity-25 blur-2xl scale-125"
+          />
+          {/* Degradado negro en bordes */}
+          <div className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black opacity-70"></div>
+          <div className="absolute inset-0 bg-gradient-to-r from-black via-transparent to-black opacity-70"></div>
+          {/* Logo nítido */}
+          <img
+            src="/logo-libertrades.png"
+            alt="LiberTrades"
+            className="relative mx-auto max-w-xl w-full h-auto object-contain opacity-90 drop-shadow-2xl"
+          />
+        </div>
+      ),
+    },
+  ];
+
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setIndex((prev) => (prev + 1) % items.length);
+    }, 4000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={index}
+        initial={{ opacity: 0, rotateY: 90 }}
+        animate={{ opacity: 1, rotateY: 0 }}
+        exit={{ opacity: 0, rotateY: -90 }}
+        transition={{ duration: 0.8, ease: "easeInOut" }}
+        className="w-full flex flex-col items-center justify-center"
+      >
+        {items[index].content}
+      </motion.div>
+    </AnimatePresence>
+  );
+};
+
+/* ---------------- Página principal ---------------- */
 export default function LandingPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -162,57 +232,33 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero con logo y bordes fusionados */}
+      {/* Hero con baraja infinita */}
       <section className="relative pt-20 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center overflow-hidden">
-        {/* Imagen expandida con bordes en negro */}
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <img
-            src="/logo-libertrades.png"
-            alt="LiberTrades blurred"
-            className="absolute inset-0 w-full h-full object-cover opacity-25 scale-125 blur-2xl"
-          />
-          {/* Overlay radial para fusionar con negro */}
-          <div className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black opacity-70"></div>
-          <div className="absolute inset-0 bg-gradient-to-r from-black via-transparent to-black opacity-70"></div>
-        </div>
-
-        {/* Logo nítido en el centro */}
+        {/* Carrusel */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={mounted ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.7 }}
-          className="relative text-center z-10"
+          className="relative text-center z-10 h-[300px] flex items-center justify-center"
         >
-          <img
-            src="/logo-libertrades.png"
-            alt="LiberTrades"
-            className="mx-auto max-w-xl w-full h-auto object-contain opacity-90 drop-shadow-2xl mb-8"
-          />
-          <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
-            Invierte en el
-            <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-              {' '}Futuro Digital
-            </span>
-          </h1>
-          <p className="text-xl text-slate-300 mb-8 max-w-3xl mx-auto">
-            Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link to="/register">
-              <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
-                Comenzar Ahora
-                <ArrowRight className="ml-2 h-5 w-5" />
-              </Button>
-            </Link>
-            <Link to="/simulator">
-              <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
-                Ver Demo
-              </Button>
-            </Link>
-          </div>
+          <TextImageCarousel />
         </motion.div>
-      </section>
 
+        {/* Botones */}
+        <div className="relative z-10 mt-6 flex flex-col sm:flex-row gap-4 justify-center">
+          <Link to="/register">
+            <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
+              Comenzar Ahora
+              <ArrowRight className="ml-2 h-5 w-5" />
+            </Button>
+          </Link>
+          <Link to="/simulator">
+            <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
+              Ver Demo
+            </Button>
+          </Link>
+        </div>
+      </section>
       {/* Features */}
       <section className="py-16 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto">
@@ -246,9 +292,7 @@ export default function LandingPage() {
                       <CardTitle className="text-white">{f.title}</CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <CardDescription className="text-slate-300 text-center">
-                        {f.description}
-                      </CardDescription>
+                      <CardDescription className="text-slate-300 text-center">{f.description}</CardDescription>
                     </CardContent>
                   </Card>
                 </motion.div>
@@ -284,9 +328,7 @@ export default function LandingPage() {
                 <Card className="crypto-card h-full">
                   <CardHeader className="text-center">
                     <CardTitle className="text-2xl text-white">{p.name}</CardTitle>
-                    <CardDescription className="text-3xl font-bold text-green-400">
-                      {p.ret}
-                    </CardDescription>
+                    <CardDescription className="text-3xl font-bold text-green-400">{p.ret}</CardDescription>
                   </CardHeader>
                   <CardContent className="text-center space-y-4">
                     <div className="text-slate-300">
