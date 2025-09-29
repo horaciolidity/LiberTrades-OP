@@ -8,5 +8,6 @@ export default function Banner() {
       <img src={logo} alt="LiberTrades Logo" className="h-10 mr-3 drop-shadow-lg" />
       <h1 className="text-xl font-bold tracking-wide">LiberTrades OP</h1>
     </div>
+    
   );
 }
