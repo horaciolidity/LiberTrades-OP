@@ -152,20 +152,17 @@ const TextImageCarousel = () => {
       type: "image",
       content: (
         <div className="relative w-full flex items-center justify-center">
-          {/* Logo expandido con blur + bordes negros fundidos */}
-          <img
-            src="/logo-libertrades.png"
-            alt="LiberTrades blurred"
-            className="absolute inset-0 w-full h-full object-contain opacity-20 blur-2xl scale-125"
-          />
-          <div className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black opacity-80"></div>
-          <div className="absolute inset-0 bg-gradient-to-r from-black via-transparent to-black opacity-80"></div>
-          {/* Logo nítido */}
-          <img
-            src="/logo-libertrades.png"
-            alt="LiberTrades"
-            className="relative mx-auto max-w-xl w-full h-auto object-contain opacity-95 drop-shadow-2xl"
-          />
+          {/* Medalla con borde degradado */}
+          <div className="relative rounded-full p-4 bg-gradient-to-tr from-green-500/40 via-black/80 to-blue-500/40 shadow-2xl">
+            {/* Logo circular con transparencia */}
+            <img
+              src="/logo-libertrades.png"
+              alt="LiberTrades"
+              className="rounded-full w-64 h-64 object-contain opacity-95 drop-shadow-[0_0_25px_rgba(0,0,0,0.8)]"
+            />
+            {/* Capa extra para fundido en negro en los bordes */}
+            <div className="absolute inset-0 rounded-full bg-gradient-to-b from-black/40 via-transparent to-black/60 pointer-events-none"></div>
+          </div>
         </div>
       ),
     },
@@ -235,7 +232,7 @@ export default function LandingPage() {
           initial={{ opacity: 0, y: 20 }}
           animate={mounted ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.7 }}
-          className="relative text-center z-10 h-[320px] flex items-center justify-center"
+          className="relative text-center z-10 h-[340px] flex items-center justify-center"
         >
           <TextImageCarousel />
         </motion.div>
