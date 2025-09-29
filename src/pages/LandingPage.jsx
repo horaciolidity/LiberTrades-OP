@@ -109,6 +109,60 @@ const FAQItem = ({ q, a }) => (
   </details>
 );
 
+/* 🔄 Carrusel de texto / logo en el Hero */
+const TextImageCarousel = () => {
+  const items = [
+    {
+      type: "text",
+      content: (
+        <>
+          <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
+            Invierte en el{" "}
+            <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+              Futuro Digital
+            </span>
+          </h1>
+          <p className="text-xl text-slate-300 max-w-3xl mx-auto">
+            Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
+          </p>
+        </>
+      ),
+    },
+    {
+      type: "image",
+      content: (
+        <img
+          src="/logo-libertrades.png"
+          alt="LiberTrades"
+          className="mx-auto max-w-xl w-full h-auto object-contain opacity-80 drop-shadow-2xl"
+        />
+      ),
+    },
+  ];
+
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setIndex((prev) => (prev + 1) % items.length);
+    }, 4000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <motion.div
+      key={index}
+      initial={{ opacity: 0, rotateY: 90 }}
+      animate={{ opacity: 1, rotateY: 0 }}
+      exit={{ opacity: 0, rotateY: -90 }}
+      transition={{ duration: 0.8, ease: "easeInOut" }}
+      className="w-full flex flex-col items-center justify-center"
+    >
+      {items[index].content}
+    </motion.div>
+  );
+};
+
 export default function LandingPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -140,52 +194,40 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero con logo de fondo */}
+      {/* Hero con efecto baraja infinita */}
       <section className="relative pt-20 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center overflow-hidden">
-        {/* Fondo con logo */}
         <div
-          className="absolute inset-0 flex items-center justify-center pointer-events-none"
+          className="absolute inset-0 pointer-events-none"
           style={{
             background: "radial-gradient(circle, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0.95) 80%)",
           }}
-        >
-          <img
-            src="/logo-libertrades.png"
-            alt="LiberTrades"
-            className="max-w-xl w-full h-auto opacity-30 object-contain"
-          />
-        </div>
+        />
 
-        {/* Contenido encima */}
+        {/* Carrusel */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={mounted ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.7 }}
-          className="relative text-center z-10"
+          className="relative text-center z-10 h-[300px] flex items-center justify-center"
         >
-          <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
-            Invierte en el
-            <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">{' '}Futuro Digital</span>
-          </h1>
-          <p className="text-xl text-slate-300 mb-8 max-w-3xl mx-auto">
-            Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link to="/register">
-              <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
-                Comenzar Ahora
-                <ArrowRight className="ml-2 h-5 w-5" />
-              </Button>
-            </Link>
-            <Link to="/simulator">
-              <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
-                Ver Demo
-              </Button>
-            </Link>
-          </div>
+          <TextImageCarousel />
         </motion.div>
-      </section>
 
+        {/* Botones fijos */}
+        <div className="relative z-10 mt-6 flex flex-col sm:flex-row gap-4 justify-center">
+          <Link to="/register">
+            <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
+              Comenzar Ahora
+              <ArrowRight className="ml-2 h-5 w-5" />
+            </Button>
+          </Link>
+          <Link to="/simulator">
+            <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
+              Ver Demo
+            </Button>
+          </Link>
+        </div>
+      </section>
       {/* Features */}
       <section className="py-16 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto">
