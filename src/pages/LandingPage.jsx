@@ -128,16 +128,26 @@ const TextImageCarousel = () => {
         </>
       ),
     },
-    {
-      type: "image",
-      content: (
-        <img
-          src="/logo-libertrades.png"
-          alt="LiberTrades"
-          className="mx-auto max-w-xl w-full h-auto object-contain opacity-80 drop-shadow-2xl"
-        />
-      ),
-    },
+   {
+  type: "image",
+  content: (
+    <div className="relative w-full flex items-center justify-center">
+      {/* Fondo expandido con blur */}
+      <img
+        src="/logo-libertrades.png"
+        alt="LiberTrades blurred"
+        className="absolute inset-0 w-full h-full object-cover opacity-20 blur-2xl scale-125"
+      />
+      {/* Logo nítido al centro */}
+      <img
+        src="/logo-libertrades.png"
+        alt="LiberTrades"
+        className="relative mx-auto max-w-xl w-full h-auto object-contain opacity-80 drop-shadow-2xl"
+      />
+    </div>
+  ),
+}
+
   ];
 
   const [index, setIndex] = useState(0);
