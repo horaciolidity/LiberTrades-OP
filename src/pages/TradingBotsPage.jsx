@@ -396,7 +396,7 @@ const TradingBotsPage = () => {
       }
 
       setBusyActivate(true);
-      const prev = availableUsd;
+      
 
       const res = await activateBot?.({ botId: bot.id, botName: bot.name, strategy: bot.strategy, amountUsd: amount });
       if (res?.code === 'INSUFFICIENT_FUNDS') {
@@ -417,7 +417,7 @@ const TradingBotsPage = () => {
       await refreshAvailable();
       await refreshBalances?.();
       // Si algo salió mal y el server no descontó, volvemos (raro, pero seguro)
-      setAvailableUsd((v) => (v > prev ? prev : v));
+      
     } catch (e) {
       console.error('[handleActivateBot]', e);
       toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
@@ -477,7 +477,7 @@ const TradingBotsPage = () => {
       const r = await creditBotProfit?.(a.id, withdrawable, `Take profit ${a.botName}`);
       if (r?.ok || r?.via === 'fallback') {
         // Acreditamos optimistamente
-        setAvailableUsd((v) => Number(v || 0) + withdrawable);
+        
         toast({ title: 'Ganancias acreditadas', description: `Se pasaron $${fmt(withdrawable)} al saldo.` });
         await Promise.all([refreshTransactions?.()]);
         await refreshAvailable();
