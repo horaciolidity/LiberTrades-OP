@@ -442,12 +442,8 @@ const TradingBotsPage = () => {
       if (r?.ok) {
         // Si el backend devuelve cuánto se devolvió, lo sumamos optimistamente
         const refunded = Number(r?.refundedUsd ?? r?.refundUsd ?? r?.refunded ?? 0);
-        if (Number.isFinite(refunded) && refunded > 0) {
-          setAvailableUsd((v) => Number(v || 0) + refunded);
-          toast({ title: 'Bot cancelado', description: `Se liberaron $${fmt(refunded)} al saldo.` });
-        } else {
-          toast({ title: 'Bot cancelado' });
-        }
+        toast({ title: 'Bot cancelado', description: refunded > 0 ? `Se liberaron $${fmt(refunded)} al saldo.` : '' });
+         await Promise.all([refreshBotActivations?.(), refreshTransactions?.(), refreshAvailable(), refreshBalances?.()]);
         await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
         await refreshAvailable();
         await refreshBalances?.();
@@ -478,10 +474,8 @@ const TradingBotsPage = () => {
       if (r?.ok || r?.via === 'fallback') {
         // Acreditamos optimistamente
         
-        toast({ title: 'Ganancias acreditadas', description: `Se pasaron $${fmt(withdrawable)} al saldo.` });
-        await Promise.all([refreshTransactions?.()]);
-        await refreshAvailable();
-        await refreshBalances?.();
+      toast({ title: 'Ganancias acreditadas', description: `Se pasaron $${fmt(withdrawable)} al saldo.` });  
+      await Promise.all([refreshTransactions?.(), refreshAvailable(), refreshBalances?.()]); 
       } else {
         toast({ title: 'No se pudo tomar ganancias', variant: 'destructive' });
       }
