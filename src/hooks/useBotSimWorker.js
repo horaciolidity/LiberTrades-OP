@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 
+/* ===================== Helper: generar trades ===================== */
+// Cada secuencia es [ + , - , - ]
+function generateTradeSequence(amount) {
+  return [
+    +(Math.random() * amount * 0.05).toFixed(2),    // positivo hasta +5%
+    -(Math.random() * amount * 0.03).toFixed(2),    // negativo hasta -3%
+    -(Math.random() * amount * 0.03).toFixed(2),    // negativo hasta -3%
+  ];
+}
+
 export default function useBotSimWorker(ctx) {
   const {
     botActivations = [],
@@ -39,7 +49,7 @@ export default function useBotSimWorker(ctx) {
 
   const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-  /* ---------- Boot worker (¡ahora arranca solo!) ---------- */
+  /* ---------- Boot worker ---------- */
   useEffect(() => {
     const w = new Worker(new URL('@/workers/botSim.worker.js', import.meta.url), { type:'module' });
     workerRef.current = w;
@@ -56,7 +66,6 @@ export default function useBotSimWorker(ctx) {
     };
 
     w.postMessage({ type:'init' });
-    // 🔥 antes faltaba esto
     w.postMessage({ type:'start' });
 
     const flush = () => {
@@ -163,28 +172,32 @@ export default function useBotSimWorker(ctx) {
     }
   }, [tradesById, eventsById]);
 
-  /* ---------- Seed activaciones reales al worker y ¡arrancar! ---------- */
+  /* ---------- Seed activaciones ---------- */
   useEffect(() => {
     const w = workerRef.current;
     if (!w) return;
-    let seeded = false;
 
     (botActivations || [])
       .filter((a) => String(a.status || '').toLowerCase() === 'active')
       .forEach((a) => {
         const have = tradesById[a.id] || payoutsById[a.id];
         if (!have) {
+          // Generamos secuencia inicial de trades
+          const seq = generateTradeSequence(a.amountUsd);
+          const profit = seq.reduce((acc, v) => acc + v, 0);
+
+          setPayoutsById((prev) => ({
+            ...prev,
+            [a.id]: { profit, net: profit, withdrawn: 0 },
+          }));
+
           w.postMessage({ type:'addActivation',
             payload: { id:a.id, amountUsd:a.amountUsd, botName:a.botName, status:'active' } });
-          seeded = true;
         }
       });
-
-    // 🔥 si recién seed-eamos, aseguramos que corra
-    if (seeded) { try { w.postMessage({ type:'start' }); } catch {} }
   }, [botActivations, tradesById, payoutsById]);
 
-  /* ---------- API que usa la página ---------- */
+  /* ---------- API ---------- */
   const listBotTrades = useCallback(async (aid, limit = 80) => {
     return (tradesById[aid] || []).slice(0, limit);
   }, [tradesById]);
@@ -209,7 +222,7 @@ export default function useBotSimWorker(ctx) {
     return () => set.delete(cb);
   }, [eventsById]);
 
-  // Tomar ganancias: acredita en saldo real + marca withdrawn local
+  // Tomar ganancias
   const takeProfit = useCallback(async (aid) => {
     const p = payoutsById[aid];
     const withdrawable = Math.max(0, Number(p?.net || 0) - Number(p?.withdrawn || 0));
@@ -222,7 +235,6 @@ export default function useBotSimWorker(ctx) {
       const cur = prev[aid] || { profit:0, net:0, withdrawn:0 };
       return { ...prev, [aid]: { ...cur, withdrawn: Number(cur.withdrawn || 0) + withdrawable } };
     });
-    try { workerRef.current?.postMessage({ type:'takeProfitMarked', payload: aid }); } catch {}
 
     pushEvent(aid, { id: uid(), kind:'withdraw', created_at:new Date().toISOString(),
       payload: { amount_usd: withdrawable } });
@@ -231,16 +243,14 @@ export default function useBotSimWorker(ctx) {
     return { ok:true };
   }, [payoutsById, creditBotProfit, refreshTransactions]);
 
-  /* ---------- PnL fusionado (real + sim) ---------- */
+  /* ---------- PnL fusionado ---------- */
   const getBotPnl = useCallback((aid) => {
     const base = getBotPnlReal?.(aid) || { profit:0, fees:0, refunds:0, net:0 };
     const sim  = payoutsById[aid] || { profit:0, net:0, withdrawn:0 };
     return {
       ...base,
-      // sumamos lo simulado
       profit: Number(base.profit || 0) + Number(sim.profit || 0),
       net:    Number(base.net    || 0) + Number(sim.net    || 0),
-      // este campo no lo trae el DataContext: lo agregamos
       withdrawn: Number(sim.withdrawn || 0),
     };
   }, [getBotPnlReal, payoutsById]);
@@ -256,8 +266,7 @@ export default function useBotSimWorker(ctx) {
   }, [payoutsById]);
 
   const totalBotProfit = Number(totalProfitReal) + simTotals.profit;
-  const totalBotFees   = Number(totalFeesReal); // no agregamos fees “sim”
-  // “Neto no retirado” → sumamos el net simulado y le restamos lo ya retirado simulado
+  const totalBotFees   = Number(totalFeesReal);
   const totalBotNet    = Number(totalNetReal) + (simTotals.net - simTotals.withdrawn);
 
   /* ---------- Controles ---------- */
