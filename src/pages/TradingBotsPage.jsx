@@ -192,6 +192,8 @@ const TradingBotsPage = () => {
     getAvailableBalance,
   } = data;
 
+
+
   const [selectedBot, setSelectedBot] = useState(null);
   const [investmentAmount, setInvestmentAmount] = useState('');
   const [busyActivate, setBusyActivate] = useState(false);
