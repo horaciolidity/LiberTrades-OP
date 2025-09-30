@@ -10,7 +10,7 @@ let state = {
   prices: { ...defaultPairs },
   activations: [],      // {id, amountUsd, botName, status}
   trades: {},           // id -> Trade[]
-  payouts: {},          // id -> { profit, fees, net, withdrawn }
+  payouts: {},          // id -> { profit, losses, fees, net, withdrawn }
   running: false,
   tickMs: 3000,
   maxItems: 40,
@@ -21,7 +21,8 @@ const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-function stepPrice(p, vol = 0.003) {
+// 📌 Aumentamos la volatilidad para que haya pérdidas reales
+function stepPrice(p, vol = 0.01) {
   const shock = (Math.random() - 0.5) * 2 * vol;
   const next = p * (1 + shock);
   return Math.max(0.00001, next);
@@ -55,7 +56,7 @@ function tick() {
   const priceDelta = {};
   for (const k of Object.keys(state.prices)) {
     const prev = state.prices[k];
-    const next = stepPrice(prev, 0.003);
+    const next = stepPrice(prev, 0.01);
     // umbral mínimo para no spamear
     if (Math.abs(next - prev) / prev > 0.0005) {
       state.prices[k] = next;
@@ -63,8 +64,8 @@ function tick() {
     }
   }
 
-  const tradeDeltas = [];  // { actId, change:'open'|'close', trade?, pnl?, pair?, id? }
-  const payoutDeltas = []; // { actId, profitDelta, netDelta }
+  const tradeDeltas = [];
+  const payoutDeltas = [];
 
   // 2) por activación, abrir/cerrar
   for (const a of state.activations) {
@@ -82,8 +83,14 @@ function tick() {
         list[idx] = { ...t, status: 'closed', closed_at: Date.now(), pnl };
         state.trades[a.id] = list.slice(0, state.maxItems);
 
-        const pay = state.payouts[a.id] || { profit: 0, fees: 0, net: 0, withdrawn: 0 };
-        pay.profit += pnl; pay.net += pnl;
+        // 📌 Separamos ganancias y pérdidas
+        const pay = state.payouts[a.id] || { profit: 0, losses: 0, fees: 0, net: 0, withdrawn: 0 };
+        if (pnl >= 0) {
+          pay.profit += pnl;
+        } else {
+          pay.losses += Math.abs(pnl);
+        }
+        pay.net += pnl;
         state.payouts[a.id] = pay;
 
         tradeDeltas.push({ actId: a.id, change: 'close', pnl, pair: t.pair, id: t.id });
@@ -148,7 +155,7 @@ self.onmessage = (e) => {
 
   if (type === 'setTick') {
     state.tickMs = clamp(Number(payload || 3000), 500, 60_000);
-    if (state.running) start(); // reinicia con nuevo intervalo
+    if (state.running) start();
     self.postMessage({ type: 'tock', tickMs: state.tickMs });
     return;
   }
@@ -158,7 +165,7 @@ self.onmessage = (e) => {
     if (!a?.id) return;
     state.activations = [a, ...state.activations];
     state.trades[a.id] = [];
-    state.payouts[a.id] = { profit: 0, fees: 0, net: 0, withdrawn: 0 };
+    state.payouts[a.id] = { profit: 0, losses: 0, fees: 0, net: 0, withdrawn: 0 };
     self.postMessage({ type: 'activationAdded', id: a.id });
     return;
   }
@@ -166,10 +173,8 @@ self.onmessage = (e) => {
   if (type === 'cancelActivation') {
     const id = payload;
     if (!id) return;
-    // marcar cancelado
     state.activations = state.activations.map(x => x.id === id ? { ...x, status: 'canceled' } : x);
 
-    // opcional: cerrar abiertos y emitir deltas inmediatos
     const list = state.trades[id] || [];
     const tradeDeltas = [];
     const payoutDeltas = [];
@@ -189,8 +194,12 @@ self.onmessage = (e) => {
     state.trades[id] = list.slice(0, state.maxItems);
 
     if (profitDelta !== 0) {
-      const pay = state.payouts[id] || { profit: 0, fees: 0, net: 0, withdrawn: 0 };
-      pay.profit += profitDelta;
+      const pay = state.payouts[id] || { profit: 0, losses: 0, fees: 0, net: 0, withdrawn: 0 };
+      if (profitDelta >= 0) {
+        pay.profit += profitDelta;
+      } else {
+        pay.losses += Math.abs(profitDelta);
+      }
       pay.net += profitDelta;
       state.payouts[id] = pay;
       payoutDeltas.push({ actId: id, profitDelta, netDelta: profitDelta });
@@ -203,9 +212,24 @@ self.onmessage = (e) => {
     return;
   }
 
+  // 📌 Ahora descuenta lo retirado del net (evita retiros infinitos)
   if (type === 'takeProfitMarked') {
-    // El hook ya marcó withdrawn en su estado; acá no mutamos nada pesado
-    self.postMessage({ type: 'takeProfitAck', id: payload });
+    const id = payload;
+    if (id && state.payouts[id]) {
+      const pay = state.payouts[id];
+      const withdrawable = pay.net - (pay.withdrawn || 0);
+      if (withdrawable > 0) {
+        pay.withdrawn += withdrawable;
+        state.payouts[id] = pay;
+        self.postMessage({
+          type: 'delta',
+          priceDelta: {},
+          tradeDeltas: [],
+          payoutDeltas: [{ actId: id, profitDelta: 0, netDelta: -withdrawable, withdrawn: withdrawable }]
+        });
+      }
+    }
+    self.postMessage({ type: 'takeProfitAck', id });
     return;
   }
 

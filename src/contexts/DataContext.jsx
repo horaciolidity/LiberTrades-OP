@@ -1546,16 +1546,39 @@ async function addTransaction({
         note,
       });
       if (error) {
-        const txn = await addTransaction({
-          amount: Number(amountUsd),
-          type: 'bot_profit',
-          description: note || 'Realized PnL',
-          referenceType: 'bot_profit',
-          referenceId: activationId,
-        });
-        await recalcAndRefreshBalances();
-        return { ok: !!txn, via: 'fallback' };
-      }
+  const txn = await addTransaction({
+    amount: Number(amountUsd),
+    type: 'bot_profit',
+    description: note || 'Realized PnL',
+    referenceType: 'bot_profit',
+    referenceId: activationId,
+  });
+
+  // 👇 extra: registrar un retiro (take profit real)
+  await addTransaction({
+    amount: Number(amountUsd),
+    type: 'bot_withdraw',
+    description: 'Take Profit',
+    referenceType: 'bot_withdraw',
+    referenceId: activationId,
+  });
+
+  // 👇 extra: actualizar saldo local (solo sim)
+  try {
+    if (refreshBalances) {
+      await refreshBalances();
+    } else {
+      // fallback: aumentar balance en AuthContext
+      setBalances?.((prev) => ({
+        ...prev,
+        USDC: (prev?.USDC || 0) + Number(amountUsd),
+      }));
+    }
+  } catch {}
+
+  return { ok: !!txn, via: 'fallback' };
+}
+
       await refreshTransactions();
       await recalcAndRefreshBalances();
       return data ?? { ok: true };
@@ -1666,7 +1689,8 @@ async function addTransaction({
       const aid = t?.referenceId;
       if (!aid) continue;
 
-      if (!m.has(aid)) m.set(aid, { profit: 0, fees: 0, refunds: 0, net: 0 });
+      if (!m.has(aid)) m.set(aid, { profit: 0, fees: 0, refunds: 0, withdrawn: 0, net: 0 });
+
 
       const amt = Number(t.amount || 0);
 
@@ -1680,10 +1704,15 @@ async function addTransaction({
       } else if (kind === 'bot_refund') {
         m.get(aid).refunds += amt;
       }
+        else if (kind === 'bot_withdraw') {
+        m.get(aid).withdrawn += amt;
+      }
     }
+    
 
     for (const [k, v] of m.entries()) {
-      v.net = (Number(v.profit) || 0) - (Number(v.fees) || 0);
+      v.net = (Number(v.profit) || 0) - (Number(v.fees) || 0) - (Number(v.withdrawn) || 0);
+
       m.set(k, v);
     }
 
