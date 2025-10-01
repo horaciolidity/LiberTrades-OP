@@ -657,27 +657,56 @@ export default function AdminDashboard() {
   // ---------- preview 24h ----------
   const selectedInst = instruments.find((i) => i.symbol === selectedSymbol);
   const previewData = useMemo(() => {
-    if (!selectedInst) return [];
-    const base = Number(selectedInst.base_price || 0);
-    const dec = Number(selectedInst.decimals || 2);
-    const list = [];
-    for (let h = 0; h < 24; h++) {
-      let price = base || 0;
-      const hits = rules.filter(
-        (r) =>
-          r.active &&
-          ((r.start_hour < r.end_hour && h >= r.start_hour && h < r.end_hour) ||
-            (r.start_hour > r.end_hour && (h >= r.start_hour || h < r.end_hour)) ||
-            (r.start_hour === r.end_hour))
-      );
-      hits.forEach((r) => {
-        if (r.type === 'percent') price *= 1 + Number(r.value || 0) / 100;
-        else price += Number(r.value || 0);
-      });
-      list.push({ hour: `${String(h).padStart(2, '0')}:00`, price: Number(price.toFixed(dec)) });
-    }
-    return list;
-  }, [rules, selectedInst]);
+  if (!selectedInst) return [];
+  const base = Number(selectedInst.base_price || 0);
+  const dec = Number(selectedInst.decimals || 2);
+  const difficulty = selectedInst.difficulty || "intermediate";
+  const list = [];
+
+  // Configuración de ruido según dificultad
+  let noiseFactor = 0;
+  switch (difficulty) {
+    case "easy":
+      noiseFactor = 0.002; // ±0.2%
+      break;
+    case "intermediate":
+      noiseFactor = 0.01; // ±1%
+      break;
+    case "nervous":
+      noiseFactor = 0.05; // ±5%
+      break;
+    default:
+      noiseFactor = 0.01;
+  }
+
+  for (let h = 0; h < 24; h++) {
+    let price = base || 0;
+
+    // Aplicar reglas activas en esa hora
+    const hits = rules.filter(
+      (r) =>
+        r.active &&
+        ((r.start_hour < r.end_hour && h >= r.start_hour && h < r.end_hour) ||
+          (r.start_hour > r.end_hour && (h >= r.start_hour || h < r.end_hour)) ||
+          (r.start_hour === r.end_hour))
+    );
+    hits.forEach((r) => {
+      if (r.type === "percent") price *= 1 + Number(r.value || 0) / 100;
+      else price += Number(r.value || 0);
+    });
+
+    // Agregar ruido aleatorio
+    const noise = (Math.random() - 0.5) * 2 * noiseFactor;
+    price *= 1 + noise;
+
+    list.push({
+      hour: `${String(h).padStart(2, "0")}:00`,
+      price: Number(price.toFixed(dec)),
+    });
+  }
+  return list;
+}, [rules, selectedInst]);
+
 
   // ---------- render ----------
   return (

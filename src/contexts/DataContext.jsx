@@ -368,6 +368,60 @@ export function DataProvider({ children }) {
   };
   useEffect(() => { fetchAdminSettings(); }, []);
 
+  function applyMarketRules(symbol, basePrice, difficulty = "intermediate") {
+  const hour = new Date().getUTCHours();
+  let price = basePrice;
+
+  // Buscar reglas activas
+  const hits = marketRules.filter((r) => {
+    if (String(r.symbol || "").toUpperCase() !== symbol.toUpperCase()) return false;
+    if (!r.active) return false;
+
+    const inRange =
+      (r.start_hour < r.end_hour && hour >= r.start_hour && hour < r.end_hour) ||
+      (r.start_hour > r.end_hour && (hour >= r.start_hour || hour < r.end_hour)) ||
+      (r.start_hour === r.end_hour);
+
+    return inRange;
+  });
+
+  // Aplicar reglas como tendencia progresiva
+  hits.forEach((r) => {
+    const duration = (r.end_hour - r.start_hour + 24) % 24 || 24;
+    const progress = ((hour - r.start_hour + 24) % 24) / duration;
+
+    if (r.type === "percent") {
+      const factor = 1 + (r.value / 100) * progress;
+      price *= factor;
+    } else if (r.type === "absolute") {
+      const add = (Number(r.value || 0)) * progress;
+      price += add;
+    }
+  });
+
+  // --- Ajustar según "dificultad"
+  let noiseFactor = 0;
+  switch (difficulty) {
+    case "easy":
+      noiseFactor = 0.002; // ±0.2%
+      break;
+    case "intermediate":
+      noiseFactor = 0.01; // ±1%
+      break;
+    case "nervous":
+      noiseFactor = 0.05; // ±5%
+      break;
+    default:
+      noiseFactor = 0.01;
+  }
+
+  // Agregar ruido aleatorio
+  const noise = (Math.random() - 0.5) * 2 * noiseFactor; 
+  price *= 1 + noise;
+
+  return Number(price.toFixed(6));
+}
+
   /* ---------- Mapa dinámico a Binance ---------- */
   const liveBinanceMap = useMemo(() => {
     const map = { ...DEFAULT_BINANCE_MAP };
@@ -750,7 +804,7 @@ export function DataProvider({ children }) {
         if ((!Number.isFinite(finalPrice) || finalPrice <= 0) && Number.isFinite(lastKnown)) {
           finalPrice = lastKnown;
         }
-
+        finalPrice = applyMarketRules(symU, finalPrice);
         finalPrice = Number(
           (Number.isFinite(finalPrice) ? finalPrice : 0).toFixed(Number.isFinite(decimals) ? decimals : 2)
         );
