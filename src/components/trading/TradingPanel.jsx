@@ -92,27 +92,28 @@ export default function TradingPanel({
     cryptoPrices?.[noSlash(effectivePair)] ??
     null;
 
-  // Calculamos change si no viene (usamos ref_24h/ref24h del contexto si existe)
-  const priceCandidate =
-    Number.isFinite(Number(fromCtx.price)) ? Number(fromCtx.price)
-      : Number.isFinite(Number(fromCtxMap?.price)) ? Number(fromCtxMap?.price)
-      : Number.isFinite(Number(fromProps?.price)) ? Number(fromProps?.price)
+// 👉 Prioridad: mergedPrices (fromProps) > ctxPrices > DataContext
+const priceCandidate =
+    Number.isFinite(Number(fromProps?.price)) ? Number(fromProps.price)
+      : Number.isFinite(Number(fromCtxMap?.price)) ? Number(fromCtxMap.price)
+      : Number.isFinite(Number(fromCtx.price)) ? Number(fromCtx.price)
       : NaN;
 
-  const ref24hCandidate =
-    Number.isFinite(Number(fromCtx.ref_24h)) ? Number(fromCtx.ref_24h)
+const ref24hCandidate =
+    Number.isFinite(Number(fromProps?.ref_24h)) ? Number(fromProps.ref_24h)
+      : Number.isFinite(Number(fromCtxMap?.ref_24h)) ? Number(fromCtxMap.ref_24h)
+      : Number.isFinite(Number(fromCtx.ref_24h)) ? Number(fromCtx.ref_24h)
       : Number.isFinite(Number(fromCtx.ref24h)) ? Number(fromCtx.ref24h)
-      : Number.isFinite(Number(fromCtxMap?.ref_24h)) ? Number(fromCtxMap?.ref_24h)
-      : Number.isFinite(Number(fromProps?.ref_24h)) ? Number(fromProps?.ref_24h)
       : NaN;
 
-  const changeCandidate =
-    Number.isFinite(Number(fromCtx.change)) ? Number(fromCtx.change)
-      : Number.isFinite(Number(fromCtxMap?.change)) ? Number(fromCtxMap?.change)
-      : Number.isFinite(Number(fromProps?.change)) ? Number(fromProps?.change)
+const changeCandidate =
+    Number.isFinite(Number(fromProps?.change)) ? Number(fromProps.change)
+      : Number.isFinite(Number(fromCtxMap?.change)) ? Number(fromCtxMap.change)
+      : Number.isFinite(Number(fromCtx.change)) ? Number(fromCtx.change)
       : (Number.isFinite(priceCandidate) && Number.isFinite(ref24hCandidate) && ref24hCandidate > 0
           ? ((priceCandidate / ref24hCandidate) - 1) * 100
           : NaN);
+
 
   const currentPriceData = {
     price: priceCandidate,
