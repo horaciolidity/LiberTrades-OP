@@ -1,46 +1,57 @@
-// src/hooks/useLivePrice.js
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 const BINANCE_WS_ROOT = 'wss://stream.binance.com:9443/ws';
 
+// helper para ver si la hora UTC está dentro del rango
 function inRangeUTC(h, start, end) {
   if (start === end) return true;                 // 24h
   if (start < end)  return h >= start && h < end; // 10→13
   return h >= start || h < end;                   // 22→03
 }
 
-function simulatePrice(inst, rules) {
+/**
+ * Genera precio natural (ruido sinusoidal) sin reglas horarias.
+ */
+function simulateNaturalPrice(inst) {
   const base = Number(inst?.base_price ?? 0) || 0;
   const dec  = Number(inst?.decimals ?? 2) || 2;
-  const hour = new Date().getUTCHours();
-
-  const symU = String(inst?.symbol || '').toUpperCase();
-  const hits = (rules || []).filter(
-    (r) => {
-      const rSym = String(r?.symbol || r?.asset_symbol || '').toUpperCase();
-      return rSym === symU &&
-        r?.active &&
-        inRangeUTC(hour, Number(r.start_hour ?? 0), Number(r.end_hour ?? 0));
-    }
-  );
-
-  let mult = 1;
-  let add  = 0;
-  for (const r of hits) {
-    const v = Number(r.value ?? 0);
-    if (String(r.type || '').toLowerCase() === 'percent') mult *= 1 + v / 100;
-    else add += v;
-  }
 
   // “respiración” controlada por volatility_bps (basis points)
   const t   = Date.now() / 1000;
   const vol = Number(inst?.volatility_bps ?? 0) / 10000; // 50 bps = 0.5%
   const wave = 0.5 * Math.sin(t / 30) + 0.3 * Math.sin(t / 7) + 0.2 * Math.sin(t / 3);
 
-  const p = base * mult + add;
-  const price = p * (1 + vol * wave);
-
+  const price = base * (1 + vol * wave);
   return Number(price.toFixed(dec));
+}
+
+/**
+ * Aplica reglas horarias sobre un precio natural.
+ */
+function applyMarketRules(symbol, rawPrice, rules = []) {
+  const hour = new Date().getUTCHours();
+  let price = rawPrice;
+
+  (rules || []).forEach((r) => {
+    const rSym = String(r.symbol || r.asset_symbol || '').toUpperCase();
+    if (rSym !== String(symbol).toUpperCase()) return;
+    if (!r.active) return;
+
+    const inRange =
+      (r.start_hour < r.end_hour && hour >= r.start_hour && hour < r.end_hour) ||
+      (r.start_hour > r.end_hour && (hour >= r.start_hour || hour < r.end_hour)) ||
+      (r.start_hour === r.end_hour);
+
+    if (inRange) {
+      if (String(r.type || '').toLowerCase() === 'percent') {
+        price *= 1 + (Number(r.value) || 0) / 100;
+      } else if (String(r.type || '').toLowerCase() === 'absolute') {
+        price += Number(r.value) || 0;
+      }
+    }
+  });
+
+  return Number(price.toFixed(6));
 }
 
 /**
@@ -98,21 +109,17 @@ export function useLivePrice(inst, rules) {
 
       ws.onmessage = (ev) => {
         try {
-          // miniTicker single-stream -> objeto plano con c (last) y P (pct)
           const data = JSON.parse(ev.data);
           const c = Number(data?.c ?? data?.data?.c);
           const P = Number(data?.P ?? data?.data?.P); // % cambio 24h
           if (!Number.isFinite(c)) return;
-
           setQuote({ price: round(c), change: Number.isFinite(P) ? P : null });
         } catch {}
       };
 
-      // 🔧 si hay error, cerramos para que dispare onclose y el fallback REST
       ws.onerror = () => { try { ws.close(); } catch {} };
 
       ws.onclose = () => {
-        // fallback REST cada 5s (usa 24hr para traer %)
         pollRef.current = setInterval(async () => {
           try {
             const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${inst.binance_symbol}`;
@@ -127,7 +134,6 @@ export function useLivePrice(inst, rules) {
         }, 5000);
       };
 
-      // pull inicial rápido (24hr para traer % desde el arranque)
       (async () => {
         try {
           const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${inst.binance_symbol}`;
@@ -146,14 +152,14 @@ export function useLivePrice(inst, rules) {
 
     // === SIMULADO / MANUAL / REAL (servidor) ===
     const tick = () => {
-      const p = simulatePrice(inst, rules);
-      ensureRefForToday(p);
-      const ref = refPriceRef.current || p || 0;
-      const chg = ref > 0 ? ((p - ref) / ref) * 100 : 0;
-      setQuote({ price: round(p), change: chg });
+      const raw = simulateNaturalPrice(inst);               // velas naturales
+      const adj = applyMarketRules(inst.symbol, raw, rules); // reglas horarias
+      ensureRefForToday(adj);
+      const ref = refPriceRef.current || adj || 0;
+      const chg = ref > 0 ? ((adj - ref) / ref) * 100 : 0;
+      setQuote({ price: round(adj), change: chg });
     };
 
-    // seed + intervalo 1s
     tick();
     pollRef.current = setInterval(tick, 1000);
 
@@ -166,7 +172,7 @@ export function useLivePrice(inst, rules) {
     inst?.volatility_bps,
     inst?.decimals,
     JSON.stringify(rules || []),
-    round, // eslint feliz
+    round,
   ]);
 
   return quote; // { price, change }
