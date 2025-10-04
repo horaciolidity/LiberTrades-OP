@@ -134,7 +134,7 @@ const TextImageCarousel = () => {
   const slides = [
     "/images/quiero_que_alguien_este_usando_su.jpeg",
     "/images/quiero_que_alguien_este_usando_su (1).jpeg",
-    "/images/c0d875d0-4da7-4889-8be4-2c7897e3c040.png",
+    "/images/quiero_que_alguien_este_usando_su (3).jpeg",
   ];
 
   const [index, setIndex] = useState(0);
