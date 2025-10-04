@@ -129,66 +129,66 @@ const FAQItem = ({ q, a }) => (
   </details>
 );
 
-/* ---------------- Hero con carrusel ---------------- */
+/* ---------------- Hero con tus imágenes ---------------- */
 const TextImageCarousel = () => {
-  const items = [
-    {
-      type: "text",
-      content: (
-        <div className="px-4">
-          <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
-            Invierte en el{" "}
-            <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-              Futuro Digital
-            </span>
-          </h1>
-          <p className="text-xl text-slate-300 max-w-3xl mx-auto">
-            Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
-          </p>
-        </div>
-      ),
-    },
-    {
-      type: "image",
-      content: (
-        <div className="relative w-full flex items-center justify-center">
-          {/* Medalla con borde degradado */}
-          <div className="relative rounded-full p-4 bg-gradient-to-tr from-green-500/40 via-black/80 to-blue-500/40 shadow-2xl">
-            {/* Logo circular con transparencia */}
-            <img
-              src="/logo-libertrades.png"
-              alt="LiberTrades"
-              className="rounded-full w-64 h-64 object-contain opacity-95 drop-shadow-[0_0_25px_rgba(0,0,0,0.8)]"
-            />
-            {/* Capa extra para fundido en negro en los bordes */}
-            <div className="absolute inset-0 rounded-full bg-gradient-to-b from-black/40 via-transparent to-black/60 pointer-events-none"></div>
-          </div>
-        </div>
-      ),
-    },
+  const slides = [
+    "/images/quiero_que_alguien_este_usando_su.jpeg",
+    "/images/quiero_que_alguien_este_usando_su (1).jpeg",
+    "/images/c0d875d0-4da7-4889-8be4-2c7897e3c040.png",
   ];
 
   const [index, setIndex] = useState(0);
   useEffect(() => {
     const interval = setInterval(() => {
-      setIndex((prev) => (prev + 1) % items.length);
-    }, 4000);
+      setIndex((prev) => (prev + 1) % slides.length);
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
   return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={index}
-        initial={{ opacity: 0, rotateY: 90 }}
-        animate={{ opacity: 1, rotateY: 0 }}
-        exit={{ opacity: 0, rotateY: -90 }}
-        transition={{ duration: 0.8, ease: "easeInOut" }}
-        className="w-full flex flex-col items-center justify-center"
-      >
-        {items[index].content}
-      </motion.div>
-    </AnimatePresence>
+    <div className="relative w-full h-[80vh] flex items-center justify-center overflow-hidden rounded-[40px]">
+      <AnimatePresence mode="wait">
+        <motion.img
+          key={slides[index]}
+          src={slides[index]}
+          alt="LiberTrades hero"
+          initial={{ opacity: 0, scale: 1.05 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 1.2, ease: "easeInOut" }}
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+      </AnimatePresence>
+
+      {/* Overlay de color */}
+      <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/50 to-black/80"></div>
+
+      {/* Texto central */}
+      <div className="relative z-10 text-center px-6">
+        <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
+          Invierte en el{" "}
+          <span className="bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+            Futuro Digital
+          </span>
+        </h1>
+        <p className="text-xl text-slate-300 max-w-3xl mx-auto mb-8">
+          Planes configurables, trading simulado, sistema de referidos y cotizaciones en tiempo real — todo en una sola plataforma.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-4 justify-center">
+          <Link to="/register">
+            <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
+              Comenzar Ahora
+              <ArrowRight className="ml-2 h-5 w-5" />
+            </Button>
+          </Link>
+          <Link to="/simulator">
+            <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
+              Ver Demo
+            </Button>
+          </Link>
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -226,32 +226,11 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero con efecto baraja infinita */}
-      <section className="relative pt-20 md:pt-28 pb-16 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center overflow-hidden">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={mounted ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.7 }}
-          className="relative text-center z-10 h-[340px] flex items-center justify-center"
-        >
-          <TextImageCarousel />
-        </motion.div>
-
-        {/* Botones */}
-        <div className="relative z-10 mt-6 flex flex-col sm:flex-row gap-4 justify-center">
-          <Link to="/register">
-            <Button size="lg" className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 text-lg px-8 py-4">
-              Comenzar Ahora
-              <ArrowRight className="ml-2 h-5 w-5" />
-            </Button>
-          </Link>
-          <Link to="/simulator">
-            <Button size="lg" variant="outline" className="text-lg px-8 py-4 border-slate-600 text-white hover:bg-slate-800">
-              Ver Demo
-            </Button>
-          </Link>
-        </div>
+      {/* Hero */}
+      <section className="relative pt-10 pb-20 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center">
+        <TextImageCarousel />
       </section>
+
       {/* Features */}
       <section className="py-16 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto">
