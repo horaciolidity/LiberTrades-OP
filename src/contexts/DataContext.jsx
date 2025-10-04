@@ -930,6 +930,7 @@ export function DataProvider({ children }) {
     const { data, error } = await supabase
       .from('wallet_transactions')
       .select('*')
+      .limit(200)
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
     if (error) {
@@ -1098,39 +1099,7 @@ export function DataProvider({ children }) {
     }
   }, [user?.id]);
 
-  /* ---------------- Helpers de saldo ---------------- */
-
-  // Lee balances expuestos por AuthContext con múltiples formatos
-  function pickAuthAvailable(currency = 'USDC') {
-    const c = String(currency).toUpperCase();
-    const b = balances || {};
-
-    const byCurrency = [
-      b?.available?.[c],
-      b?.[c]?.available,
-      b?.[c]?.balance,
-      b?.[c]?.free,
-      b?.[c]?.amount,
-      b?.[c],
-    ]
-      .map(parseNum)
-      .find((v) => v != null);
-    if (byCurrency != null) return byCurrency;
-
-    const totals = [b?.net, b?.netUsd, b?.net_usd, b?.total, b?.totalUsd, b?.total_usd, b?.usd, b?.USDC, b?.USDT]
-      .map(parseNum)
-      .find((v) => v != null);
-    if (totals != null) return totals;
-
-    let best = null;
-    try {
-      Object.values(b).forEach((v) => {
-        const n = parseNum(v);
-        if (n != null) best = best == null ? n : Math.max(best, n);
-      });
-    } catch {}
-    return best;
-  }
+ 
 
 // ---------------- Helpers de saldo ----------------
 
@@ -1519,6 +1488,7 @@ async function addTransaction({
           description: `Devolución capital ${act.bot_name}`,
           referenceType: 'bot_refund',
           referenceId: id,
+          status: 'completed',
         });
       }
 
@@ -1530,6 +1500,7 @@ async function addTransaction({
           description: `Fee cancelación ${act.bot_name}`,
           referenceType: 'bot_fee',
           referenceId: id,
+          status: 'completed',
         });
       }
 
@@ -1606,6 +1577,7 @@ async function addTransaction({
     description: note || 'Realized PnL',
     referenceType: 'bot_profit',
     referenceId: activationId,
+    status: 'completed',
   });
 
   // 👇 extra: registrar un retiro (take profit real)
@@ -1615,6 +1587,7 @@ async function addTransaction({
     description: 'Take Profit',
     referenceType: 'bot_withdraw',
     referenceId: activationId,
+    status: 'completed',
   });
 
   // 👇 extra: actualizar saldo local (solo sim)
@@ -1783,7 +1756,7 @@ async function addTransaction({
 
   const getBotPnl = useCallback(
     (activationId) => {
-      return botPnlByActivation[String(activationId)] || { profit: 0, fees: 0, refunds: 0, net: 0 };
+      return botPnlByActivation[String(activationId)] || { profit: 0, fees: 0, refunds: 0, withdrawn: 0, net: 0 };
     },
     [botPnlByActivation]
   );
