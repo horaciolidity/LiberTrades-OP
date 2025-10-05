@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -85,14 +85,18 @@ const CryptoTicker = () => {
                 >
                   <span className="font-semibold text-white">{sym}</span>
                   <span className="tabular-nums">
-                    ${fmt(sym === "USDT" ? price : price, sym === "USDT" ? 4 : 2)}
+                    ${fmt(price, sym === "USDT" ? 4 : 2)}
                   </span>
                   <span
                     className={`inline-flex items-center ${
                       up ? "text-green-400" : "text-red-400"
                     }`}
                   >
-                    {up ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
+                    {up ? (
+                      <TrendingUp className="h-3 w-3 mr-1" />
+                    ) : (
+                      <TrendingDown className="h-3 w-3 mr-1" />
+                    )}
                     {fmt(Math.abs(chg), 2)}%
                   </span>
                 </span>
@@ -129,7 +133,7 @@ const FAQItem = ({ q, a }) => (
   </details>
 );
 
-/* ---------------- Hero con tus imágenes ---------------- */
+/* ---------------- Hero con imágenes ---------------- */
 const TextImageCarousel = () => {
   const slides = [
     "/images/quiero_que_alguien_este_usando_su.jpeg",
@@ -160,10 +164,8 @@ const TextImageCarousel = () => {
         />
       </AnimatePresence>
 
-      {/* Overlay de color */}
       <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/50 to-black/80"></div>
 
-      {/* Texto central */}
       <div className="relative z-10 text-center px-6">
         <h1 className="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
           Invierte en el{" "}
@@ -189,6 +191,88 @@ const TextImageCarousel = () => {
         </div>
       </div>
     </div>
+  );
+};
+
+/* ---------------- Carrusel de videos tipo diapositiva ---------------- */
+const VideoCarousel = () => {
+  const videos = [
+    { src: "/videos/media.mp4", title: "Trading en Tiempo Real", desc: "Opera con precisión y velocidad profesional." },
+    { src: "/videos/media2.mp4", title: "Simulador Avanzado", desc: "Experimentá estrategias con datos en vivo." },
+    { src: "/videos/media3.mp4", title: "Panel Inteligente", desc: "Controlá tus bots y métricas desde un solo lugar." },
+  ];
+
+  const [index, setIndex] = useState(0);
+  const videoRefs = useRef([]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setIndex((prev) => (prev + 1) % videos.length);
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [videos.length]);
+
+  useEffect(() => {
+    videoRefs.current.forEach((v, i) => {
+      if (!v) return;
+      if (i === index) {
+        v.currentTime = 0;
+        v.play().catch(() => {});
+      } else v.pause();
+    });
+  }, [index]);
+
+  return (
+    <section className="relative w-full py-24 bg-gradient-to-b from-black via-slate-950 to-black overflow-hidden">
+      <motion.h2
+        initial={{ opacity: 0, y: 30 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        viewport={{ once: true }}
+        transition={{ duration: 0.8 }}
+        className="text-center text-4xl md:text-5xl font-bold text-white mb-12"
+      >
+        Experiencia LiberTrades
+      </motion.h2>
+
+      <div className="relative flex justify-center items-center">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={index}
+            initial={{ opacity: 0, scale: 0.95, x: 80 }}
+            animate={{ opacity: 1, scale: 1, x: 0 }}
+            exit={{ opacity: 0, scale: 0.95, x: -80 }}
+            transition={{ duration: 1 }}
+            className="relative w-[90%] md:w-[70%] lg:w-[60%] rounded-3xl overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.6)]"
+          >
+            <video
+              ref={(el) => (videoRefs.current[index] = el)}
+              src={videos[index].src}
+              muted
+              loop
+              playsInline
+              preload="auto"
+              className="w-full h-full object-cover rounded-3xl"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent pointer-events-none" />
+            <div className="absolute bottom-8 left-0 right-0 text-center text-white px-6">
+              <h3 className="text-2xl md:text-3xl font-semibold mb-2">{videos[index].title}</h3>
+              <p className="text-slate-300 text-sm md:text-base">{videos[index].desc}</p>
+            </div>
+          </motion.div>
+        </AnimatePresence>
+      </div>
+
+      <div className="flex justify-center mt-8 space-x-3">
+        {videos.map((_, i) => (
+          <div
+            key={i}
+            className={`h-2 w-8 rounded-full transition-all duration-500 ${
+              i === index ? "bg-green-500 w-10" : "bg-slate-600"
+            }`}
+          />
+        ))}
+      </div>
+    </section>
   );
 };
 
@@ -230,63 +314,9 @@ export default function LandingPage() {
       <section className="relative pt-10 pb-20 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center">
         <TextImageCarousel />
       </section>
-    {/* Carrusel de videos tipo showcase */}
-<section className="relative w-full py-20 overflow-hidden bg-gradient-to-b from-black via-slate-950 to-black">
-  <motion.h2
-    initial={{ opacity: 0, y: 20 }}
-    whileInView={{ opacity: 1, y: 0 }}
-    viewport={{ once: true }}
-    transition={{ duration: 0.8 }}
-    className="text-4xl md:text-5xl font-bold text-center text-white mb-12"
-  >
-    Experiencia LiberTrades
-  </motion.h2>
 
-  <div className="relative flex overflow-x-auto snap-x snap-mandatory scroll-smooth scrollbar-hide gap-8 px-6 md:px-16">
-    {[
-      "/videos/media.mp4",
-      "/videos/media2.mp4",
-      "/videos/media3.mp4"
-    ].map((src, i) => (
-      <motion.div
-        key={i}
-        className="snap-center flex-shrink-0 w-[90%] md:w-[70%] lg:w-[60%] relative rounded-2xl overflow-hidden shadow-2xl"
-        initial={{ opacity: 0, y: 40 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        viewport={{ once: true }}
-        transition={{ duration: 0.8, delay: i * 0.1 }}
-      >
-        <video
-          src={src}
-          muted
-          loop
-          playsInline
-          preload="auto"
-          className="w-full h-full object-cover rounded-2xl"
-          ref={(el) => {
-            if (!el) return;
-            const observer = new IntersectionObserver(
-              (entries) => {
-                entries.forEach((entry) => {
-                  if (entry.isIntersecting) el.play();
-                  else el.pause();
-                });
-              },
-              { threshold: 0.5 }
-            );
-            observer.observe(el);
-          }}
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent"></div>
-      </motion.div>
-    ))}
-  </div>
-
-  {/* Indicador visual de scroll */}
-  <div className="text-center mt-6 text-slate-500 text-sm">
-    Deslizá para ver más ▶
-  </div>
-</section>
+      {/* Carrusel de videos */}
+      <VideoCarousel />
 
       {/* Features */}
       <section className="py-16 px-4 sm:px-6 lg:px-8">
