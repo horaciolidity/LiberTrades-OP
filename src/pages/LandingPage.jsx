@@ -240,7 +240,7 @@ export default function LandingPage() {
     className="relative w-full h-full"
   >
     <motion.video
-      src="/videos/landing-showcase.mp4"
+      src="/videos/media.mp4"
       muted
       loop
       playsInline
