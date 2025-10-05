@@ -435,43 +435,29 @@ const TradingBotsPage = () => {
   };
 
   const doCancel = async (id) => {
-  if (!id) return;
-  setRowBusy(id, true);
-  try {
-    const r = await cancelBot?.(id);
-    if (r?.ok) {
-      // registrar devolución o pérdida
-      const pnl = Number(r?.refund ?? r?.refundedUsd ?? 0) - Number(r?.fee ?? 0);
-      const pnlDesc = pnl >= 0 ? 'Retiro con ganancia' : 'Retiro con pérdida';
-      
-      // Impactar saldo real
-      await creditBotProfit?.(id, pnl, pnlDesc);
-
-      toast({
-        title: 'Bot cerrado',
-        description:
-          pnl >= 0
-            ? `Se devolvieron $${fmt(Math.abs(pnl))} al saldo (+)`
-            : `Se descontaron $${fmt(Math.abs(pnl))} por pérdida`,
-      });
-
-      await Promise.all([
-        refreshBotActivations?.(),
-        refreshTransactions?.(),
-        refreshAvailable(),
-        refreshBalances?.(),
-      ]);
-    } else {
-      toast({ title: 'No se pudo cerrar el bot', description: r?.msg || '', variant: 'destructive' });
+    if (!id) return;
+    setRowBusy(id, true);
+    try {
+      const r = await cancelBot?.(id);
+      if (r?.ok) {
+        // Si el backend devuelve cuánto se devolvió, lo sumamos optimistamente
+        const refunded = Number(r?.refundedUsd ?? r?.refundUsd ?? r?.refunded ?? 0);
+        toast({ title: 'Bot cancelado', description: refunded > 0 ? `Se liberaron $${fmt(refunded)} al saldo.` : '' });
+         await Promise.all([refreshBotActivations?.(), refreshTransactions?.(), refreshAvailable(), refreshBalances?.()]);
+        await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
+        await refreshAvailable();
+        await refreshBalances?.();
+      } else {
+        toast({ title: 'No se pudo cancelar', description: r?.msg || '', variant: 'destructive' });
+      }
+    } catch (e) {
+      console.error('[cancelBot]', e);
+      toast({ title: 'Error', description: 'No se pudo cancelar el bot.', variant: 'destructive' });
+    } finally {
+      setRowBusy(id, false);
+      setConfirmCancel(null);
     }
-  } catch (e) {
-    console.error('[cancelBot]', e);
-    toast({ title: 'Error', description: 'No se pudo cerrar el bot.', variant: 'destructive' });
-  } finally {
-    setRowBusy(id, false);
-    setConfirmCancel(null);
-  }
-};
+  };
 
   const doTakeProfit = async (a) => {
     if (!a?.id) return;
@@ -936,15 +922,9 @@ const TradingBotsPage = () => {
                             ? `Tomar ganancias $${fmt(Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)))}`
                             : 'Sin ganancias'}
                         </Button>
-                        <Button
-                             variant="destructive"
-                              onClick={() => askCancel(a)}
-                             disabled={rowBusy}
->
-                        <XCircle className="w-4 h-4 mr-1" />
-                         {rowBusy ? 'Procesando…' : 'Retirarse (cerrar bot)'}
-                           </Button>
-
+                        <Button variant="destructive" onClick={() => askCancel(a)} disabled={rowBusy}>
+                          <XCircle className="w-4 h-4 mr-1" /> {rowBusy ? 'Cancelando…' : 'Cancelar'}
+                        </Button>
                       </div>
                     </CardContent>
                   </Card>
@@ -1021,8 +1001,8 @@ const TradingBotsPage = () => {
       {/* Confirm cancelar */}
       <ConfirmModal
         open={!!confirmCancel}
-        title={`Retirarse del bot ${confirmCancel?.name || ''}`}
-        description="Al retirarte se calcula el resultado (ganancia o pérdida), se aplica el fee indicado y se ajusta tu saldo"
+        title={`Cancelar bot ${confirmCancel?.name || ''}`}
+        description="Al cancelar se libera el capital y se aplica el fee indicado."
         destructive
         confirmText="Cancelar bot"
         cancelText="Volver"
