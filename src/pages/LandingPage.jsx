@@ -194,7 +194,7 @@ const TextImageCarousel = () => {
   );
 };
 
-/* ---------------- Carrusel de videos tipo diapositiva ---------------- */
+/* ---------------- Carrusel de videos tipo diapositiva (profesional) ---------------- */
 const VideoCarousel = () => {
   const videos = [
     { src: "/videos/media.mp4", title: "Trading en Tiempo Real", desc: "Opera con precisión y velocidad profesional." },
@@ -205,6 +205,20 @@ const VideoCarousel = () => {
   const [index, setIndex] = useState(0);
   const videoRefs = useRef([]);
 
+  /* Reproduce el video activo y pausa los demás */
+  useEffect(() => {
+    videoRefs.current.forEach((v, i) => {
+      if (!v) return;
+      if (i === index) {
+        v.currentTime = 0;
+        v.play().catch(() => {});
+      } else {
+        v.pause();
+      }
+    });
+  }, [index]);
+
+  /* Rotación automática */
   useEffect(() => {
     const interval = setInterval(() => {
       setIndex((prev) => (prev + 1) % videos.length);
@@ -212,20 +226,10 @@ const VideoCarousel = () => {
     return () => clearInterval(interval);
   }, [videos.length]);
 
-  useEffect(() => {
-    videoRefs.current.forEach((v, i) => {
-      if (!v) return;
-      if (i === index) {
-        v.currentTime = 0;
-        v.play().catch(() => {});
-      } else v.pause();
-    });
-  }, [index]);
-
   return (
-    <section className="relative w-full py-24 bg-gradient-to-b from-black via-slate-950 to-black overflow-hidden">
+    <section className="relative w-full py-20 bg-gradient-to-b from-black via-slate-950 to-black overflow-hidden">
       <motion.h2
-        initial={{ opacity: 0, y: 30 }}
+        initial={{ opacity: 0, y: 20 }}
         whileInView={{ opacity: 1, y: 0 }}
         viewport={{ once: true }}
         transition={{ duration: 0.8 }}
@@ -234,15 +238,16 @@ const VideoCarousel = () => {
         Experiencia LiberTrades
       </motion.h2>
 
+      {/* Contenedor central con bordes y sombras */}
       <div className="relative flex justify-center items-center">
         <AnimatePresence mode="wait">
           <motion.div
             key={index}
-            initial={{ opacity: 0, scale: 0.95, x: 80 }}
-            animate={{ opacity: 1, scale: 1, x: 0 }}
-            exit={{ opacity: 0, scale: 0.95, x: -80 }}
-            transition={{ duration: 1 }}
-            className="relative w-[90%] md:w-[70%] lg:w-[60%] rounded-3xl overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.6)]"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            transition={{ duration: 1, ease: "easeInOut" }}
+            className="relative w-[90%] md:w-[70%] lg:w-[55%] rounded-[32px] overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.6)] border border-slate-800"
           >
             <video
               ref={(el) => (videoRefs.current[index] = el)}
@@ -251,23 +256,34 @@ const VideoCarousel = () => {
               loop
               playsInline
               preload="auto"
-              className="w-full h-full object-cover rounded-3xl"
+              autoPlay
+              className="w-full h-[50vh] object-cover rounded-[32px]"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent pointer-events-none" />
+
+            {/* Overlay sutil para contraste */}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
+
+            {/* Texto sobre el video */}
             <div className="absolute bottom-8 left-0 right-0 text-center text-white px-6">
-              <h3 className="text-2xl md:text-3xl font-semibold mb-2">{videos[index].title}</h3>
-              <p className="text-slate-300 text-sm md:text-base">{videos[index].desc}</p>
+              <h3 className="text-2xl md:text-3xl font-semibold mb-2 drop-shadow-lg">
+                {videos[index].title}
+              </h3>
+              <p className="text-slate-300 text-sm md:text-base drop-shadow-md">
+                {videos[index].desc}
+              </p>
             </div>
           </motion.div>
         </AnimatePresence>
       </div>
 
+      {/* Indicadores tipo diapositiva */}
       <div className="flex justify-center mt-8 space-x-3">
         {videos.map((_, i) => (
-          <div
+          <button
             key={i}
-            className={`h-2 w-8 rounded-full transition-all duration-500 ${
-              i === index ? "bg-green-500 w-10" : "bg-slate-600"
+            onClick={() => setIndex(i)}
+            className={`h-2 rounded-full transition-all duration-500 ${
+              i === index ? "bg-green-500 w-10" : "bg-slate-600 w-4"
             }`}
           />
         ))}
