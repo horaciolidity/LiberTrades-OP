@@ -129,8 +129,12 @@ export default function useBotSimWorker(ctx) {
       }
     };
 
-    w.postMessage({ type: 'init' });
-    w.postMessage({ type: 'start' });
+   // Evitar reset prematuro al inicializar
+setTimeout(() => {
+  w.postMessage({ type:'init' });
+  w.postMessage({ type:'start' });
+}, 1000);
+
 
     /* ---------- Loop de flush ---------- */
     const flush = () => {
@@ -245,31 +249,50 @@ export default function useBotSimWorker(ctx) {
     }
   }, [tradesById, eventsById]);
 
-  /* ===================== Inicialización de activaciones ===================== */
-  useEffect(() => {
-    const w = workerRef.current;
-    if (!w) return;
+ /* ===================== Inicialización de activaciones ===================== */
+useEffect(() => {
+  const w = workerRef.current;
+  if (!w) return;
 
-    (botActivations || [])
-      .filter((a) => String(a.status || '').toLowerCase() === 'active')
-      .forEach((a) => {
-        const have = tradesById[a.id] || payoutsById[a.id];
-        if (!have) {
-          const seq = generateTradeSequence(a.amountUsd);
-          const profit = seq.reduce((acc, v) => acc + v, 0);
+  // 🧩 1. No tocar nada si las activaciones aún no llegaron
+  if (!Array.isArray(botActivations) || botActivations.length === 0) return;
 
-          setPayoutsById((prev) => ({
-            ...prev,
-            [a.id]: { profit, net: profit, withdrawn: 0 },
-          }));
+  // 🧩 2. Añadir solo las nuevas activaciones, sin resetear las previas
+  (botActivations)
+    .filter((a) => String(a.status || '').toLowerCase() === 'active')
+    .forEach((a) => {
+      // Si ya tenemos trades o payouts para este bot, no lo recrees
+      const have = tradesById[a.id] || payoutsById[a.id];
+      if (!have) {
+        const seq = generateTradeSequence(a.amountUsd);
+        const profit = seq.reduce((acc, v) => acc + v, 0);
 
-          w.postMessage({
-            type: 'addActivation',
-            payload: { id: a.id, amountUsd: a.amountUsd, botName: a.botName, status: 'active' },
-          });
-        }
-      });
-  }, [botActivations, tradesById, payoutsById]);
+        setPayoutsById((prev) => ({
+          ...prev,
+          [a.id]: { profit, net: profit, withdrawn: 0 },
+        }));
+
+        // 🚀 Enviamos al worker sin limpiar estado previo
+        w.postMessage({
+          type: 'addActivation',
+          payload: {
+            id: a.id,
+            amountUsd: a.amountUsd,
+            botName: a.botName,
+            status: 'active',
+          },
+        });
+      }
+    });
+
+  // 🧩 3. Evitar matar el worker en remounts rápidos
+  return () => {
+    if (document.hidden) {
+      try { w.terminate(); } catch {}
+      workerRef.current = null;
+    }
+  };
+}, [botActivations, tradesById, payoutsById]);
 
   /* ===================== API ===================== */
   const listBotTrades = useCallback(async (aid, limit = 80) => {
