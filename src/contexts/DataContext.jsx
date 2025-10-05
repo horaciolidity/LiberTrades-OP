@@ -1487,31 +1487,39 @@ async function cancelBot(id) {
       .eq('user_id', user.id);
     if (e2) throw e2;
 
-    // 🟢 5️⃣ Registrar movimientos en wallet
-    if (refund !== 0) {
-      await addTransaction({
-        amount: refund,
-        type: refund >= 0 ? 'bot_refund' : 'bot_loss',
-        description:
-          refund >= 0
-            ? `Retiro con resultado positivo (${act.bot_name})`
-            : `Retiro con pérdida (${act.bot_name})`,
-        referenceType: refund >= 0 ? 'bot_refund' : 'bot_loss',
-        referenceId: id,
-        status: 'completed',
-      });
-    }
+// 5️⃣ Registrar movimientos en wallet
+if (refund !== 0) {
+  await addTransaction({
+    amount: refund,
+    type: refund >= 0 ? 'bot_refund' : 'bot_loss',
+    description:
+      refund >= 0
+        ? `Retiro con resultado positivo (${act.bot_name})`
+        : `Retiro con pérdida (${act.bot_name})`,
+    referenceType: refund >= 0 ? 'bot_refund' : 'bot_loss',
+    referenceId: id,
+    status: 'completed',
+  });
+}
 
-    if (fee > 0) {
-      await addTransaction({
-        amount: -fee,
-        type: 'bot_fee',
-        description: `Fee cancelación ${act.bot_name}`,
-        referenceType: 'bot_fee',
-        referenceId: id,
-        status: 'completed',
-      });
-    }
+if (fee > 0) {
+  await addTransaction({
+    amount: -fee,
+    type: 'bot_fee',
+    description: `Fee cancelación ${act.bot_name}`,
+    referenceType: 'bot_fee',
+    referenceId: id,
+    status: 'completed',
+  });
+}
+
+// 🟢 6️⃣ Recalcular balances y refrescar
+await Promise.all([
+  supabase.rpc('recalc_user_balances', { p_user_id: user.id }),
+  refreshBalances(),
+  refreshBotActivations(),
+  refreshTransactions(),
+]);
 
     // 6️⃣ Refrescar paneles y saldo
     await Promise.all([
@@ -1572,63 +1580,63 @@ async function cancelBot(id) {
     return { ok };
   }
 
-  // Acredita PnL realizado (impacta saldo y txns)
-  async function creditBotProfit(activationId, amountUsd, note = null) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    try {
-      const { data, error } = await supabase.rpc('credit_bot_profit', {
-        p_activation_id: activationId,
-        p_user_id: user.id,
-        p_amount_usd: Number(amountUsd),
-        p_note: note,
-        activation_id: activationId,
-        user_id: user.id,
-        amount_usd: Number(amountUsd),
-        note,
-      });
-      if (error) {
-  const txn = await addTransaction({
-    amount: Number(amountUsd),
-    type: 'bot_profit',
-    description: note || 'Realized PnL',
-    referenceType: 'bot_profit',
-    referenceId: activationId,
-    status: 'completed',
-  });
+// Acredita PnL realizado (impacta saldo y txns)
+async function creditBotProfit(activationId, amountUsd, note = null) {
+  if (!user?.id) return { ok: false, code: 'NO_AUTH' };
 
-  // 👇 extra: registrar un retiro (take profit real)
-  await addTransaction({
-    amount: Number(amountUsd),
-    type: 'bot_withdraw',
-    description: 'Take Profit',
-    referenceType: 'bot_withdraw',
-    referenceId: activationId,
-    status: 'completed',
-  });
-
-  // 👇 extra: actualizar saldo local (solo sim)
   try {
-    if (refreshBalances) {
-      await refreshBalances();
-    } else {
-      // fallback: aumentar balance en AuthContext
-      setBalances?.((prev) => ({
-        ...prev,
-        USDC: (prev?.USDC || 0) + Number(amountUsd),
-      }));
-    }
-  } catch {}
+    const { data, error } = await supabase.rpc('credit_bot_profit', {
+      p_activation_id: activationId,
+      p_user_id: user.id,
+      p_amount_usd: Number(amountUsd),
+      p_note: note,
+      activation_id: activationId,
+      user_id: user.id,
+      amount_usd: Number(amountUsd),
+      note,
+    });
 
-  return { ok: !!txn, via: 'fallback' };
+    // 🟡 Si la RPC falla, aplicamos fallback manual
+    if (error) {
+      const txn = await addTransaction({
+        amount: Number(amountUsd),
+        type: amountUsd >= 0 ? 'bot_profit' : 'bot_loss',
+        description: note || 'Resultado del bot',
+        referenceType: 'bot_profit',
+        referenceId: activationId,
+        status: 'completed',
+      });
+
+      // 🟢 Solo registrar retiro si es Take Profit explícito
+      if (note?.toLowerCase()?.includes('take profit')) {
+        await addTransaction({
+          amount: Number(amountUsd),
+          type: 'bot_withdraw',
+          description: 'Take Profit',
+          referenceType: 'bot_withdraw',
+          referenceId: activationId,
+          status: 'completed',
+        });
+      }
+
+      // 🔄 Refrescar balances y transacciones
+      await refreshBalances?.();
+      await refreshTransactions?.();
+
+      return { ok: !!txn, via: 'fallback' };
+    }
+
+    // ✅ Si la RPC funcionó correctamente
+    await refreshTransactions();
+    await recalcAndRefreshBalances();
+    return data ?? { ok: true };
+
+  } catch (e) {
+    console.error('[creditBotProfit]', e);
+    return { ok: false, code: 'RPC_NOT_FOUND', error: e };
+  }
 }
 
-      await refreshTransactions();
-      await recalcAndRefreshBalances();
-      return data ?? { ok: true };
-    } catch {
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
 
   /* ---------------- BOT TRADES (nuevo) ---------------- */
   async function openBotTrade({
