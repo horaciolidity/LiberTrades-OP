@@ -1443,74 +1443,90 @@ async function addTransaction({
     return { ok: true, via: 'fallback' };
   }
 
-  // Cancelar (con fee y refund → afecta saldo)
-  async function cancelBot(id) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+  // Retirarse (puede tener ganancia o pérdida, afecta saldo real)
+async function cancelBot(id) {
+  if (!user?.id) return { ok: false, code: 'NO_AUTH' };
 
-    const r = await rpcCancelBotRobust({ activation_id: id, user_id: user.id });
-    if (!r.error) {
-      await Promise.all([refreshBotActivations(), refreshTransactions()]);
-      await recalcAndRefreshBalances();
-      return r.data ?? { ok: true };
-    }
-
-    // Fallback manual
-    try {
-      const { data: act, error: e1 } = await supabase
-        .from('bot_activations')
-        .select('*')
-        .eq('id', id)
-        .eq('user_id', user.id)
-        .maybeSingle();
-      if (e1 || !act) throw e1 || new Error('activation not found');
-
-      const amt = Number(act.amount_usd || 0);
-      const feePctPart = Math.max(0, (botCancelFeePct || 0) / 100) * amt;
-      const feeFixed = Math.max(0, botCancelFeeUsd || 0);
-      let fee = Number((feePctPart + feeFixed).toFixed(2));
-      if (fee > amt) fee = amt;
-
-      const refund = Number((amt - fee).toFixed(2));
-
-      // 1) actualizar estado
-      const { error: e2 } = await supabase
-        .from('bot_activations')
-        .update({ status: 'canceled' })
-        .eq('id', id)
-        .eq('user_id', user.id);
-      if (e2) throw e2;
-
-      // 2) refund positivo
-      if (refund > 0) {
-        await addTransaction({
-          amount: refund,
-          type: 'bot_refund',
-          description: `Devolución capital ${act.bot_name}`,
-          referenceType: 'bot_refund',
-          referenceId: id,
-          status: 'completed',
-        });
-      }
-
-      // 3) fee negativo
-      if (fee > 0) {
-        await addTransaction({
-          amount: -fee,
-          type: 'bot_fee',
-          description: `Fee cancelación ${act.bot_name}`,
-          referenceType: 'bot_fee',
-          referenceId: id,
-          status: 'completed',
-        });
-      }
-
-      await Promise.all([refreshBotActivations(), refreshTransactions()]);
-      await recalcAndRefreshBalances();
-      return { ok: true, via: 'fallback', refund, fee };
-    } catch (e) {
-      return { ok: false, code: 'RPC_ERROR', error: e };
-    }
+  // 1️⃣ Intentar usar RPC principal
+  const r = await rpcCancelBotRobust({ activation_id: id, user_id: user.id });
+  if (!r.error && r.data?.ok) {
+    await Promise.all([refreshBotActivations(), refreshTransactions()]);
+    await recalcAndRefreshBalances();
+    return { ok: true, via: 'rpc', ...r.data };
   }
+
+  // 2️⃣ Si falla RPC, aplicar lógica manual
+  try {
+    const { data: act, error: e1 } = await supabase
+      .from('bot_activations')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (e1 || !act) throw e1 || new Error('activation not found');
+
+    const amount = Number(act.amount_usd || 0);
+
+    // 🎯 3️⃣ Simular resultado del bot
+    const isWin = Math.random() < 0.33; // 1 ganada cada 3
+    const pctChange = (Math.random() * 0.08) + 0.01; // 1% a 9%
+    const pnl = (isWin ? 1 : -1) * amount * pctChange;
+    const feePctPart = Math.max(0, (botCancelFeePct || 0) / 100) * amount;
+    const feeFixed = Math.max(0, botCancelFeeUsd || 0);
+    const fee = Number((feePctPart + feeFixed).toFixed(2));
+
+    const netResult = Number((pnl - fee).toFixed(2));
+    const refund = Number((amount + netResult).toFixed(2));
+
+    // 🔹 4️⃣ Marcar bot como cancelado / retirado
+    const { error: e2 } = await supabase
+      .from('bot_activations')
+      .update({ status: 'canceled' })
+      .eq('id', id)
+      .eq('user_id', user.id);
+    if (e2) throw e2;
+
+    // 🟢 5️⃣ Registrar movimientos en wallet
+    if (refund !== 0) {
+      await addTransaction({
+        amount: refund,
+        type: refund >= 0 ? 'bot_refund' : 'bot_loss',
+        description:
+          refund >= 0
+            ? `Retiro con resultado positivo (${act.bot_name})`
+            : `Retiro con pérdida (${act.bot_name})`,
+        referenceType: refund >= 0 ? 'bot_refund' : 'bot_loss',
+        referenceId: id,
+        status: 'completed',
+      });
+    }
+
+    if (fee > 0) {
+      await addTransaction({
+        amount: -fee,
+        type: 'bot_fee',
+        description: `Fee cancelación ${act.bot_name}`,
+        referenceType: 'bot_fee',
+        referenceId: id,
+        status: 'completed',
+      });
+    }
+
+    // 6️⃣ Refrescar paneles y saldo
+    await Promise.all([
+      refreshBotActivations(),
+      refreshTransactions(),
+      recalcAndRefreshBalances(),
+    ]);
+
+    return { ok: true, via: 'fallback', pnl, fee, netResult, refund };
+  } catch (e) {
+    console.error('[cancelBot]', e);
+    return { ok: false, code: 'RPC_ERROR', error: e };
+  }
+}
+
 
   // Reactivar un bot cancelado (nueva activación con mismo capital)
   async function reactivateCanceledBot(activationId) {
