@@ -194,18 +194,30 @@ const TextImageCarousel = () => {
   );
 };
 
-/* ---------------- Carrusel de videos tipo diapositiva (profesional) ---------------- */
+/* ---------------- Carrusel de videos tipo diapositiva (profesional con argumentos) ---------------- */
 const VideoCarousel = () => {
   const videos = [
-    { src: "/videos/media.mp4", title: "Trading en Tiempo Real", desc: "Opera con precisión y velocidad profesional." },
-    { src: "/videos/media2.mp4", title: "Simulador Avanzado", desc: "Experimentá estrategias con datos en vivo." },
-    { src: "/videos/media3.mp4", title: "Panel Inteligente", desc: "Controlá tus bots y métricas desde un solo lugar." },
+    {
+      src: "/videos/media.mp4",
+      title: "Trading en Tiempo Real",
+      desc: "Viví la adrenalina del mercado minuto a minuto con operaciones inteligentes y precisas. Los bots de LiberTrades gestionan tus movimientos con análisis técnico avanzado para maximizar resultados.",
+    },
+    {
+      src: "/videos/media2.mp4",
+      title: "Ganancias del 5% al 20% mensual",
+      desc: "Nuestros bots automatizados te permiten obtener rendimientos consistentes entre un 5% y 20% mensual. Vos decidís el riesgo, LiberTrades se encarga del resto: sin emociones, sin errores humanos.",
+    },
+    {
+      src: "/videos/media3.mp4",
+      title: "Automatización Inteligente",
+      desc: "Activa tus bots, monitoreá su rendimiento y recibí ganancias en tiempo real. Tecnología, IA y estrategia se combinan para ofrecerte una experiencia de trading moderna y rentable.",
+    },
   ];
 
   const [index, setIndex] = useState(0);
   const videoRefs = useRef([]);
 
-  /* Reproduce el video activo y pausa los demás */
+  // Controla reproducción del video activo
   useEffect(() => {
     videoRefs.current.forEach((v, i) => {
       if (!v) return;
@@ -218,7 +230,7 @@ const VideoCarousel = () => {
     });
   }, [index]);
 
-  /* Rotación automática */
+  // Rotación automática cada 8s
   useEffect(() => {
     const interval = setInterval(() => {
       setIndex((prev) => (prev + 1) % videos.length);
@@ -227,7 +239,7 @@ const VideoCarousel = () => {
   }, [videos.length]);
 
   return (
-    <section className="relative w-full py-20 bg-gradient-to-b from-black via-slate-950 to-black overflow-hidden">
+    <section className="relative w-full py-24 bg-gradient-to-b from-black via-slate-950 to-black overflow-hidden">
       <motion.h2
         initial={{ opacity: 0, y: 20 }}
         whileInView={{ opacity: 1, y: 0 }}
@@ -238,7 +250,6 @@ const VideoCarousel = () => {
         Experiencia LiberTrades
       </motion.h2>
 
-      {/* Contenedor central con bordes y sombras */}
       <div className="relative flex justify-center items-center">
         <AnimatePresence mode="wait">
           <motion.div
@@ -246,7 +257,7 @@ const VideoCarousel = () => {
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.9 }}
-            transition={{ duration: 1, ease: "easeInOut" }}
+            transition={{ duration: 1, ease: 'easeInOut' }}
             className="relative w-[90%] md:w-[70%] lg:w-[55%] rounded-[32px] overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.6)] border border-slate-800"
           >
             <video
@@ -260,15 +271,15 @@ const VideoCarousel = () => {
               className="w-full h-[50vh] object-cover rounded-[32px]"
             />
 
-            {/* Overlay sutil para contraste */}
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
+            {/* Overlay suave */}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none" />
 
-            {/* Texto sobre el video */}
-            <div className="absolute bottom-8 left-0 right-0 text-center text-white px-6">
-              <h3 className="text-2xl md:text-3xl font-semibold mb-2 drop-shadow-lg">
+            {/* Texto descriptivo con más argumento */}
+            <div className="absolute bottom-8 left-0 right-0 text-center text-white px-8">
+              <h3 className="text-2xl md:text-3xl font-semibold mb-3 drop-shadow-lg">
                 {videos[index].title}
               </h3>
-              <p className="text-slate-300 text-sm md:text-base drop-shadow-md">
+              <p className="text-slate-200 text-sm md:text-lg max-w-2xl mx-auto leading-relaxed drop-shadow-md">
                 {videos[index].desc}
               </p>
             </div>
@@ -276,14 +287,14 @@ const VideoCarousel = () => {
         </AnimatePresence>
       </div>
 
-      {/* Indicadores tipo diapositiva */}
+      {/* Indicadores de diapositiva */}
       <div className="flex justify-center mt-8 space-x-3">
         {videos.map((_, i) => (
           <button
             key={i}
             onClick={() => setIndex(i)}
             className={`h-2 rounded-full transition-all duration-500 ${
-              i === index ? "bg-green-500 w-10" : "bg-slate-600 w-4"
+              i === index ? 'bg-green-500 w-10' : 'bg-slate-600 w-4'
             }`}
           />
         ))}
