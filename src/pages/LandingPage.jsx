@@ -312,30 +312,36 @@ export default function LandingPage() {
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-900">
       <CryptoTicker />
 
-      {/* Navbar */}
-      <nav className="sticky top-0 w-full z-50 bg-slate-900/80 backdrop-blur-xl border-b border-slate-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <Link to="/" className="flex items-center">
-              <span className="text-2xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-                LiberTrades
-              </span>
-            </Link>
-            <div className="flex items-center space-x-3">
-              <Link to="/login">
-                <Button variant="ghost" className="text-white hover:text-green-400">
-                  Iniciar Sesión
-                </Button>
-              </Link>
-              <Link to="/register">
-                <Button className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600">
-                  Registrarse
-                </Button>
-              </Link>
-            </div>
-          </div>
-        </div>
-      </nav>
+   {/* Navbar con logo gráfico */}
+<nav className="sticky top-0 w-full z-50 bg-slate-900/80 backdrop-blur-xl border-b border-slate-800">
+  <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div className="flex justify-between items-center h-16">
+      {/* LOGO */}
+      <Link to="/" className="flex items-center space-x-2">
+        <img
+          src="/images/logo-libertrades.png"
+          alt="LiberTrades OP"
+          className="h-10 md:h-12 w-auto object-contain drop-shadow-[0_0_12px_rgba(0,255,255,0.4)]"
+        />
+      </Link>
+
+      {/* Botones */}
+      <div className="flex items-center space-x-3">
+        <Link to="/login">
+          <Button variant="ghost" className="text-white hover:text-green-400">
+            Iniciar Sesión
+          </Button>
+        </Link>
+        <Link to="/register">
+          <Button className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600">
+            Registrarse
+          </Button>
+        </Link>
+      </div>
+    </div>
+  </div>
+</nav>
+
 
       {/* Hero */}
       <section className="relative pt-10 pb-20 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center">
