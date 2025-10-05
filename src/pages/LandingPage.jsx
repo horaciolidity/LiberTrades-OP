@@ -230,6 +230,44 @@ export default function LandingPage() {
       <section className="relative pt-10 pb-20 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center">
         <TextImageCarousel />
       </section>
+      {/* Video Showcase */}
+<section className="relative w-full h-[80vh] overflow-hidden bg-black mt-10 mb-20">
+  <video
+    src="/videos/video.mp4"
+    ref={(el) => {
+      if (!el) return;
+      const observer = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) el.play();
+            else el.pause();
+          });
+        },
+        { threshold: 0.4 }
+      );
+      observer.observe(el);
+    }}
+    muted
+    loop
+    playsInline
+    preload="auto"
+    className="absolute inset-0 w-full h-full object-cover rounded-[20px]"
+  />
+
+  {/* Overlay degradado sutil */}
+  <div className="absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-black/70"></div>
+
+  {/* Texto sobre el video */}
+  <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6">
+    <h2 className="text-4xl md:text-5xl font-bold text-white mb-4">
+      Viví la Experiencia LiberTrades
+    </h2>
+    <p className="text-lg text-slate-300 max-w-2xl">
+      Tecnología, velocidad y diseño se combinan para llevar tu trading al siguiente nivel.
+    </p>
+  </div>
+</section>
+
 
       {/* Features */}
       <section className="py-16 px-4 sm:px-6 lg:px-8">
