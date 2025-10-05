@@ -930,6 +930,7 @@ export function DataProvider({ children }) {
     const { data, error } = await supabase
       .from('wallet_transactions')
       .select('*')
+      .limit(200)
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
     if (error) {

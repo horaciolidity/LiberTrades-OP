@@ -20,7 +20,6 @@ let timer = null;
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-// 📌 Volatilidad mayor para que haya variación de PnL
 function stepPrice(p, vol = 0.01) {
   const shock = (Math.random() - 0.5) * 2 * vol;
   const next = p * (1 + shock);
@@ -73,10 +72,13 @@ function tick() {
       if (idx >= 0) {
         const t = list[idx];
 
-        // 📌 1/3 ganancia, 2/3 pérdida
+        // 📌 1 de cada 3 en ganancia, 2 de cada 3 en pérdida
         const isWin = Math.random() < 0.33;
         const pct = (Math.random() * 0.05) + 0.01; // 1% - 6%
-        const pnl = (isWin ? 1 : -1) * (t.amount_usd || 0) * pct * (t.leverage || 1);
+        let pnl = (isWin ? 1 : -1) * (t.amount_usd || 0) * pct * (t.leverage || 1);
+
+        // Limitar PnL a ±20% del capital asignado
+        pnl = clamp(pnl, -a.amountUsd * 0.2, a.amountUsd * 0.2);
 
         list[idx] = { ...t, status: 'closed', closed_at: Date.now(), pnl };
         state.trades[a.id] = list.slice(0, state.maxItems);
@@ -84,16 +86,17 @@ function tick() {
         const pay = state.payouts[a.id] || { profit: 0, losses: 0, fees: 0, net: 0, withdrawn: 0 };
         if (pnl >= 0) {
           pay.profit += pnl;
+          payoutDeltas.push({ actId: a.id, profitDelta: pnl, netDelta: pnl });
         } else {
           pay.losses += Math.abs(pnl);
+          payoutDeltas.push({ actId: a.id, lossDelta: Math.abs(pnl), netDelta: pnl });
         }
         pay.net += pnl;
         state.payouts[a.id] = pay;
 
         tradeDeltas.push({ actId: a.id, change: 'close', pnl, pair: t.pair, id: t.id });
-        payoutDeltas.push({ actId: a.id, profitDelta: pnl, netDelta: pnl });
 
-        // Impacto en saldo real
+        // 📌 Impacto en saldo real
         self.postMessage({ type: 'balanceImpact', actId: a.id, pnl });
       }
     }
@@ -178,31 +181,33 @@ self.onmessage = (e) => {
     const list = state.trades[id] || [];
     const tradeDeltas = [];
     const payoutDeltas = [];
-    let profitDelta = 0;
+    let pnlSum = 0;
 
     const now = Date.now();
     for (let i = 0; i < list.length; i++) {
       const t = list[i];
       if (String(t.status || 'open').toLowerCase() === 'open') {
         const px = state.prices[t.pair] ?? t.entry;
-        const pnl = mtmPnl(t, px);
+        let pnl = mtmPnl(t, px);
+        pnl = clamp(pnl, -t.amount_usd * 0.2, t.amount_usd * 0.2);
         list[i] = { ...t, status: 'closed', closed_at: now, pnl };
-        profitDelta += pnl;
+        pnlSum += pnl;
         tradeDeltas.push({ actId: id, change: 'close', pnl, pair: t.pair, id: t.id });
       }
     }
     state.trades[id] = list.slice(0, state.maxItems);
 
-    if (profitDelta !== 0) {
+    if (pnlSum !== 0) {
       const pay = state.payouts[id] || { profit: 0, losses: 0, fees: 0, net: 0, withdrawn: 0 };
-      if (profitDelta >= 0) {
-        pay.profit += profitDelta;
+      if (pnlSum >= 0) {
+        pay.profit += pnlSum;
+        payoutDeltas.push({ actId: id, profitDelta: pnlSum, netDelta: pnlSum });
       } else {
-        pay.losses += Math.abs(profitDelta);
+        pay.losses += Math.abs(pnlSum);
+        payoutDeltas.push({ actId: id, lossDelta: Math.abs(pnlSum), netDelta: pnlSum });
       }
-      pay.net += profitDelta;
+      pay.net += pnlSum;
       state.payouts[id] = pay;
-      payoutDeltas.push({ actId: id, profitDelta, netDelta: profitDelta });
     }
 
     if (tradeDeltas.length || payoutDeltas.length) {
@@ -212,7 +217,6 @@ self.onmessage = (e) => {
     return;
   }
 
-  // 🚫 evitar retiros infinitos
   if (type === 'takeProfitMarked') {
     const id = payload;
     if (id && state.payouts[id]) {

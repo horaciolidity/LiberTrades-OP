@@ -163,41 +163,8 @@ const TradingBotsPage = () => {
 
   // Estado real (saldo/txns/activaciones)
   const real = useData();
-
   // Wrapper de simulación para PnL/Trades/Events (NO toca saldo)
   const data = SIM_MODE ? useBotSimWorker(real) : real;
-
-  /* ===================== Sincronización con saldo real (SIM_MODE) ===================== */
-useEffect(() => {
-  if (!SIM_MODE) return;
-  const w = data?.workerRef?.current;
-  if (!w) return;
-
-  const handleMessage = async (e) => {
-    const { type, actId, pnl } = e.data || {};
-    if (type === 'balanceImpact' && Number.isFinite(pnl)) {
-      try {
-        if (pnl !== 0) {
-          // 🔹 Si hay ganancia o pérdida, se refleja en el saldo real
-          const desc = pnl > 0 ? 'Ganancia de bot (sim)' : 'Pérdida de bot (sim)';
-          await data?.creditBotProfit?.(actId, pnl, desc);
-          await Promise.all([
-            data?.refreshTransactions?.(),
-            data?.refreshBotActivations?.(),
-            refreshAvailable?.(),
-            refreshBalances?.(),
-          ]);
-        }
-      } catch (err) {
-        console.warn('Error aplicando balanceImpact:', err);
-      }
-    }
-  };
-
-  w.addEventListener('message', handleMessage);
-  return () => w.removeEventListener('message', handleMessage);
-}, [SIM_MODE, data, refreshAvailable, refreshBalances]);
-
 
   const {
     botActivations,
