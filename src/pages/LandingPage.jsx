@@ -233,7 +233,7 @@ export default function LandingPage() {
       {/* Video Showcase */}
 <section className="relative w-full h-[80vh] overflow-hidden bg-black mt-10 mb-20">
   <video
-    src="/videos/video.mp4"
+    src="/videos/media.mp4"
     ref={(el) => {
       if (!el) return;
       const observer = new IntersectionObserver(
