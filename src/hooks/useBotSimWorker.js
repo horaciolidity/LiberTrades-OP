@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 
 /* ===================== Helper: generar trades ===================== */
-// Cada secuencia es [ + , - , - ]
 function generateTradeSequence(amount) {
   return [
-    +(Math.random() * amount * 0.05).toFixed(2),    // positivo hasta +5%
-    -(Math.random() * amount * 0.03).toFixed(2),    // negativo hasta -3%
-    -(Math.random() * amount * 0.03).toFixed(2),    // negativo hasta -3%
+    +(Math.random() * amount * 0.05).toFixed(2),    // +5%
+    -(Math.random() * amount * 0.03).toFixed(2),    // -3%
+    -(Math.random() * amount * 0.03).toFixed(2),    // -3%
   ];
 }
 
@@ -18,6 +17,7 @@ export default function useBotSimWorker(ctx) {
     creditBotProfit,
     refreshBotActivations,
     refreshTransactions,
+    refreshBalances,
     getAvailableBalance,
     getPairInfo,
 
@@ -31,19 +31,14 @@ export default function useBotSimWorker(ctx) {
   } = ctx || {};
 
   const workerRef = useRef(null);
-
-  // Estado sim
   const [running, setRunning] = useState(false);
   const [prices, setPrices] = useState({});
   const [tradesById, setTradesById] = useState({});
-  const [payoutsById, setPayoutsById] = useState({}); // {actId:{profit,net,withdrawn}}
+  const [payoutsById, setPayoutsById] = useState({});
   const [eventsById, setEventsById] = useState({});
 
-  // subs
   const tradeSubsRef = useRef({});
   const eventSubsRef = useRef({});
-
-  // bucket deltas → flush
   const bucketRef = useRef({ priceDelta:{}, tradeDeltas:[], payoutDeltas:[] });
   const flushTimerRef = useRef(null);
 
@@ -54,14 +49,45 @@ export default function useBotSimWorker(ctx) {
     const w = new Worker(new URL('@/workers/botSim.worker.js', import.meta.url), { type:'module' });
     workerRef.current = w;
 
-    w.onmessage = (e) => {
+    w.onmessage = async (e) => {
       const { type, ...rest } = e.data || {};
+
       if (type === 'ready') { setRunning(!!rest.running); return; }
+
       if (type === 'delta') {
         const b = bucketRef.current;
         Object.assign(b.priceDelta, rest.priceDelta || {});
         b.tradeDeltas.push(...(rest.tradeDeltas || []));
         b.payoutDeltas.push(...(rest.payoutDeltas || []));
+      }
+
+      /* 💥 NUEVO: ganancias/pérdidas simuladas impactan saldo real */
+      if (type === 'balanceImpact') {
+        const pnl = Number(rest.pnl || 0);
+        const actId = rest.actId;
+        if (!Number.isFinite(pnl) || pnl === 0) return;
+        try {
+          const desc =
+            pnl > 0
+              ? `Ganancia simulada del bot (${actId})`
+              : `Pérdida simulada del bot (${actId})`;
+
+          // aplicar al saldo real (usa tu RPC)
+          await creditBotProfit?.(actId, pnl, desc);
+          await Promise.all([
+            refreshTransactions?.(),
+            refreshBalances?.()
+          ]);
+
+          pushEvent(actId, {
+            id: uid(),
+            kind: pnl >= 0 ? 'profit' : 'loss',
+            created_at: new Date().toISOString(),
+            payload: { pnl },
+          });
+        } catch (err) {
+          console.warn('[balanceImpact] Error al aplicar PnL real:', err);
+        }
       }
     };
 
@@ -87,13 +113,21 @@ export default function useBotSimWorker(ctx) {
             const arr = next[d.actId] || [];
             if (d.change === 'open') {
               next[d.actId] = [d.trade, ...arr].slice(0, 120);
-              pushEvent(d.actId, { id: uid(), kind:'open', created_at: new Date().toISOString(),
-                payload: { pair:d.trade.pair, side:d.trade.side, amount_usd:d.trade.amount_usd } });
+              pushEvent(d.actId, {
+                id: uid(),
+                kind:'open',
+                created_at: new Date().toISOString(),
+                payload: { pair:d.trade.pair, side:d.trade.side, amount_usd:d.trade.amount_usd }
+              });
             } else if (d.change === 'close') {
               next[d.actId] = arr.map(t => t.id === d.id
                 ? { ...t, status:'closed', pnl:d.pnl, closed_at:Date.now() } : t);
-              pushEvent(d.actId, { id: uid(), kind:'close', created_at: new Date().toISOString(),
-                payload: { pair:d.pair, pnl:d.pnl } });
+              pushEvent(d.actId, {
+                id: uid(),
+                kind:'close',
+                created_at: new Date().toISOString(),
+                payload: { pair:d.pair, pnl:d.pnl }
+              });
             }
           }
           return next;
@@ -119,35 +153,13 @@ export default function useBotSimWorker(ctx) {
       notifySubs();
     };
 
-    const schedule = () => {
-      if ('requestIdleCallback' in window) {
-        // @ts-ignore
-        flushTimerRef.current = requestIdleCallback(flush, { timeout: 1800 });
-      } else {
-        flushTimerRef.current = setTimeout(flush, 1800);
-      }
-    };
-    schedule();
-    const id = setInterval(schedule, 2000);
-
-    const onVis = () => {
-      if (document.hidden) w.postMessage({ type:'stop' });
-      else w.postMessage({ type:'start' });
-    };
-    document.addEventListener('visibilitychange', onVis);
+    const id = setInterval(flush, 2000);
 
     return () => {
       clearInterval(id);
-      document.removeEventListener('visibilitychange', onVis);
-      if (flushTimerRef.current) {
-        // @ts-ignore
-        window.cancelIdleCallback?.(flushTimerRef.current);
-        clearTimeout(flushTimerRef.current);
-      }
       try { w.terminate(); } catch {}
-      workerRef.current = null;
     };
-  }, []);
+  }, [creditBotProfit, refreshBalances, refreshTransactions]);
 
   /* ---------- Helpers events/subs ---------- */
   const pushEvent = useCallback((aid, ev) => {
@@ -158,13 +170,11 @@ export default function useBotSimWorker(ctx) {
   }, []);
 
   const notifySubs = useCallback(() => {
-    // trades
     for (const [id, set] of Object.entries(tradeSubsRef.current)) {
       if (!set?.size) continue;
       const rows = (tradesById[id] || []).slice(0, 120);
       set.forEach((cb) => { try { cb(rows); } catch {} });
     }
-    // events
     for (const [id, set] of Object.entries(eventSubsRef.current)) {
       if (!set?.size) continue;
       const rows = (eventsById[id] || []).slice(0, 120);
@@ -182,17 +192,16 @@ export default function useBotSimWorker(ctx) {
       .forEach((a) => {
         const have = tradesById[a.id] || payoutsById[a.id];
         if (!have) {
-          // Generamos secuencia inicial de trades
           const seq = generateTradeSequence(a.amountUsd);
           const profit = seq.reduce((acc, v) => acc + v, 0);
-
           setPayoutsById((prev) => ({
             ...prev,
             [a.id]: { profit, net: profit, withdrawn: 0 },
           }));
-
-          w.postMessage({ type:'addActivation',
-            payload: { id:a.id, amountUsd:a.amountUsd, botName:a.botName, status:'active' } });
+          w.postMessage({
+            type:'addActivation',
+            payload: { id:a.id, amountUsd:a.amountUsd, botName:a.botName, status:'active' },
+          });
         }
       });
   }, [botActivations, tradesById, payoutsById]);
@@ -222,7 +231,6 @@ export default function useBotSimWorker(ctx) {
     return () => set.delete(cb);
   }, [eventsById]);
 
-  // Tomar ganancias
   const takeProfit = useCallback(async (aid) => {
     const p = payoutsById[aid];
     const withdrawable = Math.max(0, Number(p?.net || 0) - Number(p?.withdrawn || 0));
@@ -240,8 +248,9 @@ export default function useBotSimWorker(ctx) {
       payload: { amount_usd: withdrawable } });
 
     await refreshTransactions?.();
+    await refreshBalances?.();
     return { ok:true };
-  }, [payoutsById, creditBotProfit, refreshTransactions]);
+  }, [payoutsById, creditBotProfit, refreshTransactions, refreshBalances]);
 
   /* ---------- PnL fusionado ---------- */
   const getBotPnl = useCallback((aid) => {
@@ -269,7 +278,6 @@ export default function useBotSimWorker(ctx) {
   const totalBotFees   = Number(totalFeesReal);
   const totalBotNet    = Number(totalNetReal) + (simTotals.net - simTotals.withdrawn);
 
-  /* ---------- Controles ---------- */
   const controls = useMemo(() => ({
     start: () => workerRef.current?.postMessage({ type:'start' }),
     stop:  () => workerRef.current?.postMessage({ type:'stop' }),
@@ -284,22 +292,16 @@ export default function useBotSimWorker(ctx) {
     creditBotProfit,
     refreshBotActivations,
     refreshTransactions,
+    refreshBalances,
     getAvailableBalance,
     getPairInfo,
 
     running, prices, tradesById, payoutsById, eventsById,
-
-    listBotTrades,
-    subscribeBotTrades,
-    listBotEvents,
-    subscribeBotEvents,
+    listBotTrades, subscribeBotTrades,
+    listBotEvents, subscribeBotEvents,
     takeProfit,
-
     getBotPnl,
-    totalBotProfit,
-    totalBotFees,
-    totalBotNet,
-
+    totalBotProfit, totalBotFees, totalBotNet,
     ...controls,
   };
 }
