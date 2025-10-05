@@ -230,76 +230,63 @@ export default function LandingPage() {
       <section className="relative pt-10 pb-20 px-4 sm:px-6 lg:px-8 flex flex-col items-center justify-center">
         <TextImageCarousel />
       </section>
-     {/* Video Showcase con Parallax tipo Apple Vision Pro */}
-<section className="relative w-full h-[90vh] overflow-hidden bg-black mt-10 mb-20 rounded-2xl">
-  <motion.div
-    initial={{ opacity: 0, y: 100 }}
+    {/* Carrusel de videos tipo showcase */}
+<section className="relative w-full py-20 overflow-hidden bg-gradient-to-b from-black via-slate-950 to-black">
+  <motion.h2
+    initial={{ opacity: 0, y: 20 }}
     whileInView={{ opacity: 1, y: 0 }}
-    viewport={{ once: true, amount: 0.4 }}
-    transition={{ duration: 1.2, ease: "easeOut" }}
-    className="relative w-full h-full"
+    viewport={{ once: true }}
+    transition={{ duration: 0.8 }}
+    className="text-4xl md:text-5xl font-bold text-center text-white mb-12"
   >
-    <motion.video
-      src="/videos/media.mp4"
-      muted
-      loop
-      playsInline
-      preload="auto"
-      className="absolute inset-0 w-full h-full object-cover rounded-2xl"
-      ref={(el) => {
-        if (!el) return;
-        const observer = new IntersectionObserver(
-          (entries) => {
-            entries.forEach((entry) => {
-              if (entry.isIntersecting) el.play();
-              else el.pause();
-            });
-          },
-          { threshold: 0.3 }
-        );
-        observer.observe(el);
-      }}
-      style={{
-        objectPosition: "center",
-      }}
-      // efecto parallax controlado por scroll
-      animate={{
-        y: ["0%", "-15%"], // se mueve un poco al hacer scroll
-      }}
-      transition={{
-        ease: "linear",
-        duration: 8,
-        repeat: Infinity,
-        repeatType: "reverse",
-      }}
-    />
+    Experiencia LiberTrades
+  </motion.h2>
 
-    {/* Overlay sutil para contraste */}
-    <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/80" />
-
-    {/* Texto superpuesto */}
-    <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6">
-      <motion.h2
-        className="text-5xl md:text-6xl font-bold text-white mb-6"
-        initial={{ opacity: 0, y: 30 }}
+  <div className="relative flex overflow-x-auto snap-x snap-mandatory scroll-smooth scrollbar-hide gap-8 px-6 md:px-16">
+    {[
+      "/videos/media.mp4",
+      "/videos/media2.mp4",
+      "/videos/media3.mp4"
+    ].map((src, i) => (
+      <motion.div
+        key={i}
+        className="snap-center flex-shrink-0 w-[90%] md:w-[70%] lg:w-[60%] relative rounded-2xl overflow-hidden shadow-2xl"
+        initial={{ opacity: 0, y: 40 }}
         whileInView={{ opacity: 1, y: 0 }}
         viewport={{ once: true }}
-        transition={{ duration: 1 }}
+        transition={{ duration: 0.8, delay: i * 0.1 }}
       >
-        Viví la Experiencia LiberTrades
-      </motion.h2>
-      <motion.p
-        className="text-lg md:text-xl text-slate-300 max-w-3xl"
-        initial={{ opacity: 0, y: 20 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        transition={{ duration: 1, delay: 0.2 }}
-      >
-        Donde la tecnología, el diseño y la velocidad se unen para redefinir el trading moderno.
-      </motion.p>
-    </div>
-  </motion.div>
-</section>
+        <video
+          src={src}
+          muted
+          loop
+          playsInline
+          preload="auto"
+          className="w-full h-full object-cover rounded-2xl"
+          ref={(el) => {
+            if (!el) return;
+            const observer = new IntersectionObserver(
+              (entries) => {
+                entries.forEach((entry) => {
+                  if (entry.isIntersecting) el.play();
+                  else el.pause();
+                });
+              },
+              { threshold: 0.5 }
+            );
+            observer.observe(el);
+          }}
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent"></div>
+      </motion.div>
+    ))}
+  </div>
 
+  {/* Indicador visual de scroll */}
+  <div className="text-center mt-6 text-slate-500 text-sm">
+    Deslizá para ver más ▶
+  </div>
+</section>
 
       {/* Features */}
       <section className="py-16 px-4 sm:px-6 lg:px-8">
