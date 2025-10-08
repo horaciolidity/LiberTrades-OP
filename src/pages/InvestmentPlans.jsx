@@ -392,55 +392,72 @@ export default function InvestmentPlans() {
   };
 
   // ===== Sincronizar payouts (idempotente en cliente) =====
-  const syncingRef = useRef(false);
+const syncingRef = useRef(false);
 
-  const syncPlanPayouts = useCallback(async () => {
-    if (!user?.id || syncingRef.current) return;
-    syncingRef.current = true;
-    try {
-      await Promise.all([refreshInvestments?.(), refreshTransactions?.()]);
+const syncPlanPayouts = useCallback(async () => {
+  if (!user?.id || syncingRef.current) return;
+  syncingRef.current = true;
+  try {
+    await Promise.all([refreshInvestments?.(), refreshTransactions?.()]);
 
-      const invs = (getInvestments?.() || []).filter((inv) => (inv.user_id ?? inv.userId) === user.id);
-      const txns = (getTransactions?.() || []).filter(
-        (t) => (t.user_id ?? t.userId) === user.id && String(t.status || '').toLowerCase() === 'completed'
-      );
+    const invs = (getInvestments?.() || []).filter((inv) => (inv.user_id ?? inv.userId) === user.id);
+    const txns = (getTransactions?.() || []).filter(
+      (t) => (t.user_id ?? t.userId) === user.id && String(t.status || '').toLowerCase() === 'completed'
+    );
 
-      for (const inv of invs) {
-        const s = computeStats(inv);
-        const expected = Number((s.dailyUsd * s.elapsed).toFixed(2));
-        const already = txns
-          .filter((t) => String(t.type).toLowerCase() === 'plan_payout' && String(t.referenceId) === String(inv.id))
-          .reduce((acc, t) => acc + Number(t.amount || 0), 0);
+    // Trae saldo actual para sumarle luego
+    const currentBalance = Number(balances?.usdc ?? 0);
 
-        const delta = Number((expected - already).toFixed(2));
-        if (delta >= 0.01) {
-          await addTransaction?.({
-            amount: delta,
-            type: 'plan_payout',
-            currency: 'USDC',
-            description: `Rendimiento diario ${inv.planName || inv.plan_name}`,
-            referenceType: 'investment_payout',
-            referenceId: inv.id,
-            status: 'completed',
-          });
-        }
+    for (const inv of invs) {
+      const s = computeStats(inv);
+      const expected = Number((s.dailyUsd * s.elapsed).toFixed(2));
+      const already = txns
+        .filter((t) => String(t.type).toLowerCase() === 'plan_payout' && String(t.referenceId) === String(inv.id))
+        .reduce((acc, t) => acc + Number(t.amount || 0), 0);
+
+      const delta = Number((expected - already).toFixed(2));
+
+      if (delta >= 0.01) {
+        // Registrar transacción
+        await addTransaction?.({
+          amount: delta,
+          type: 'plan_payout',
+          currency: 'USDC',
+          description: `Rendimiento diario ${inv.planName || inv.plan_name}`,
+          referenceType: 'investment_payout',
+          referenceId: inv.id,
+          status: 'completed',
+        });
+
+        // 🔹 Sumar el monto al balance real del usuario
+        const { error: balErr } = await supabase
+          .from('balances')
+          .update({
+            usdc: (currentBalance + delta),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', user.id);
+
+        if (balErr) console.error('[balances update] error:', balErr);
       }
-
-      await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
-      const arr = (getInvestments?.() || []).filter((it) => (it.user_id ?? it.userId) === user.id);
-      setMyInvestments(arr);
-    } finally {
-      syncingRef.current = false;
     }
-  }, [
-    user?.id,
-    getInvestments,
-    getTransactions,
-    refreshInvestments,
-    refreshTransactions,
-    refreshBalances,
-    addTransaction,
-  ]);
+
+    await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
+    const arr = (getInvestments?.() || []).filter((it) => (it.user_id ?? it.userId) === user.id);
+    setMyInvestments(arr);
+  } finally {
+    syncingRef.current = false;
+  }
+}, [
+  user?.id,
+  getInvestments,
+  getTransactions,
+  refreshInvestments,
+  refreshTransactions,
+  refreshBalances,
+  addTransaction,
+  balances?.usdc,
+]);
 
   useEffect(() => {
     if (!user?.id) return;
