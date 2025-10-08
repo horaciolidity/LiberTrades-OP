@@ -398,11 +398,16 @@ const syncPlanPayouts = useCallback(async () => {
   if (!user?.id || syncingRef.current) return;
   syncingRef.current = true;
   try {
+    // 🔄 Actualiza inversiones y transacciones antes de calcular
     await Promise.all([refreshInvestments?.(), refreshTransactions?.()]);
 
-    const invs = (getInvestments?.() || []).filter((inv) => (inv.user_id ?? inv.userId) === user.id);
+    const invs = (getInvestments?.() || []).filter(
+      (inv) => (inv.user_id ?? inv.userId) === user.id
+    );
     const txns = (getTransactions?.() || []).filter(
-      (t) => (t.user_id ?? t.userId) === user.id && String(t.status || '').toLowerCase() === 'completed'
+      (t) =>
+        (t.user_id ?? t.userId) === user.id &&
+        String(t.status || "").toLowerCase() === "completed"
     );
 
     for (const inv of invs) {
@@ -410,41 +415,62 @@ const syncPlanPayouts = useCallback(async () => {
       const expected = Number((s.dailyUsd * s.elapsed).toFixed(2));
       const already = txns
         .filter(
-          (t) => String(t.type).toLowerCase() === 'plan_payout' && String(t.referenceId) === String(inv.id)
+          (t) =>
+            String(t.type).toLowerCase() === "plan_payout" &&
+            String(t.referenceId) === String(inv.id)
         )
         .reduce((acc, t) => acc + Number(t.amount || 0), 0);
 
       const delta = Number((expected - already).toFixed(2));
 
       if (delta >= 0.01) {
-        // Registrar el payout en el historial
+        // 🧾 Registrar el payout en el historial
         await addTransaction?.({
           amount: delta,
-          type: 'plan_payout',
-          currency: 'USDC',
+          type: "plan_payout",
+          currency: "USDC",
           description: `Rendimiento diario ${inv.planName || inv.plan_name}`,
-          referenceType: 'investment_payout',
+          referenceType: "investment_payout",
           referenceId: inv.id,
-          status: 'completed',
+          status: "completed",
         });
 
-        // Asegurar la wallet y actualizar saldo real
-        await supabase.rpc('ensure_wallet', { p_user_id: user.id });
-        const { error: incErr } = await supabase.rpc('inc_wallet', {
+        // 💼 Asegurar la wallet y acreditar el saldo real
+        await supabase.rpc("ensure_wallet", { p_user_id: user.id });
+        const { error: incErr } = await supabase.rpc("inc_wallet", {
           p_user_id: user.id,
-          p_currency: 'USDC',
+          p_currency: "USDC",
           p_amount: delta,
         });
-        if (incErr) console.error('[inc_wallet] error:', incErr.message);
-        else console.log(`✅ +${delta} USDC acreditado al saldo de ${user.id}`);
+
+        if (incErr) {
+          console.error("[inc_wallet] error:", incErr.message);
+        } else {
+          console.log(`✅ +${delta} USDC acreditado al saldo de ${user.id}`);
+          // 🔊 Notificación visual y actualización inmediata
+          playSound?.("success");
+          await refreshBalances?.();
+          toast({
+            title: "Ganancia acreditada",
+            description: `+${fmt(delta, 2)} USDC sumados a tu saldo.`,
+          });
+        }
       }
     }
 
-    await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
-    const arr = (getInvestments?.() || []).filter((it) => (it.user_id ?? it.userId) === user.id);
+    // 🔁 Refresca datos luego de procesar todo
+    await Promise.all([
+      refreshInvestments?.(),
+      refreshTransactions?.(),
+      refreshBalances?.(),
+    ]);
+
+    const arr = (getInvestments?.() || []).filter(
+      (it) => (it.user_id ?? it.userId) === user.id
+    );
     setMyInvestments(arr);
   } catch (err) {
-    console.error('Error en syncPlanPayouts:', err);
+    console.error("Error en syncPlanPayouts:", err);
   } finally {
     syncingRef.current = false;
   }
@@ -456,7 +482,24 @@ const syncPlanPayouts = useCallback(async () => {
   refreshTransactions,
   refreshBalances,
   addTransaction,
+  playSound,
+  toast,
 ]);
+
+// 🔁 Ejecuta la sincronización al cargar o cambiar de usuario
+useEffect(() => {
+  if (!user?.id) return;
+  syncPlanPayouts();
+}, [user?.id, syncPlanPayouts]);
+
+// 👁️ Re-ejecuta cuando el usuario vuelve a la pestaña (idle recovery)
+useEffect(() => {
+  const onVisibility = () => {
+    if (!document.hidden) syncPlanPayouts();
+  };
+  document.addEventListener("visibilitychange", onVisibility);
+  return () => document.removeEventListener("visibilitychange", onVisibility);
+}, [syncPlanPayouts]);
 
 
   useEffect(() => {
