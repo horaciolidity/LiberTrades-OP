@@ -392,7 +392,7 @@ export default function InvestmentPlans() {
   };
 
   // ===== Sincronizar payouts (idempotente en cliente) =====
-const syncingRef = useRef(false);
+  const syncingRef = useRef(false);
 
 const syncPlanPayouts = useCallback(async () => {
   if (!user?.id || syncingRef.current) return;
@@ -405,20 +405,19 @@ const syncPlanPayouts = useCallback(async () => {
       (t) => (t.user_id ?? t.userId) === user.id && String(t.status || '').toLowerCase() === 'completed'
     );
 
-    // Trae saldo actual para sumarle luego
-    const currentBalance = Number(balances?.usdc ?? 0);
-
     for (const inv of invs) {
       const s = computeStats(inv);
       const expected = Number((s.dailyUsd * s.elapsed).toFixed(2));
       const already = txns
-        .filter((t) => String(t.type).toLowerCase() === 'plan_payout' && String(t.referenceId) === String(inv.id))
+        .filter(
+          (t) => String(t.type).toLowerCase() === 'plan_payout' && String(t.referenceId) === String(inv.id)
+        )
         .reduce((acc, t) => acc + Number(t.amount || 0), 0);
 
       const delta = Number((expected - already).toFixed(2));
 
       if (delta >= 0.01) {
-        // Registrar transacción
+        // Registrar el payout en el historial
         await addTransaction?.({
           amount: delta,
           type: 'plan_payout',
@@ -429,22 +428,23 @@ const syncPlanPayouts = useCallback(async () => {
           status: 'completed',
         });
 
-        // 🔹 Sumar el monto al balance real del usuario
-        const { error: balErr } = await supabase
-          .from('balances')
-          .update({
-            usdc: (currentBalance + delta),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('user_id', user.id);
-
-        if (balErr) console.error('[balances update] error:', balErr);
+        // Asegurar la wallet y actualizar saldo real
+        await supabase.rpc('ensure_wallet', { p_user_id: user.id });
+        const { error: incErr } = await supabase.rpc('inc_wallet', {
+          p_user_id: user.id,
+          p_currency: 'USDC',
+          p_amount: delta,
+        });
+        if (incErr) console.error('[inc_wallet] error:', incErr.message);
+        else console.log(`✅ +${delta} USDC acreditado al saldo de ${user.id}`);
       }
     }
 
     await Promise.all([refreshInvestments?.(), refreshTransactions?.(), refreshBalances?.()]);
     const arr = (getInvestments?.() || []).filter((it) => (it.user_id ?? it.userId) === user.id);
     setMyInvestments(arr);
+  } catch (err) {
+    console.error('Error en syncPlanPayouts:', err);
   } finally {
     syncingRef.current = false;
   }
@@ -456,8 +456,8 @@ const syncPlanPayouts = useCallback(async () => {
   refreshTransactions,
   refreshBalances,
   addTransaction,
-  balances?.usdc,
 ]);
+
 
   useEffect(() => {
     if (!user?.id) return;
