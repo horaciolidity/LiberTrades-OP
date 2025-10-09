@@ -472,21 +472,47 @@ await updateBalanceGlobal(-amount);
  const doCancel = async (id) => {
   if (!id) return;
   setRowBusy(id, true);
+
   try {
     const bot = myActiveBots.find((b) => b.id === id);
     if (!bot) throw new Error('Bot no encontrado');
 
     const invested = Number(bot.amountUsd || 0);
     const pnl = getBotPnl?.(id)?.net ?? 0; // ganancia o pérdida actual
-    const fee = 4.5; // 🔹 Fee fijo
+    const fee = 4.5; // Fee fijo USD
     const returned = Math.max(0, invested + pnl - fee);
 
-    // Actualizar saldo en tiempo real
-await updateBalanceGlobal(returned);
+    // 🔹 Acreditar el saldo simulado o real
+    if (typeof updateBalanceGlobal === 'function') {
+      await updateBalanceGlobal(returned, 'USDC', false);
+    } else {
+      console.warn('[doCancel] updateBalanceGlobal no disponible');
+    }
 
-    // Marcar el bot como cancelado (mantiene tu lógica actual)
-    await cancelBot?.(id);
+    // 🔹 Cancelar el bot (solo si la función existe)
+    if (typeof cancelBot === 'function') {
+      await cancelBot(id);
+    } else {
+      console.warn('[doCancel] cancelBot no disponible (modo simulación)');
+      // ⚙️ Simular cancelación local para no romper el flujo
+      const fakeCanceled = {
+        ...bot,
+        status: 'canceled',
+        canceled_at: new Date().toISOString(),
+      };
+      setConfirmCancel(null);
+      toast({
+        title: 'Bot simulado cancelado',
+        description: `Se devolvieron $${fmt(returned)} (fee $${fmt(fee)}).`,
+      });
+      // actualizar el listado visual
+      refreshBotActivations?.();
+      refreshAvailable?.();
+      refreshBalances?.();
+      return;
+    }
 
+    // 🔹 Si la cancelación real funciona
     toast({
       title: 'Bot cancelado',
       description: `Se devolvieron $${fmt(returned)} al saldo (fee $${fmt(fee)}).`,
@@ -494,7 +520,7 @@ await updateBalanceGlobal(returned);
 
     await Promise.all([
       refreshBotActivations?.(),
-      refreshAvailable(),
+      refreshAvailable?.(),
       refreshBalances?.(),
     ]);
   } catch (e) {
@@ -505,6 +531,7 @@ await updateBalanceGlobal(returned);
     setConfirmCancel(null);
   }
 };
+
 
   const doTakeProfit = async (a) => {
   if (!a?.id) return;

@@ -355,55 +355,59 @@ const updateBalanceGlobal = useCallback(
   }, []);
 
   /* ---------------- Admin settings fetch -------------- */
-  const fetchAdminSettings = async () => {
-    try {
-      const { data, error } = await supabase.rpc('get_admin_settings', { p_prefix: 'trading.' });
-      if (error) throw error;
+const fetchAdminSettings = async () => {
+  try {
+    // 🔹 Intentar primero con la función RPC (si existe)
+    const { data, error } = await supabase.rpc('get_admin_settings', { p_prefix: 'trading.' });
 
-      const map = {};
-      (data || []).forEach((row) => {
-        const k = String(row.setting_key);
-        const n = Number(row.setting_value);
-        if (Number.isFinite(n)) map[k] = n;
-      });
-
-      if (map['trading.bot_cancel_fee_pct'] != null)
-        map['trading.bot.cancel_fee_pct'] = map['trading.bot_cancel_fee_pct'];
-      if (map['trading.bot_cancel_fee_usd'] != null)
-        map['trading.bot.cancel_fee_usd'] = map['trading.bot_cancel_fee_usd'];
-
-      map.botCancelFeePct = map['trading.bot.cancel_fee_pct'] ?? 0;
-      map.botCancelFeeUsd = map['trading.bot.cancel_fee_usd'] ?? 0;
-
-      setAdminSettings(map);
-    } catch (e) {
-      try {
-        const { data } = await supabase
-          .from('admin_settings')
-          .select('setting_key, setting_value')
-          .like('setting_key', 'trading.%');
-        const map = {};
-        (data || []).forEach((r) => {
-          const raw = r.value_numeric ?? r.setting_value;
-          const num = Number(raw);
-          if (Number.isFinite(num)) map[r.setting_key] = num;
-        });
-
-        if (map['trading.bot_cancel_fee_pct'] != null)
-          map['trading.bot.cancel_fee_pct'] = map['trading.bot_cancel_fee_pct'];
-        if (map['trading.bot_cancel_fee_usd'] != null)
-          map['trading.bot.cancel_fee_usd'] = map['trading.bot_cancel_fee_usd'];
-
-        map.botCancelFeePct = map['trading.bot_cancel_fee_pct'] ?? 0;
-        map.botCancelFeeUsd = map['trading.bot_cancel_fee_usd'] ?? 0;
-
-        setAdminSettings(map);
-      } catch (e2) {
-        console.warn('[fetchAdminSettings] error:', e?.message || e2?.message || e);
-      }
+    let rows = [];
+    if (error?.message?.includes('404') || error?.code === 'PGRST302' || !data) {
+      // 🔹 Si no existe la RPC, usar la tabla directamente
+      console.warn('[fetchAdminSettings] RPC no encontrada, usando fallback desde tabla');
+      const { data: tableData, error: tableErr } = await supabase
+        .from('admin_settings')
+        .select('key, value, setting_key, setting_value')
+        .or('key.ilike.trading.%,setting_key.ilike.trading.%');
+      if (tableErr) throw tableErr;
+      rows = tableData || [];
+    } else {
+      rows = data || [];
     }
-  };
-  useEffect(() => { fetchAdminSettings(); }, []);
+
+    // 🔹 Mapear resultados a objeto usable
+    const map = {};
+    (rows || []).forEach((r) => {
+      const k = String(r.key || r.setting_key || '').trim();
+      const vRaw = r.value ?? r.setting_value ?? null;
+      const vNum = Number(vRaw);
+      map[k] = Number.isFinite(vNum) ? vNum : vRaw;
+    });
+
+    // 🔹 Normalizar claves de cancel fee
+    if (map['trading.bot_cancel_fee_pct'] != null)
+      map['trading.bot.cancel_fee_pct'] = map['trading.bot_cancel_fee_pct'];
+    if (map['trading.bot_cancel_fee_usd'] != null)
+      map['trading.bot.cancel_fee_usd'] = map['trading.bot_cancel_fee_usd'];
+
+    // 🔹 Alias legibles para el frontend
+    map.botCancelFeePct = map['trading.bot.cancel_fee_pct'] ?? 0;
+    map.botCancelFeeUsd = map['trading.bot.cancel_fee_usd'] ?? 0;
+
+    setAdminSettings(map);
+  } catch (e) {
+    console.warn('[fetchAdminSettings] Error final:', e?.message || e);
+    // fallback seguro si nada funcionó
+    setAdminSettings({
+      botCancelFeePct: 0,
+      botCancelFeeUsd: 0,
+    });
+  }
+};
+
+useEffect(() => {
+  fetchAdminSettings();
+}, []);
+
 
   function applyMarketRules(symbol, basePrice, difficulty = "intermediate") {
   const hour = new Date().getUTCHours();
