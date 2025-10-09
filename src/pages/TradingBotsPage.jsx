@@ -161,11 +161,13 @@ const TradingBotsPage = () => {
   const { user, refreshBalances } = useAuth();
   const { playSound } = useSound();
 
-  // Estado real (saldo/txns/activaciones)
-const { updateBalanceGlobal, liveBalances } = useData();
+// Estado real (saldo/txns/activaciones)
+const real = useData();
+const { updateBalanceGlobal, liveBalances } = real;
 
-  // Wrapper de simulación para PnL/Trades/Events (NO toca saldo)
-  const data = SIM_MODE ? useBotSimWorker(real) : real;
+// Wrapper de simulación para PnL/Trades/Events (NO toca saldo)
+const data = SIM_MODE ? useBotSimWorker(real) : real;
+
 
   const {
     botActivations,
