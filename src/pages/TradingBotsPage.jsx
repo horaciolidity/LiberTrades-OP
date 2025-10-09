@@ -468,6 +468,20 @@ await updateBalanceGlobal(-amount);
     if (feeEst > Number(a.amountUsd || 0)) feeEst = Number(a.amountUsd || 0);
     setConfirmCancel({ id: a.id, name: a.botName, amountUsd: a.amountUsd, feeEst });
   };
+// ✅ Fallback local si updateBalanceGlobal no está disponible
+const localUpdateBalance = (delta = 0) => {
+  try {
+    const el = document.querySelector('div:has(+ span)'); // placeholder visual
+    console.log(`[localUpdateBalance] Ajuste saldo: ${delta.toFixed(2)} USD`);
+    // Si tenés una función de estado de saldo, usala acá:
+    real.balances = {
+      ...real.balances,
+      USDC: (real.balances?.USDC || 0) + delta,
+    };
+  } catch (e) {
+    console.warn('[localUpdateBalance] no pudo actualizar visualmente', e);
+  }
+};
 
  const doCancel = async (id) => {
   if (!id) return;
@@ -486,14 +500,27 @@ await updateBalanceGlobal(-amount);
     if (typeof updateBalanceGlobal === 'function') {
       await updateBalanceGlobal(returned, 'USDC', false);
     } else {
-      console.warn('[doCancel] updateBalanceGlobal no disponible');
-    }
+ console.warn('[doCancel] updateBalanceGlobal no disponible → usando fallback local');
+  localUpdateBalance(returned);    }
 
     // 🔹 Cancelar el bot (solo si la función existe)
     if (typeof cancelBot === 'function') {
       await cancelBot(id);
     } else {
       console.warn('[doCancel] cancelBot no disponible (modo simulación)');
+
+// Simular que el bot fue cancelado
+const idx = myActiveBots.findIndex(b => b.id === id);
+if (idx !== -1) {
+  const copy = [...myActiveBots];
+  copy[idx].status = 'canceled';
+  copy[idx].canceled_at = new Date().toISOString();
+  data.botActivations = copy;
+  console.log(`[doCancel] Bot ${id} marcado como cancelado localmente`);
+}
+
+
+
       // ⚙️ Simular cancelación local para no romper el flujo
       const fakeCanceled = {
         ...bot,
@@ -505,6 +532,7 @@ await updateBalanceGlobal(-amount);
         title: 'Bot simulado cancelado',
         description: `Se devolvieron $${fmt(returned)} (fee $${fmt(fee)}).`,
       });
+     
       // actualizar el listado visual
       refreshBotActivations?.();
       refreshAvailable?.();
