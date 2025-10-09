@@ -347,6 +347,29 @@ const data = SIM_MODE ? useBotSimWorker(real) : real;
     };
   }, [botActivations, subscribeBotEvents, loadEvents]);
 
+
+// ===================== Simulación automática de ganancias/pérdidas =====================
+useEffect(() => {
+  if (!myActiveBots?.length) return;
+
+  const interval = setInterval(() => {
+    myActiveBots.forEach((bot) => {
+      // Generar profit random entre -3% y +3% del capital
+      const changePct = (Math.random() - 0.5) * 6; // rango -3 a +3 %
+      const delta = (changePct / 100) * Number(bot.amountUsd || 0);
+
+      // Actualizar saldo real directamente
+      updateBalanceGlobal(delta);
+
+      // Mostrar pequeño log (solo visible en consola, útil para debug)
+      console.log(`[SimBot] ${bot.botName}: ${changePct.toFixed(2)}% → ${delta.toFixed(2)} USD`);
+    });
+  }, 15000); // cada 15 segundos
+
+  return () => clearInterval(interval);
+}, [myActiveBots, updateBalanceGlobal]);
+
+
   const calcUnrealizedAndPair = useCallback((activationId, fallbackName) => {
     const rows = tradesByActivation[activationId] || [];
     let u = 0;
@@ -932,15 +955,10 @@ await updateBalanceGlobal(withdrawable);
                       )}
 
                       <div className="flex flex-wrap gap-2">
-                        <Button
-                          onClick={() => doTakeProfit(a)}
-                          disabled={rowBusy || Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)) <= 0}
-                        >
-                          <CircleDollarSign className="w-4 h-4 mr-1" />
-                          {Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)) > 0
-                            ? `Tomar ganancias $${fmt(Math.max(0, (getBotPnl?.(a.id)?.net || 0) - (getBotPnl?.(a.id)?.withdrawn || 0)))}`
-                            : 'Sin ganancias'}
+                        <Button disabled className="opacity-60 cursor-not-allowed">
+                           <CircleDollarSign className="w-4 h-4 mr-1" /> Ganancias automáticas
                         </Button>
+
                         <Button variant="destructive" onClick={() => askCancel(a)} disabled={rowBusy}>
                           <XCircle className="w-4 h-4 mr-1" /> {rowBusy ? 'Cancelando…' : 'Cancelar'}
                         </Button>
