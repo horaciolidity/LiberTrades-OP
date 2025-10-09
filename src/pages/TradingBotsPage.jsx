@@ -350,25 +350,34 @@ const data = SIM_MODE ? useBotSimWorker(real) : real;
 
 // ===================== Simulación automática de ganancias/pérdidas =====================
 useEffect(() => {
-  if (!myActiveBots?.length) return;
+  if (!SIM_MODE || !Array.isArray(myActiveBots) || myActiveBots.length === 0) return;
+  if (typeof updateBalanceGlobal !== 'function') return;
 
   const interval = setInterval(() => {
-    myActiveBots.forEach((bot) => {
-      // Generar profit random entre -3% y +3% del capital
-      const changePct = (Math.random() - 0.5) * 6; // rango -3 a +3 %
-      const delta = (changePct / 100) * Number(bot.amountUsd || 0);
+    try {
+      myActiveBots.forEach((bot) => {
+        // Evitar simulación si no hay monto
+        const amt = Number(bot?.amountUsd || 0);
+        if (!Number.isFinite(amt) || amt <= 0) return;
 
-      // Actualizar saldo real directamente
-      updateBalanceGlobal(delta);
+        // Generar profit random entre -3% y +3% del capital
+        const changePct = (Math.random() - 0.5) * 6; // rango -3 a +3 %
+        const delta = (changePct / 100) * amt;
 
-      // Mostrar pequeño log (solo visible en consola, útil para debug)
-      console.log(`[SimBot] ${bot.botName}: ${changePct.toFixed(2)}% → ${delta.toFixed(2)} USD`);
-    });
-  }, 15000); // cada 15 segundos
+        // ✅ Solo si la función está lista
+        if (typeof updateBalanceGlobal === 'function') {
+          updateBalanceGlobal(delta, 'USDC', false);
+        }
+
+        console.log(`[SimBot] ${bot.botName}: ${changePct.toFixed(2)}% → ${delta.toFixed(2)} USD`);
+      });
+    } catch (err) {
+      console.warn('[SimBot Error]', err);
+    }
+  }, 15000);
 
   return () => clearInterval(interval);
-}, [myActiveBots, updateBalanceGlobal]);
-
+}, [SIM_MODE, myActiveBots, updateBalanceGlobal]);
 
   const calcUnrealizedAndPair = useCallback((activationId, fallbackName) => {
     const rows = tradesByActivation[activationId] || [];
