@@ -1942,21 +1942,11 @@ async function addTransaction({
   );
 
   return (
-  <DataContext.Provider
-    value={{
-      botActivations,
-      transactions,
-      investments,
-      referrals,
-      updateBalanceGlobal,
-      liveBalances,
-      setLiveBalances,
-      // ...resto de tus datos
-    }}
-  >
+  <DataContext.Provider value={value}>
     {children}
   </DataContext.Provider>
 );
+
 }
 
 /* ---------------- Hook ---------------- */
