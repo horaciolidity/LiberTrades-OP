@@ -168,6 +168,36 @@ export function DataProvider({ children }) {
   const [transactions, setTransactions] = useState([]);
   const [referrals, setReferrals] = useState([]);
   const [botActivations, setBotActivations] = useState([]);
+// 🔹 Saldo local en tiempo real (sin depender del backend)
+const [liveBalances, setLiveBalances] = useState({ USDC: 0, USD: 0 });
+
+// 🔹 Inicializa con lo que venga de Auth o Supabase al cargar
+useEffect(() => {
+  const guess = balances?.USDC || balances?.USD || 0;
+  setLiveBalances({ USDC: guess, USD: guess });
+}, [balances]);
+// 🔹 Función global para modificar saldo en tiempo real
+const updateBalanceGlobal = useCallback(async (delta, currency = 'USDC', persist = false) => {
+  const c = String(currency).toUpperCase();
+
+  setLiveBalances((prev) => ({
+    ...prev,
+    [c]: Math.max(0, (prev?.[c] || 0) + delta),
+  }));
+
+  // Opcional: si querés sincronizar con la tabla balances en Supabase
+  if (persist && user?.id) {
+    try {
+      await supabase
+        .from('balances')
+        .update({ amount: supabase.sql`amount + ${delta}` })
+        .eq('user_id', user.id)
+        .eq('currency', c);
+    } catch (e) {
+      console.warn('[updateBalanceGlobal persist error]', e.message);
+    }
+  }
+}, [user?.id]);
 
   /* ---------------- Trades (legacy manual) ----------- */
   const [trades, setTrades] = useState([]);
@@ -1911,7 +1941,22 @@ async function addTransaction({
     ]
   );
 
-  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
+  return (
+  <DataContext.Provider
+    value={{
+      botActivations,
+      transactions,
+      investments,
+      referrals,
+      updateBalanceGlobal,
+      liveBalances,
+      setLiveBalances,
+      // ...resto de tus datos
+    }}
+  >
+    {children}
+  </DataContext.Provider>
+);
 }
 
 /* ---------------- Hook ---------------- */

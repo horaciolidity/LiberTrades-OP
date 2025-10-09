@@ -162,7 +162,8 @@ const TradingBotsPage = () => {
   const { playSound } = useSound();
 
   // Estado real (saldo/txns/activaciones)
-  const real = useData();
+const { updateBalanceGlobal, liveBalances } = useData();
+
   // Wrapper de simulación para PnL/Trades/Events (NO toca saldo)
   const data = SIM_MODE ? useBotSimWorker(real) : real;
 
@@ -366,65 +367,65 @@ const TradingBotsPage = () => {
     return { unrealized: u, mainPair };
   }, [tradesByActivation, getPairInfo]);
 
+
   /* ===================== Handlers ===================== */
-  const handleActivateBot = async () => {
-    try {
-      playSound?.('invest');
-      if (!user?.id) {
-        toast({ title: 'No autenticado', description: 'Iniciá sesión para continuar.', variant: 'destructive' });
-        return;
-      }
-
-      const bot = selectedBot;
-      if (!bot || !investmentAmount) {
-        toast({ title: 'Error', description: 'Seleccioná un bot e ingresá un monto.', variant: 'destructive' });
-        return;
-      }
-
-      const amount = parseFloat(investmentAmount);
-      if (!Number.isFinite(amount) || amount <= 0) {
-        toast({ title: 'Monto inválido', description: 'Ingresá un monto válido.', variant: 'destructive' });
-        return;
-      }
-      if (amount < bot.minInvestment) {
-        toast({ title: 'Monto insuficiente', description: `El mínimo para ${bot.name} es $${bot.minInvestment}.`, variant: 'destructive' });
-        return;
-      }
-      if (amount > availableUsd) {
-        toast({ title: 'Saldo insuficiente', description: `Tu saldo ${CURRENCY} es $${fmt(availableUsd)}.`, variant: 'destructive' });
-        return;
-      }
-
-      setBusyActivate(true);
-      
-
-      const res = await activateBot?.({ botId: bot.id, botName: bot.name, strategy: bot.strategy, amountUsd: amount });
-      if (res?.code === 'INSUFFICIENT_FUNDS') {
-        toast({ title: 'Saldo insuficiente', description: `Te faltan $${fmt(Number(res?.needed || 0))}.`, variant: 'destructive' });
-        return;
-      }
-      if (!res?.ok && res?.ok !== true) {
-        toast({ title: 'No se pudo activar', description: res?.msg || 'Intentá nuevamente.', variant: 'destructive' });
-        return;
-      }
-
-      
-      toast({ title: 'Bot activado', description: `${bot.name} por $${fmt(amount)}.` });
-      setSelectedBot(null);
-      setInvestmentAmount('');
-
-      await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
-      await refreshAvailable();
-      await refreshBalances?.();
-      // Si algo salió mal y el server no descontó, volvemos (raro, pero seguro)
-      
-    } catch (e) {
-      console.error('[handleActivateBot]', e);
-      toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
-    } finally {
-      setBusyActivate(false);
+const handleActivateBot = async () => {
+  try {
+    playSound?.('invest');
+    if (!user?.id) {
+      toast({ title: 'No autenticado', description: 'Iniciá sesión para continuar.', variant: 'destructive' });
+      return;
     }
-  };
+
+    const bot = selectedBot;
+    if (!bot || !investmentAmount) {
+      toast({ title: 'Error', description: 'Seleccioná un bot e ingresá un monto.', variant: 'destructive' });
+      return;
+    }
+
+    const amount = parseFloat(investmentAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast({ title: 'Monto inválido', description: 'Ingresá un monto válido.', variant: 'destructive' });
+      return;
+    }
+    if (amount < bot.minInvestment) {
+      toast({ title: 'Monto insuficiente', description: `El mínimo para ${bot.name} es $${bot.minInvestment}.`, variant: 'destructive' });
+      return;
+    }
+    if (amount > availableUsd) {
+      toast({ title: 'Saldo insuficiente', description: `Tu saldo ${CURRENCY} es $${fmt(availableUsd)}.`, variant: 'destructive' });
+      return;
+    }
+
+    setBusyActivate(true);
+
+    // 🔹 Descontar en tiempo real del saldo visible
+await updateBalanceGlobal(-amount);
+
+    const res = await activateBot?.({
+      botId: bot.id,
+      botName: bot.name,
+      strategy: bot.strategy,
+      amountUsd: amount,
+    });
+
+    if (!res?.ok) {
+      toast({ title: 'Error', description: res?.msg || 'No se pudo activar el bot.', variant: 'destructive' });
+      await updateBalance(amount); // revertir si falla
+      return;
+    }
+
+    toast({ title: 'Bot activado', description: `${bot.name} por $${fmt(amount)}.` });
+    setSelectedBot(null);
+    setInvestmentAmount('');
+    await Promise.all([refreshBotActivations?.(), refreshAvailable(), refreshBalances?.()]);
+  } catch (e) {
+    console.error('[handleActivateBot]', e);
+    toast({ title: 'Error', description: 'Ocurrió un problema inesperado.', variant: 'destructive' });
+  } finally {
+    setBusyActivate(false);
+  }
+};
 
   const askCancel = (a) => {
     const pctPart = Math.max(0, (cancelFeePct || 0) / 100) * Number(a.amountUsd || 0);
@@ -434,58 +435,74 @@ const TradingBotsPage = () => {
     setConfirmCancel({ id: a.id, name: a.botName, amountUsd: a.amountUsd, feeEst });
   };
 
-  const doCancel = async (id) => {
-    if (!id) return;
-    setRowBusy(id, true);
-    try {
-      const r = await cancelBot?.(id);
-      if (r?.ok) {
-        // Si el backend devuelve cuánto se devolvió, lo sumamos optimistamente
-        const refunded = Number(r?.refundedUsd ?? r?.refundUsd ?? r?.refunded ?? 0);
-        toast({ title: 'Bot cancelado', description: refunded > 0 ? `Se liberaron $${fmt(refunded)} al saldo.` : '' });
-         await Promise.all([refreshBotActivations?.(), refreshTransactions?.(), refreshAvailable(), refreshBalances?.()]);
-        await Promise.all([refreshBotActivations?.(), refreshTransactions?.()]);
-        await refreshAvailable();
-        await refreshBalances?.();
-      } else {
-        toast({ title: 'No se pudo cancelar', description: r?.msg || '', variant: 'destructive' });
-      }
-    } catch (e) {
-      console.error('[cancelBot]', e);
-      toast({ title: 'Error', description: 'No se pudo cancelar el bot.', variant: 'destructive' });
-    } finally {
-      setRowBusy(id, false);
-      setConfirmCancel(null);
-    }
-  };
+ const doCancel = async (id) => {
+  if (!id) return;
+  setRowBusy(id, true);
+  try {
+    const bot = myActiveBots.find((b) => b.id === id);
+    if (!bot) throw new Error('Bot no encontrado');
+
+    const invested = Number(bot.amountUsd || 0);
+    const pnl = getBotPnl?.(id)?.net ?? 0; // ganancia o pérdida actual
+    const fee = 4.5; // 🔹 Fee fijo
+    const returned = Math.max(0, invested + pnl - fee);
+
+    // Actualizar saldo en tiempo real
+await updateBalanceGlobal(returned);
+
+    // Marcar el bot como cancelado (mantiene tu lógica actual)
+    await cancelBot?.(id);
+
+    toast({
+      title: 'Bot cancelado',
+      description: `Se devolvieron $${fmt(returned)} al saldo (fee $${fmt(fee)}).`,
+    });
+
+    await Promise.all([
+      refreshBotActivations?.(),
+      refreshAvailable(),
+      refreshBalances?.(),
+    ]);
+  } catch (e) {
+    console.error('[doCancel]', e);
+    toast({ title: 'Error', description: 'No se pudo cancelar el bot.', variant: 'destructive' });
+  } finally {
+    setRowBusy(id, false);
+    setConfirmCancel(null);
+  }
+};
 
   const doTakeProfit = async (a) => {
-    if (!a?.id) return;
-    setRowBusy(a.id, true);
-    try {
-      const before = data.getBotPnl?.(a.id) || {};
-      const withdrawable = Math.max(0, Number(before.net || 0) - Number(before.withdrawn || 0));
-      if (withdrawable <= 0) {
-        toast({ title: 'Sin ganancias para retirar', description: 'Aún no hay PnL realizado disponible.', variant: 'destructive' });
-        setRowBusy(a.id, false);
-        return;
-      }
-      const r = await creditBotProfit?.(a.id, withdrawable, `Take profit ${a.botName}`);
-      if (r?.ok || r?.via === 'fallback') {
-        // Acreditamos optimistamente
-        
-      toast({ title: 'Ganancias acreditadas', description: `Se pasaron $${fmt(withdrawable)} al saldo.` });  
-      await Promise.all([refreshTransactions?.(), refreshAvailable(), refreshBalances?.()]); 
-      } else {
-        toast({ title: 'No se pudo tomar ganancias', variant: 'destructive' });
-      }
-    } catch (e) {
-      console.error('[takeProfit]', e);
-      toast({ title: 'Error', description: 'No se pudo tomar ganancias.', variant: 'destructive' });
-    } finally {
+  if (!a?.id) return;
+  setRowBusy(a.id, true);
+  try {
+    const before = data.getBotPnl?.(a.id) || {};
+    const withdrawable = Math.max(0, Number(before.net || 0) - Number(before.withdrawn || 0));
+    if (withdrawable <= 0) {
+      toast({ title: 'Sin ganancias para retirar', description: 'Aún no hay PnL disponible.', variant: 'destructive' });
       setRowBusy(a.id, false);
+      return;
     }
-  };
+
+    // 🔹 Aumentar el saldo disponible instantáneamente
+await updateBalanceGlobal(withdrawable);
+
+    await creditBotProfit?.(a.id, withdrawable, `Take profit ${a.botName}`);
+
+    toast({
+      title: 'Ganancias acreditadas',
+      description: `Se agregaron $${fmt(withdrawable)} a tu saldo.`,
+    });
+
+    await Promise.all([refreshTransactions?.(), refreshAvailable(), refreshBalances?.()]);
+  } catch (e) {
+    console.error('[doTakeProfit]', e);
+    toast({ title: 'Error', description: 'No se pudo tomar ganancias.', variant: 'destructive' });
+  } finally {
+    setRowBusy(a.id, false);
+  }
+};
+
 
   const runBrain = async () => {
     if (!BOT_BRAIN_CLIENT) return;
