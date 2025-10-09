@@ -177,27 +177,34 @@ useEffect(() => {
   setLiveBalances({ USDC: guess, USD: guess });
 }, [balances]);
 // 🔹 Función global para modificar saldo en tiempo real
-const updateBalanceGlobal = useCallback(async (delta, currency = 'USDC', persist = false) => {
-  const c = String(currency).toUpperCase();
+const updateBalanceGlobal = useCallback(
+  async (delta, currency = 'USDC', persist = false) => {
+    const c = String(currency).toUpperCase();
 
-  setLiveBalances((prev) => ({
-    ...prev,
-    [c]: Math.max(0, (prev?.[c] || 0) + delta),
-  }));
+    // 🔹 1. Actualiza saldo local en memoria
+    setLiveBalances((prev) => ({
+      ...prev,
+      [c]: Math.max(0, (prev?.[c] || 0) + delta),
+    }));
 
-  // Opcional: si querés sincronizar con la tabla balances en Supabase
-  if (persist && user?.id) {
-    try {
-      await supabase
-        .from('balances')
-        .update({ amount: supabase.sql`amount + ${delta}` })
-        .eq('user_id', user.id)
-        .eq('currency', c);
-    } catch (e) {
-      console.warn('[updateBalanceGlobal persist error]', e.message);
+    // 🔹 2. Si estamos en simulación (bots automáticos), no persiste nada en BD
+    if (!persist) return;
+
+    // 🔹 3. Solo persiste si querés tocar Supabase
+    if (user?.id) {
+      try {
+        await supabase
+          .from('balances')
+          .update({ amount: supabase.sql`amount + ${delta}` })
+          .eq('user_id', user.id)
+          .eq('currency', c);
+      } catch (e) {
+        console.warn('[updateBalanceGlobal persist error]', e.message);
+      }
     }
-  }
-}, [user?.id]);
+  },
+  [user?.id]
+);
 
   /* ---------------- Trades (legacy manual) ----------- */
   const [trades, setTrades] = useState([]);
@@ -1474,73 +1481,61 @@ async function addTransaction({
   }
 
   // Cancelar (con fee y refund → afecta saldo)
-  async function cancelBot(id) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
+ async function cancelBot(id) {
+  if (!user?.id) return { ok: false, code: 'NO_AUTH' };
 
-    const r = await rpcCancelBotRobust({ activation_id: id, user_id: user.id });
-    if (!r.error) {
-      await Promise.all([refreshBotActivations(), refreshTransactions()]);
-      await recalcAndRefreshBalances();
-      return r.data ?? { ok: true };
-    }
+  try {
+    const { data: act, error } = await supabase
+      .from('bot_activations')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (error || !act) throw new Error('Bot no encontrado');
 
-    // Fallback manual
-    try {
-      const { data: act, error: e1 } = await supabase
-        .from('bot_activations')
-        .select('*')
-        .eq('id', id)
-        .eq('user_id', user.id)
-        .maybeSingle();
-      if (e1 || !act) throw e1 || new Error('activation not found');
+    const invested = Number(act.amount_usd || 0);
+    const pnl = 0; // si querés usar getBotPnl(id)?.net más adelante
+    const fee = 4.5; // 🔹 fee fijo USD
+    const refund = Math.max(0, invested + pnl - fee);
 
-      const amt = Number(act.amount_usd || 0);
-      const feePctPart = Math.max(0, (botCancelFeePct || 0) / 100) * amt;
-      const feeFixed = Math.max(0, botCancelFeeUsd || 0);
-      let fee = Number((feePctPart + feeFixed).toFixed(2));
-      if (fee > amt) fee = amt;
+    // 1️⃣ Cambiar estado
+    await supabase
+      .from('bot_activations')
+      .update({ status: 'canceled', canceled_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('user_id', user.id);
 
-      const refund = Number((amt - fee).toFixed(2));
+    // 2️⃣ Actualizar saldo en tiempo real
+    updateBalanceGlobal(refund);
 
-      // 1) actualizar estado
-      const { error: e2 } = await supabase
-        .from('bot_activations')
-        .update({ status: 'canceled' })
-        .eq('id', id)
-        .eq('user_id', user.id);
-      if (e2) throw e2;
+    // 3️⃣ Registrar transacciones en memoria / histórico
+    await addTransaction({
+      amount: refund,
+      type: 'bot_refund',
+      description: `Devolución de capital (${act.bot_name})`,
+      referenceType: 'bot_refund',
+      referenceId: id,
+      status: 'completed',
+    });
 
-      // 2) refund positivo
-      if (refund > 0) {
-        await addTransaction({
-          amount: refund,
-          type: 'bot_refund',
-          description: `Devolución capital ${act.bot_name}`,
-          referenceType: 'bot_refund',
-          referenceId: id,
-          status: 'completed',
-        });
-      }
+    await addTransaction({
+      amount: -fee,
+      type: 'bot_fee',
+      description: `Fee de cancelación (${act.bot_name})`,
+      referenceType: 'bot_fee',
+      referenceId: id,
+      status: 'completed',
+    });
 
-      // 3) fee negativo
-      if (fee > 0) {
-        await addTransaction({
-          amount: -fee,
-          type: 'bot_fee',
-          description: `Fee cancelación ${act.bot_name}`,
-          referenceType: 'bot_fee',
-          referenceId: id,
-          status: 'completed',
-        });
-      }
+    await Promise.all([refreshBotActivations(), refreshTransactions()]);
+    await recalcAndRefreshBalances();
 
-      await Promise.all([refreshBotActivations(), refreshTransactions()]);
-      await recalcAndRefreshBalances();
-      return { ok: true, via: 'fallback', refund, fee };
-    } catch (e) {
-      return { ok: false, code: 'RPC_ERROR', error: e };
-    }
+    return { ok: true, via: 'fallback', refund, fee };
+  } catch (e) {
+    console.error('[cancelBot]', e);
+    return { ok: false, code: 'CANCEL_ERROR', error: e };
   }
+}
 
   // Reactivar un bot cancelado (nueva activación con mismo capital)
   async function reactivateCanceledBot(activationId) {
@@ -1588,61 +1583,18 @@ async function addTransaction({
 
   // Acredita PnL realizado (impacta saldo y txns)
   async function creditBotProfit(activationId, amountUsd, note = null) {
-    if (!user?.id) return { ok: false, code: 'NO_AUTH' };
-    try {
-      const { data, error } = await supabase.rpc('credit_bot_profit', {
-        p_activation_id: activationId,
-        p_user_id: user.id,
-        p_amount_usd: Number(amountUsd),
-        p_note: note,
-        activation_id: activationId,
-        user_id: user.id,
-        amount_usd: Number(amountUsd),
-        note,
-      });
-      if (error) {
-  const txn = await addTransaction({
+  updateBalanceGlobal(Number(amountUsd));
+  await addTransaction({
     amount: Number(amountUsd),
     type: 'bot_profit',
-    description: note || 'Realized PnL',
+    description: note || 'Ganancia automática',
     referenceType: 'bot_profit',
     referenceId: activationId,
     status: 'completed',
   });
-
-  // 👇 extra: registrar un retiro (take profit real)
-  await addTransaction({
-    amount: Number(amountUsd),
-    type: 'bot_withdraw',
-    description: 'Take Profit',
-    referenceType: 'bot_withdraw',
-    referenceId: activationId,
-    status: 'completed',
-  });
-
-  // 👇 extra: actualizar saldo local (solo sim)
-  try {
-    if (refreshBalances) {
-      await refreshBalances();
-    } else {
-      // fallback: aumentar balance en AuthContext
-      setBalances?.((prev) => ({
-        ...prev,
-        USDC: (prev?.USDC || 0) + Number(amountUsd),
-      }));
-    }
-  } catch {}
-
-  return { ok: !!txn, via: 'fallback' };
+  return { ok: true, via: 'local' };
 }
 
-      await refreshTransactions();
-      await recalcAndRefreshBalances();
-      return data ?? { ok: true };
-    } catch {
-      return { ok: false, code: 'RPC_NOT_FOUND' };
-    }
-  }
 
   /* ---------------- BOT TRADES (nuevo) ---------------- */
   async function openBotTrade({
