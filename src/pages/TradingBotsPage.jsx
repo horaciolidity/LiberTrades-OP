@@ -514,7 +514,7 @@ const localUpdateBalance = (delta = 0) => {
 
     // 🔹 Ajustar saldo real o simulado
     if (typeof updateBalanceGlobal === 'function') {
-      await updateBalanceGlobal(returned, 'USDC', false);
+      await updateBalanceGlobal(returned, 'USDC', true);
     } else {
       console.warn('[doCancel] updateBalanceGlobal no disponible → usando fallback local');
       localUpdateBalance(returned);
@@ -586,7 +586,7 @@ const localUpdateBalance = (delta = 0) => {
     }
 
     // 🔹 Aumentar el saldo disponible instantáneamente
-await updateBalanceGlobal(withdrawable);
+await updateBalanceGlobal(withdrawable, 'USDC', true);
 
     await creditBotProfit?.(a.id, withdrawable, `Take profit ${a.botName}`);
 
