@@ -366,7 +366,7 @@ const fetchAdminSettings = async () => {
       console.warn('[fetchAdminSettings] RPC no encontrada, usando fallback desde tabla');
       const { data: tableData, error: tableErr } = await supabase
         .from('admin_settings')
-        .select('key, value, setting_key, setting_value')
+        .select('setting_key, setting_value')
         .or('key.ilike.trading.%,setting_key.ilike.trading.%');
       if (tableErr) throw tableErr;
       rows = tableData || [];

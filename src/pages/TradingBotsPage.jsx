@@ -6,6 +6,8 @@ import {
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { supabase } from '@/lib/supabaseClient';
+
 import { Label } from '@/components/ui/label';
 import {
   Bot as BotIcon,
