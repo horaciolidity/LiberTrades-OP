@@ -178,33 +178,25 @@ useEffect(() => {
 }, [balances]);
 // 🔹 Función global para modificar saldo en tiempo real
 const updateBalanceGlobal = useCallback(
-  async (delta, currency = 'USDC', persist = false) => {
-    const c = String(currency).toUpperCase();
-
-    // 🔹 1. Actualiza saldo local en memoria
-    setLiveBalances((prev) => ({
+  async (delta, c = 'USDC', persist = false) => {
+    setBalances((prev) => ({
       ...prev,
-      [c]: Math.max(0, (prev?.[c] || 0) + delta),
+      [c]: { ...(prev[c] || {}), amount: (prev[c]?.amount || 0) + delta },
     }));
 
-    // 🔹 2. Si estamos en simulación (bots automáticos), no persiste nada en BD
-    if (!persist) return;
-
-    // 🔹 3. Solo persiste si querés tocar Supabase
-if (user?.id && persist) {
-  try {
-    // 🔧 Usa una RPC en lugar de supabase.sql (que no funciona en update())
-    const { error } = await supabase.rpc('apply_balance_change', {
-      p_user_id: user.id,
-      p_delta: delta,
-      p_currency: c,
-    });
-
-    if (error) throw error;
-  } catch (e) {
-    console.warn('[updateBalanceGlobal persist error]', e.message);
-  }
-}
+    if (persist && user?.id) {
+      try {
+        await supabase.rpc('add_wallet_tx', {
+          p_user: user.id,
+          p_currency: c,
+          p_amount: delta,
+          p_kind: delta >= 0 ? 'bot_profit' : 'bot_fee',
+          p_meta: { description: 'Ajuste automático del saldo' },
+        });
+      } catch (e) {
+        console.warn('[updateBalanceGlobal persist error]', e.message);
+      }
+    }
 
   },
   [user?.id]
