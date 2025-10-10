@@ -510,56 +510,52 @@ const localUpdateBalance = (delta = 0) => {
     const fee = 4.5; // Fee fijo USD
     const returned = Math.max(0, invested + pnl - fee);
 
-    // 🔹 Acreditar el saldo simulado o real
+    // 🔹 Ajustar saldo real o simulado
     if (typeof updateBalanceGlobal === 'function') {
       await updateBalanceGlobal(returned, 'USDC', false);
     } else {
- console.warn('[doCancel] updateBalanceGlobal no disponible → usando fallback local');
-  localUpdateBalance(returned);    }
-
-    // 🔹 Cancelar el bot (solo si la función existe)
-    if (typeof cancelBot === 'function') {
-      await cancelBot(id);
-    } else {
-      console.warn('[doCancel] cancelBot no disponible (modo simulación)');
-
-// Simular que el bot fue cancelado
-const idx = myActiveBots.findIndex(b => b.id === id);
-if (idx !== -1) {
-  const copy = [...myActiveBots];
-  copy[idx].status = 'canceled';
-  copy[idx].canceled_at = new Date().toISOString();
-      setLocalActivations(copy);
-  console.log(`[doCancel] Bot ${id} marcado como cancelado localmente`);
-}
-
-
-
-      // ⚙️ Simular cancelación local para no romper el flujo
-      const fakeCanceled = {
-        ...bot,
-        status: 'canceled',
-        canceled_at: new Date().toISOString(),
-      };
-      setConfirmCancel(null);
-      toast({
-        title: 'Bot simulado cancelado',
-        description: `Se devolvieron $${fmt(returned)} (fee $${fmt(fee)}).`,
-      });
-     
-      // actualizar el listado visual
-      refreshBotActivations?.();
-      refreshAvailable?.();
-      refreshBalances?.();
-      return;
+      console.warn('[doCancel] updateBalanceGlobal no disponible → usando fallback local');
+      localUpdateBalance(returned);
     }
 
-    // 🔹 Si la cancelación real funciona
+    // 🔹 Cancelar en Supabase con lógica completa
+    try {
+      const { error } = await supabase.rpc('cancel_bot_with_fee', {
+        p_activation_id: id,
+        p_user_id: user?.id,
+      });
+      if (error) throw error;
+      console.log(`[doCancel] cancel_bot_with_fee ejecutado correctamente para ${id}`);
+    } catch (err) {
+      console.warn('[doCancel] RPC no disponible, aplicando cancelación local:', err.message);
+
+      // ✅ Fallback local
+      const idx = myActiveBots.findIndex((b) => b.id === id);
+      if (idx !== -1) {
+        const copy = [...myActiveBots];
+        copy[idx].status = 'canceled';
+        copy[idx].canceled_at = new Date().toISOString();
+        setLocalActivations(copy);
+        console.log(`[doCancel] Bot ${id} marcado como cancelado localmente`);
+
+        // 🔹 Intentar reflejarlo en la BD sin RPC
+        const { error: upErr } = await supabase
+          .from('bot_activations')
+          .update({ status: 'canceled', canceled_at: new Date().toISOString() })
+          .eq('id', id)
+          .eq('user_id', user?.id);
+
+        if (upErr) console.warn('[doCancel] No se pudo actualizar en BD', upErr);
+      }
+    }
+
+    // 🔹 Aviso visual
     toast({
       title: 'Bot cancelado',
-      description: `Se devolvieron $${fmt(returned)} al saldo (fee $${fmt(fee)}).`,
+      description: `Se devolvieron $${fmt(returned)} (fee $${fmt(fee)}).`,
     });
 
+    // 🔹 Refrescar vista y saldo
     await Promise.all([
       refreshBotActivations?.(),
       refreshAvailable?.(),
