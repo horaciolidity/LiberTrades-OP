@@ -191,17 +191,21 @@ const updateBalanceGlobal = useCallback(
     if (!persist) return;
 
     // 🔹 3. Solo persiste si querés tocar Supabase
-    if (user?.id) {
-      try {
-        await supabase
-          .from('balances')
-          .update({ amount: supabase.sql`amount + ${delta}` })
-          .eq('user_id', user.id)
-          .eq('currency', c);
-      } catch (e) {
-        console.warn('[updateBalanceGlobal persist error]', e.message);
-      }
-    }
+if (user?.id && persist) {
+  try {
+    // 🔧 Usa una RPC en lugar de supabase.sql (que no funciona en update())
+    const { error } = await supabase.rpc('apply_balance_change', {
+      p_user_id: user.id,
+      p_delta: delta,
+      p_currency: c,
+    });
+
+    if (error) throw error;
+  } catch (e) {
+    console.warn('[updateBalanceGlobal persist error]', e.message);
+  }
+}
+
   },
   [user?.id]
 );
@@ -1815,6 +1819,9 @@ async function addTransaction({
       creditBotProfit,
       reactivateCanceledBot,
       archiveCanceledBot,
+
+      updateBalanceGlobal,
+      recalcAndRefreshBalances,
 
       // PnL bots (para UI)
       botPnlByActivation,
