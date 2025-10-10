@@ -1248,6 +1248,25 @@ async function getAvailableBalance(currency = 'USDC') {
   } catch {}
   try { refreshBalances?.(); } catch {}
 }
+// 🔹 Suscripción en tiempo real a la tabla de balances
+useEffect(() => {
+  if (!user?.id) return;
+  const sub = supabase
+    .channel('balances-changes')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'balances', filter: `user_id=eq.${user.id}` },
+      (payload) => {
+        console.log('[Realtime balance update]', payload);
+        refreshBalances?.();
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(sub);
+  };
+}, [user?.id]);
 
 
   async function canActivateBot(amountUsd, currency = 'USDC') {

@@ -450,7 +450,7 @@ const handleActivateBot = async () => {
     setBusyActivate(true);
 
     // 🔹 Descontar en tiempo real del saldo visible
-await updateBalanceGlobal(-amount);
+    await updateBalanceGlobal(-amount, 'USDC', false); // ⚠️ persist = false
 
     const res = await activateBot?.({
       botId: bot.id,
