@@ -203,6 +203,7 @@ const data = SIM_MODE ? useBotSimWorker(real) : real;
   const [busyById, setBusyById] = useState(() => new Map());
   const [showNet, setShowNet] = useState(true);
   const [busyBrain, setBusyBrain] = useState(false);
+  const [localActivations, setLocalActivations] = useState([]);
 
   const [confirmCancel, setConfirmCancel] = useState(null);
   const [tradesByActivation, setTradesByActivation] = useState({});
@@ -225,15 +226,14 @@ const data = SIM_MODE ? useBotSimWorker(real) : real;
   }, []);
 
   const myActiveBots = useMemo(() => {
-    if (Array.isArray(activeBots)) return activeBots;
-    return (botActivations || []).filter((b) => ['active', 'paused'].includes(normStatus(b?.status)));
-  }, [activeBots, botActivations]);
+  return (localActivations || []).filter((b) => ['active', 'paused'].includes(normStatus(b?.status)));
+}, [localActivations]);
 
-  const myCanceledBots = useMemo(() => {
-    if (Array.isArray(canceledBots)) return canceledBots;
-    return (botActivations || []).filter((b) =>
-      ['canceled', 'cancelled', 'archived', 'stopped', 'ended', 'inactive'].includes(normStatus(b?.status)));
-  }, [canceledBots, botActivations]);
+const myCanceledBots = useMemo(() => {
+  return (localActivations || []).filter((b) =>
+    ['canceled', 'cancelled', 'archived', 'stopped', 'ended', 'inactive'].includes(normStatus(b?.status)));
+}, [localActivations]);
+
 
   const botsAllocated = useMemo(
     () => myActiveBots.reduce((a, b) => a + Number(b?.amountUsd || 0), 0),
@@ -296,19 +296,33 @@ const data = SIM_MODE ? useBotSimWorker(real) : real;
     refreshAvailable();
   }, [refreshAvailable, botActivations, totalBotNet]);
 
-  useEffect(() => {
-    if (!user?.id) return;
-    refreshBotActivations?.();
-    refreshTransactions?.();
-  }, [user?.id]); // eslint-disable-line
+// 🔁 Cargar bots y transacciones al entrar o cambiar usuario
+useEffect(() => {
+  if (!user?.id) return;
+  (async () => {
+    await Promise.all([
+      refreshBotActivations?.(),
+      refreshTransactions?.(),
+    ]);
+  })();
+}, [user?.id]);
 
-  // ===== Trades & Eventos (de DataContext o del Worker wrapper) =====
-  const loadTrades = useCallback(async (activationId) => {
-    try {
-      const rows = await listBotTrades?.(activationId, 80);
-      setTradesByActivation(p => ({ ...p, [activationId]: rows || [] }));
-    } catch {}
-  }, [listBotTrades]);
+// 🔁 Mantener estado local sincronizado con lo que venga del backend o worker
+useEffect(() => {
+  if (botActivations && Array.isArray(botActivations)) {
+    setLocalActivations(botActivations);
+  }
+}, [botActivations]);
+
+// ===== Trades & Eventos (de DataContext o del Worker wrapper) =====
+const loadTrades = useCallback(async (activationId) => {
+  try {
+    const rows = await listBotTrades?.(activationId, 80);
+    setTradesByActivation(p => ({ ...p, [activationId]: rows || [] }));
+  } catch (e) {
+    console.warn('[loadTrades]', e);
+  }
+}, [listBotTrades]);
 
   useEffect(() => {
     (botActivations || []).forEach((a) => {
@@ -515,7 +529,7 @@ if (idx !== -1) {
   const copy = [...myActiveBots];
   copy[idx].status = 'canceled';
   copy[idx].canceled_at = new Date().toISOString();
-  data.botActivations = copy;
+      setLocalActivations(copy);
   console.log(`[doCancel] Bot ${id} marcado como cancelado localmente`);
 }
 
