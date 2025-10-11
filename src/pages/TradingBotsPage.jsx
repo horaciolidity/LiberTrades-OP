@@ -524,6 +524,7 @@ const localUpdateBalance = (delta = 0) => {
     try {
       const { error } = await supabase.rpc('cancel_trading_bot_with_fee', {
 
+
         p_activation_id: id,
         p_user_id: user?.id,
       });
