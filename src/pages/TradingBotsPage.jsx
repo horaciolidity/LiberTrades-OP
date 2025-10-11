@@ -522,7 +522,8 @@ const localUpdateBalance = (delta = 0) => {
 
     // 🔹 Cancelar en Supabase con lógica completa
     try {
-      const { error } = await supabase.rpc('cancel_bot_with_fee', {
+      const { error } = await supabase.rpc('cancel_trading_bot_with_fee', {
+
         p_activation_id: id,
         p_user_id: user?.id,
       });
