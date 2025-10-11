@@ -177,30 +177,57 @@ useEffect(() => {
   setLiveBalances({ USDC: guess, USD: guess });
 }, [balances]);
 // 🔹 Función global para modificar saldo en tiempo real
+// ✅ Actualiza saldo global con opción de persistencia en Supabase
 const updateBalanceGlobal = useCallback(
   async (delta, c = 'USDC', persist = false) => {
+    // Actualiza el estado local
     setBalances((prev) => ({
       ...prev,
-      [c]: { ...(prev[c] || {}), amount: (prev[c]?.amount || 0) + delta },
+      [c]: {
+        ...(prev[c] || {}),
+        amount: (prev[c]?.amount || 0) + delta,
+      },
     }));
 
+    // Persiste en Supabase si se solicita
     if (persist && user?.id) {
       try {
-        await supabase.rpc('add_wallet_tx', {
+        const { error } = await supabase.rpc('add_wallet_tx', {
           p_user: user.id,
           p_currency: c,
           p_amount: delta,
-          p_kind: delta >= 0 ? 'bot_profit' : 'bot_fee',
-          p_meta: { description: 'Ajuste automático del saldo' },
+          p_kind: delta >= 0 ? 'bot_refund' : 'bot_fee',
+          p_meta: { description: 'Ajuste automático del saldo por bot' },
         });
+        if (error) console.warn('[updateBalanceGlobal persist error]', error.message);
       } catch (e) {
-        console.warn('[updateBalanceGlobal persist error]', e.message);
+        console.warn('[updateBalanceGlobal persist exception]', e.message);
       }
     }
-
   },
   [user?.id]
 );
+
+// ✅ Suscripción realtime para reflejar saldo sin recargar
+useEffect(() => {
+  if (!user?.id) return;
+  const sub = supabase
+    .channel('balances-changes')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'balances', filter: `user_id=eq.${user.id}` },
+      (payload) => {
+        console.log('[Realtime balance update]', payload);
+        refreshBalances?.();
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(sub);
+  };
+}, [user?.id]);
+
 
   /* ---------------- Trades (legacy manual) ----------- */
   const [trades, setTrades] = useState([]);
