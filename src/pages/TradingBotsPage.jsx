@@ -508,71 +508,58 @@ const localUpdateBalance = (delta = 0) => {
     if (!bot) throw new Error('Bot no encontrado');
 
     const invested = Number(bot.amountUsd || 0);
-    const pnl = getBotPnl?.(id)?.net ?? 0; // ganancia o pérdida actual
-    const fee = 4.5; // Fee fijo USD
-    const returned = Math.max(0, invested + pnl - fee);
+    const pnl = getBotPnl?.(id)?.net ?? 0;
+    const cancelFee = Number(settings?.botCancelFeeUsd || 4.5);
+    const refund = Math.max(0, invested + pnl - cancelFee);
 
-    // 🔹 Ajustar saldo real o simulado
-    if (typeof updateBalanceGlobal === 'function') {
-      await updateBalanceGlobal(returned, 'USDC', true);
-    } else {
-      console.warn('[doCancel] updateBalanceGlobal no disponible → usando fallback local');
-      localUpdateBalance(returned);
-    }
-
-    // 🔹 Cancelar en Supabase con lógica completa
-    try {
-      const { error } = await supabase.rpc('cancel_trading_bot_with_fee', {
-
-
-        p_activation_id: id,
-        p_user_id: user?.id,
-      });
-      if (error) throw error;
-      console.log(`[doCancel] cancel_bot_with_fee ejecutado correctamente para ${id}`);
-    } catch (err) {
-      console.warn('[doCancel] RPC no disponible, aplicando cancelación local:', err.message);
-
-      // ✅ Fallback local
-      const idx = myActiveBots.findIndex((b) => b.id === id);
-      if (idx !== -1) {
-        const copy = [...myActiveBots];
-        copy[idx].status = 'canceled';
-        copy[idx].canceled_at = new Date().toISOString();
-        setLocalActivations(copy);
-        console.log(`[doCancel] Bot ${id} marcado como cancelado localmente`);
-
-        // 🔹 Intentar reflejarlo en la BD sin RPC
-        const { error: upErr } = await supabase
-          .from('bot_activations')
-          .update({ status: 'canceled', canceled_at: new Date().toISOString() })
-          .eq('id', id)
-          .eq('user_id', user?.id);
-
-        if (upErr) console.warn('[doCancel] No se pudo actualizar en BD', upErr);
-      }
-    }
-
-    // 🔹 Aviso visual
-    toast({
-      title: 'Bot cancelado',
-      description: `Se devolvieron $${fmt(returned)} (fee $${fmt(fee)}).`,
+    // 🔹 Actualizar backend (RPC robusta)
+    const { data, error } = await supabase.rpc('cancel_trading_bot_with_fee', {
+      p_activation_id: id,
+      p_user_id: user?.id,
     });
 
-    // 🔹 Refrescar vista y saldo
+    if (error) {
+      console.warn('[cancel_trading_bot_with_fee fallback]', error.message);
+      await supabase.from('bot_activations')
+        .update({
+          status: 'canceled',
+          canceled_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .eq('user_id', user?.id);
+    }
+
+    // 🔹 Registrar el movimiento en la wallet (persistente)
+    await supabase.rpc('add_wallet_tx', {
+      p_user: user?.id,
+      p_currency: 'USDC',
+      p_amount: refund,
+      p_kind: 'bot_refund',
+      p_meta: { ref_id: id, description: `Cancelación de ${bot.botName}` },
+    });
+
+    // 🔹 Actualizar balance en tiempo real (UI)
+    await updateBalanceGlobal(refund, 'USDC', false);
+
+    toast({
+      title: 'Bot cancelado',
+      description: `Se devolvieron $${fmt(refund)} después de fee $${fmt(cancelFee)}.`,
+    });
+
     await Promise.all([
       refreshBotActivations?.(),
       refreshAvailable?.(),
       refreshBalances?.(),
     ]);
-  } catch (e) {
-    console.error('[doCancel]', e);
+  } catch (err) {
+    console.error('[doCancel]', err);
     toast({ title: 'Error', description: 'No se pudo cancelar el bot.', variant: 'destructive' });
   } finally {
     setRowBusy(id, false);
     setConfirmCancel(null);
   }
 };
+
 
 
   const doTakeProfit = async (a) => {

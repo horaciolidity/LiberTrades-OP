@@ -179,34 +179,31 @@ useEffect(() => {
 // 🔹 Función global para modificar saldo en tiempo real
 // ✅ Actualiza saldo global con opción de persistencia en Supabase
 const updateBalanceGlobal = useCallback(
-  async (delta, c = 'USDC', persist = false) => {
-    // Actualiza el estado local
-    setBalances((prev) => ({
+  async (delta, c = 'USDC', persist = true) => {
+    setLiveBalances((prev) => ({
       ...prev,
-      [c]: {
-        ...(prev[c] || {}),
-        amount: (prev[c]?.amount || 0) + delta,
-      },
+      [c]: (prev[c] || 0) + delta,
     }));
 
-    // Persiste en Supabase si se solicita
     if (persist && user?.id) {
       try {
+        const kind = delta >= 0 ? 'bot_refund' : 'bot_fee';
         const { error } = await supabase.rpc('add_wallet_tx', {
           p_user: user.id,
           p_currency: c,
           p_amount: delta,
-          p_kind: delta >= 0 ? 'bot_refund' : 'bot_fee',
-          p_meta: { description: 'Ajuste automático del saldo por bot' },
+          p_kind: kind,
+          p_meta: { description: 'Ajuste automático por bot' },
         });
-        if (error) console.warn('[updateBalanceGlobal persist error]', error.message);
+        if (error) throw error;
       } catch (e) {
-        console.warn('[updateBalanceGlobal persist exception]', e.message);
+        console.warn('[updateBalanceGlobal persist]', e.message);
       }
     }
   },
   [user?.id]
 );
+
 
 // ✅ Suscripción realtime para reflejar saldo sin recargar
 useEffect(() => {
