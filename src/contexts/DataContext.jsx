@@ -1481,15 +1481,18 @@ async function activateBot({ botId, botName, strategy = 'default', amountUsd }) 
 
     if (e1) throw e1;
 
-    // 🔹 Solo descontamos saldo si la RPC falló completamente
-    await addTransaction({
-      amount: -Number(amountUsd),
-      type: 'bot_lock',
-      description: `Capital asignado a ${botName}`,
-      referenceType: 'bot_activation',
-      referenceId: act.id,
-      status: 'completed',
-    });
+    // 🔹 Solo descontamos saldo si el error indica que la función no existe
+if (error && String(error.message || '').toLowerCase().includes('function')) {
+  await addTransaction({
+    amount: -Number(amountUsd),
+    type: 'bot_lock',
+    description: `Capital asignado a ${botName}`,
+    referenceType: 'bot_activation',
+    referenceId: act.id,
+    status: 'completed',
+  });
+}
+
 
     await Promise.all([refreshBotActivations(), refreshTransactions()]);
     await recalcAndRefreshBalances();
