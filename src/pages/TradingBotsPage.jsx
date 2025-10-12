@@ -39,7 +39,7 @@ import { BOT_BRAIN_CLIENT, runBotBrainOnce } from '@/lib/supabaseClient';
 import useBotSimWorker from '@/hooks/useBotSimWorker';
 
 /* ===================== CONFIG ===================== */
-const SIM_MODE = true;            // Simulación visual
+const SIM_MODE = false;            // Simulación visual
 const CURRENCY = 'USDC';          // Cambia a 'USD' si tu wallet usa USD
 
 /* ===================== Utils ===================== */
