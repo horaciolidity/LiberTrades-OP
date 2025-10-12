@@ -1524,10 +1524,12 @@ async function addTransaction({
   }
 
   // Cancelar (con fee y refund → afecta saldo)
- async function cancelBot(id) {
+ // Cancelar (con fee y refund → afecta saldo)
+async function cancelBot(id) {
   if (!user?.id) return { ok: false, code: 'NO_AUTH' };
 
   try {
+    // 1️⃣ Buscar activación
     const { data: act, error } = await supabase
       .from('bot_activations')
       .select('*')
@@ -1536,49 +1538,67 @@ async function addTransaction({
       .maybeSingle();
     if (error || !act) throw new Error('Bot no encontrado');
 
+    // 2️⃣ Calcular fee desde settings
+    const fee = Number(botCancelFeeUsd || 0);
     const invested = Number(act.amount_usd || 0);
-    const pnl = 0; // si querés usar getBotPnl(id)?.net más adelante
-    const fee = 4.5; // 🔹 fee fijo USD
+    const pnl = 0;
     const refund = Math.max(0, invested + pnl - fee);
 
-    // 1️⃣ Cambiar estado
-    await supabase
-      .from('bot_activations')
-      .update({ status: 'canceled', canceled_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('user_id', user.id);
+    // 3️⃣ Llamar RPC oficial (si existe)
+    const { data: rpcData, error: rpcErr } = await supabase.rpc(
+      'cancel_trading_bot_with_fee',
+      { p_activation_id: id }
+    );
 
-    // 2️⃣ Actualizar saldo en tiempo real
-    updateBalanceGlobal(refund);
+    if (!rpcErr && rpcData?.ok) {
+      console.log('[cancelBot] RPC ejecutada correctamente:', rpcData);
+    } else {
+      console.warn('[cancelBot] RPC no disponible, usando fallback manual');
+      // Fallback manual
+      await supabase
+        .from('bot_activations')
+        .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
+        .eq('id', id)
+        .eq('user_id', user.id);
 
-    // 3️⃣ Registrar transacciones en memoria / histórico
-    await addTransaction({
-      amount: refund,
-      type: 'bot_refund',
-      description: `Devolución de capital (${act.bot_name})`,
-      referenceType: 'bot_refund',
-      referenceId: id,
-      status: 'completed',
-    });
+      await addTransaction({
+        amount: refund,
+        type: 'bot_refund',
+        description: `Devolución de capital (${act.bot_name})`,
+        referenceType: 'bot_refund',
+        referenceId: id,
+        status: 'completed',
+      });
 
-    await addTransaction({
-      amount: -fee,
-      type: 'bot_fee',
-      description: `Fee de cancelación (${act.bot_name})`,
-      referenceType: 'bot_fee',
-      referenceId: id,
-      status: 'completed',
-    });
+      if (fee > 0) {
+        await addTransaction({
+          amount: -fee,
+          type: 'bot_fee',
+          description: `Fee de cancelación (${act.bot_name})`,
+          referenceType: 'bot_fee',
+          referenceId: id,
+          status: 'completed',
+        });
+      }
+    }
 
-    await Promise.all([refreshBotActivations(), refreshTransactions()]);
-    await recalcAndRefreshBalances();
+    // 4️⃣ Refrescar todo el estado en tiempo real
+    await Promise.all([
+      refreshBotActivations(),
+      refreshTransactions(),
+      recalcAndRefreshBalances(),
+    ]);
 
-    return { ok: true, via: 'fallback', refund, fee };
+    await refreshBalances?.();
+
+    console.log('[cancelBot] Refund procesado correctamente:', refund);
+    return { ok: true, via: rpcErr ? 'fallback' : 'rpc', refund, fee };
   } catch (e) {
     console.error('[cancelBot]', e);
     return { ok: false, code: 'CANCEL_ERROR', error: e };
   }
 }
+
 
   // Reactivar un bot cancelado (nueva activación con mismo capital)
   async function reactivateCanceledBot(activationId) {
