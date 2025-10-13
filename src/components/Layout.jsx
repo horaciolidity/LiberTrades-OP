@@ -1,4 +1,3 @@
-// src/layout/Layout.jsx
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -17,7 +16,8 @@ import {
   Coins,
   BarChartHorizontalBig,
   Bot,
-  DollarSign
+  DollarSign,
+  BadgeCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
@@ -43,6 +43,7 @@ const Layout = () => {
   const [ethBalance, setEthBalance] = useState('0.00');
   const [usdtBalance, setUsdtBalance] = useState('0.00');
 
+  // 🧭 Menú general de navegación
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Estadísticas', href: '/stats', icon: BarChartHorizontalBig },
@@ -58,8 +59,13 @@ const Layout = () => {
     { name: 'Perfil', href: '/profile', icon: User },
   ];
 
-  if (profile?.role === 'admin') {
-    navigation.unshift({ name: 'Admin Panel', href: '/admin', icon: Shield });
+  // 🛡️ Solo admins: agregamos secciones especiales
+  const isAdmin = profile?.role === 'admin' || user?.email === 'admin@test.com';
+  if (isAdmin) {
+    navigation.unshift(
+      { name: 'Verificación KYC', href: '/admin/kyc', icon: BadgeCheck },
+      { name: 'Admin Panel', href: '/admin', icon: Shield },
+    );
   }
 
   const handleLogout = () => {
@@ -86,7 +92,7 @@ const Layout = () => {
         updateUser?.({ web3Wallet: address });
         toast({
           title: 'Wallet Conectada',
-          description: `Cuenta: ${address.slice(0, 6)}...${address.slice(-4)}`
+          description: `Cuenta: ${address.slice(0, 6)}...${address.slice(-4)}`,
         });
         fetchBalances(provider, address);
       } catch (error) {
@@ -94,14 +100,14 @@ const Layout = () => {
         toast({
           title: 'Error de Wallet',
           description: 'No se pudo conectar la wallet. Intenta de nuevo.',
-          variant: 'destructive'
+          variant: 'destructive',
         });
       }
     } else {
       toast({
         title: 'MetaMask no detectado',
         description: 'Instalá MetaMask para usar esta función.',
-        variant: 'destructive'
+        variant: 'destructive',
       });
     }
   };
@@ -121,7 +127,7 @@ const Layout = () => {
       toast({
         title: 'Error de Balance',
         description: 'No se pudieron obtener los balances de la wallet.',
-        variant: 'destructive'
+        variant: 'destructive',
       });
     }
   };
@@ -141,10 +147,15 @@ const Layout = () => {
         className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-800/95 backdrop-blur-xl border-r border-slate-700 lg:hidden flex flex-col"
       >
         <div className="flex items-center justify-between p-4">
-          <span className="text-xl font-bold brand-title">
-            LiberTrades
-          </span>
-          <Button variant="ghost" size="icon" onClick={() => { playSound('click'); setSidebarOpen(false); }}>
+          <span className="text-xl font-bold brand-title">LiberTrades</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              playSound('click');
+              setSidebarOpen(false);
+            }}
+          >
             <X className="h-6 w-6" />
           </Button>
         </div>
@@ -159,7 +170,9 @@ const Layout = () => {
                 key={item.name}
                 onClick={() => handleLinkClick(item.href)}
                 className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
-                  isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+                  isActive
+                    ? 'btn-ss5 text-white'
+                    : 'text-slate-300 hover:bg-slate-700 hover:text-white'
                 }`}
               >
                 <Icon className="h-5 w-5 mr-3" />
@@ -178,7 +191,10 @@ const Layout = () => {
         {/* botón logout (MOBILE) */}
         <div className="p-4 border-t border-slate-700">
           <Button
-            onClick={() => { handleLogout(); setSidebarOpen(false); }}
+            onClick={() => {
+              handleLogout();
+              setSidebarOpen(false);
+            }}
             variant="outline"
             className="w-full justify-start"
           >
@@ -192,9 +208,7 @@ const Layout = () => {
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
         <div className="flex flex-col flex-grow bg-slate-800/95 backdrop-blur-xl border-r border-slate-700">
           <div className="flex items-center h-16 px-4">
-            <span className="text-xl font-bold brand-title">
-              LiberTrades
-            </span>
+            <span className="text-xl font-bold brand-title">LiberTrades</span>
           </div>
 
           <nav className="mt-8 flex-1 px-4">
@@ -206,7 +220,9 @@ const Layout = () => {
                   key={item.name}
                   onClick={() => handleLinkClick(item.href)}
                   className={`w-full flex items-center px-4 py-3 mb-2 rounded-lg transition-all ${
-                    isActive ? 'btn-ss5 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+                    isActive
+                      ? 'btn-ss5 text-white'
+                      : 'text-slate-300 hover:bg-slate-700 hover:text-white'
                   }`}
                 >
                   <Icon className="h-5 w-5 mr-3" />
@@ -237,7 +253,10 @@ const Layout = () => {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => { playSound('click'); setSidebarOpen(true); }}
+            onClick={() => {
+              playSound('click');
+              setSidebarOpen(true);
+            }}
             className="lg:hidden"
           >
             <Menu className="h-6 w-6" />
@@ -252,17 +271,34 @@ const Layout = () => {
             <div className="flex items-center gap-x-4 lg:gap-x-6">
               {web3Account ? (
                 <div className="text-sm text-slate-300">
-                  <p>ETH: <span className="font-semibold text-yellow-400">{fmt(ethBalance, 4)}</span></p>
-                  <p>USDT: <span className="font-semibold text-green-400">{fmt(usdtBalance, 2)}</span></p>
+                  <p>
+                    ETH:{' '}
+                    <span className="font-semibold text-yellow-400">
+                      {fmt(ethBalance, 4)}
+                    </span>
+                  </p>
+                  <p>
+                    USDT:{' '}
+                    <span className="font-semibold text-green-400">
+                      {fmt(usdtBalance, 2)}
+                    </span>
+                  </p>
                   <p className="text-xs text-slate-500">Wallet: {shortAddr}</p>
                 </div>
               ) : (
-                <Button onClick={connectWallet} size="sm" className="bg-blue-500 hover:bg-blue-600">
+                <Button
+                  onClick={connectWallet}
+                  size="sm"
+                  className="bg-blue-500 hover:bg-blue-600"
+                >
                   Conectar Wallet
                 </Button>
               )}
               <div className="text-sm text-slate-300">
-                Saldo App: <span className="font-semibold text-green-400">${fmt(balances?.usdc, 2)}</span>
+                Saldo App:{' '}
+                <span className="font-semibold text-green-400">
+                  ${fmt(balances?.usdc, 2)}
+                </span>
               </div>
             </div>
           </div>
@@ -278,7 +314,10 @@ const Layout = () => {
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/50 lg:hidden"
-          onClick={() => { playSound('click'); setSidebarOpen(false); }}
+          onClick={() => {
+            playSound('click');
+            setSidebarOpen(false);
+          }}
         />
       )}
     </div>
