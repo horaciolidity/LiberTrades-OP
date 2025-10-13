@@ -1327,6 +1327,7 @@ useEffect(() => {
   }
 
   // DataContext.jsx
+// ✅ addTransaction — ahora solo recalcula balance si la transacción está 'completed'
 async function addTransaction({
   amount,
   type,
@@ -1338,15 +1339,15 @@ async function addTransaction({
 }) {
   if (!user?.id) return null;
 
-  // ——————————— 1) PRIMERO INTENTAMOS RPC (recomendado) ———————————
+  const isCompleted = String(status).toLowerCase() === 'completed';
+
+  // ——————————— 1) PRIMERO INTENTAMOS RPC ———————————
   try {
     const { error: rpcErr } = await supabase.rpc('add_wallet_tx', {
-      // firma flexible (ajustá los nombres si tu RPC usa otros):
       p_user: user.id,
       p_currency: currency,
       p_amount: Number(amount),
       p_kind: type,
-      // opcional/JSON con metadatos que quieras guardar:
       p_meta: {
         description,
         reference_type: referenceType,
@@ -1356,21 +1357,23 @@ async function addTransaction({
     });
 
     if (!rpcErr) {
-      // la RPC puede no devolver la fila; armamos un objeto coherente
       await refreshTransactions();
-      try {
-        // recálculo tolerante a ambas firmas
-        const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
-        if (r1.error) await supabase.rpc('recalc_user_balances');
-      } catch {}
-      try { refreshBalances?.(); } catch {}
+
+      // ⚠️ Solo recalcular si la transacción está completada
+      if (isCompleted) {
+        try {
+          const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
+          if (r1.error) await supabase.rpc('recalc_user_balances');
+        } catch {}
+        try { refreshBalances?.(); } catch {}
+      }
 
       const mappedType = type === 'plan_purchase' ? 'investment' : type;
 
       return {
         user_id: user.id,
         userId: user.id,
-        id: crypto?.randomUUID?.() || `${Date.now()}`, // placeholder (la UI no depende de este id)
+        id: crypto?.randomUUID?.() || `${Date.now()}`,
         type: mappedType,
         status,
         amount: Number(amount || 0),
@@ -1382,11 +1385,10 @@ async function addTransaction({
       };
     }
   } catch (e) {
-    // seguimos al fallback
     console.warn('[addTransaction] RPC add_wallet_tx no disponible, usando fallback:', e?.message || e);
   }
 
-  // ——————————— 2) FALLBACK: INSERT DIRECTO (si tus RLS lo permiten) ———————————
+  // ——————————— 2) FALLBACK DIRECTO ———————————
   const payload = {
     user_id: user.id,
     amount: Number(amount),
@@ -1411,11 +1413,14 @@ async function addTransaction({
 
   await refreshTransactions();
 
-  try {
-    const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
-    if (r1.error) await supabase.rpc('recalc_user_balances');
-  } catch {}
-  try { refreshBalances?.(); } catch {}
+  // ⚠️ Solo recalcular si está completada
+  if (isCompleted) {
+    try {
+      const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
+      if (r1.error) await supabase.rpc('recalc_user_balances');
+    } catch {}
+    try { refreshBalances?.(); } catch {}
+  }
 
   let mappedType = data.type;
   if (mappedType === 'plan_purchase') mappedType = 'investment';
@@ -1434,6 +1439,7 @@ async function addTransaction({
     referenceId: data.reference_id,
   };
 }
+
 
 
   /* ---------------- RPC Bots (activar/estado) --------------- */
