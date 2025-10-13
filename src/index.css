@@ -138,6 +138,13 @@ body{
   -webkit-background-clip:text; background-clip:text; color:transparent;
   text-shadow: 0 0 22px rgba(255,255,255,.35);
 }
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.animate-fadeIn {
+  animation: fadeIn 0.6s ease-out forwards;
+}
 
 /* ===========================
    Otros helpers que ya usabas

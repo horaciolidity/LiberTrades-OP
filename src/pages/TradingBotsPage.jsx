@@ -622,15 +622,10 @@ await updateBalanceGlobal(withdrawable, 'USDC', true);
 
   const summaryPnlValue = showNet ? totalBotNet : totalBotProfit;
   const summaryPnlLabel = showNet ? 'Ganancias (neto no retirado)' : 'Ganancias (bruto)';
-/* ===== Overlay de Mantenimiento ===== */
-const MaintenanceOverlay = () => (
+/* ===== Overlay de Mantenimiento (estable, sin parpadeo) ===== */
+const MaintenanceOverlay = React.memo(() => (
   <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-md text-center p-6">
-    <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.6 }}
-      className="max-w-md text-white"
-    >
+    <div className="max-w-md text-white animate-fadeIn">
       <h1 className="text-3xl font-bold mb-3 flex items-center justify-center">
         <Gauge className="w-8 h-8 text-yellow-400 mr-3" />
         Módulo en Mantenimiento
@@ -648,9 +643,9 @@ const MaintenanceOverlay = () => (
           Volver atrás
         </Button>
       </div>
-    </motion.div>
+    </div>
   </div>
-);
+));
 
   return (
     <>
