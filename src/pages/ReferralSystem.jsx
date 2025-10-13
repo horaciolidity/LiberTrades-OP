@@ -184,7 +184,7 @@ const handleUnlockReward = async () => {
   if (amount <= 0) return toast({ title: 'No hay recompensas pendientes.' });
   setUnlocking(true);
   try {
-    const { error } = await supabase.rpc('add_wallet_tx', {
+const { error } = await supabase.rpc('add_wallet_tx_referral', {
       p_user: user.id,
       p_currency: 'USDC',
       p_amount: amount,
