@@ -380,30 +380,30 @@ export default function TokenizedProjectsPage() {
   const liveTotal = round2(liveAmount + liveFee);
   const insufficient = selectedProject && liveTotal > usdBalance;
 
-/* ===== Overlay de Mantenimiento (estable, sin parpadeo) ===== */
-const MaintenanceOverlay = React.memo(() => (
-  <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-md text-center p-6">
-    <div className="max-w-md text-white animate-fadeIn">
+// 🚧 Toggle rápido
+const MAINTENANCE_MODE = true; // <-- ponelo en false cuando quieras volver a mostrar la página normal
+
+if (MAINTENANCE_MODE) {
+  return (
+    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-slate-950 text-center text-white p-6">
       <h1 className="text-3xl font-bold mb-3 flex items-center justify-center">
         <Gauge className="w-8 h-8 text-yellow-400 mr-3" />
         Módulo en Mantenimiento
       </h1>
-      <p className="text-slate-300 mb-6 leading-relaxed">
+      <p className="text-slate-300 mb-6 leading-relaxed max-w-md mx-auto">
         Estamos realizando mejoras y optimizaciones en este módulo para brindarte una experiencia más estable y eficiente.  
         Volverá a estar disponible muy pronto.
       </p>
-      <div className="flex justify-center">
-        <Button
-          variant="outline"
-          className="text-white border-slate-500 hover:bg-slate-800"
-          onClick={() => window.history.back()}
-        >
-          Volver atrás
-        </Button>
-      </div>
+      <Button
+        variant="outline"
+        className="text-white border-slate-500 hover:bg-slate-800"
+        onClick={() => window.history.back()}
+      >
+        Volver atrás
+      </Button>
     </div>
-  </div>
-));
+  );
+}
 
   return (
     <>
