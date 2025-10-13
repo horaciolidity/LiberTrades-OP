@@ -25,13 +25,14 @@ import { useData } from '@/contexts/DataContext';
 import { toast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
 
+
 const fmt = (n, dec = 2) => {
   const v = Number(n);
   return Number.isFinite(v) ? Number(n).toFixed(dec) : (0).toFixed(dec);
 };
 
 // Bono fijo por referido acreditado (se mantiene como antes)
-const REWARD_PER_REFERRAL = 50; // USD
+const REWARD_PER_REFERRAL = 10; // USD
 
 // Niveles y umbrales (visual)
 const LEVELS = [
@@ -60,6 +61,9 @@ export default function ReferralSystem() {
   } = useData();
 
   const [referrals, setReferrals] = useState([]);
+  const [unlocking, setUnlocking] = useState(false);
+  const [unlockedRewards, setUnlockedRewards] = useState(0);
+
 
   // ====== Porcentajes de referidos (desde Admin) ======
   // Defaults alineados con AdminDashboard (5% y 2%)
@@ -173,6 +177,29 @@ export default function ReferralSystem() {
       copy(referralLink, 'Enlace copiado');
     }
   };
+const handleUnlockReward = async () => {
+  if (!user?.id || unlocking) return;
+  const percent = currentLevel.name === 'Diamante' ? 1 : 0.5;
+  const amount = totalEarnings * percent - unlockedRewards;
+  if (amount <= 0) return toast({ title: 'No hay recompensas pendientes.' });
+  setUnlocking(true);
+  try {
+    const { error } = await supabase.rpc('add_wallet_tx', {
+      p_user: user.id,
+      p_currency: 'USDC',
+      p_amount: amount,
+      p_kind: 'referral_unlock',
+      p_meta: { level: currentLevel.name },
+    });
+    if (error) throw error;
+    setUnlockedRewards(unlockedRewards + amount);
+    toast({ title: 'Recompensa desbloqueada', description: `Se añadieron $${fmt(amount)} a tu saldo.` });
+  } catch {
+    toast({ title: 'Error al desbloquear recompensa', variant: 'destructive' });
+  } finally {
+    setUnlocking(false);
+  }
+};
 
   const benefitsTable = useMemo(() => buildBenefitsTable(level1Pct, level2Pct), [level1Pct, level2Pct]);
 
@@ -331,6 +358,23 @@ export default function ReferralSystem() {
                       Te faltan <span className="text-white font-semibold">{Math.max(0, nextLevel.min - totalReferrals)}</span> referidos para llegar a{' '}
                       <span className="text-white font-semibold">{nextLevel.name}</span>.
                     </div>
+                    <div className="flex flex-col items-center mt-4 space-y-2">
+  <Button
+    disabled={unlocking}
+    onClick={handleUnlockReward}
+    className="bg-green-600 hover:bg-green-700 text-white w-full"
+  >
+    {unlocking
+      ? 'Desbloqueando...'
+      : currentLevel.name === 'Diamante'
+      ? 'Desbloquear Recompensa Final'
+      : 'Desbloquear 50% de Recompensa'}
+  </Button>
+  <p className="text-xs text-slate-400">
+    Has liberado ${fmt(unlockedRewards)} de tus recompensas. Al alcanzar el último nivel se libera el 100%.
+  </p>
+</div>
+
                   </div>
                 ) : (
                   <div className="text-center text-emerald-400 font-semibold">¡Máximo nivel alcanzado!</div>
