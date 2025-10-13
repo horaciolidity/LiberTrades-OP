@@ -180,26 +180,43 @@ export default function ReferralSystem() {
 const handleUnlockReward = async () => {
   if (!user?.id || unlocking) return;
   const percent = currentLevel.name === 'Diamante' ? 1 : 0.5;
-  const amount = totalEarnings * percent - unlockedRewards;
-  if (amount <= 0) return toast({ title: 'No hay recompensas pendientes.' });
+  const rawAmount = totalEarnings * percent - unlockedRewards;
+  const amount = Number(rawAmount.toFixed(2));
+
+  if (amount <= 0) {
+    toast({ title: 'No hay recompensas pendientes.' });
+    return;
+  }
+
   setUnlocking(true);
   try {
-const { error } = await supabase.rpc('add_wallet_tx_referral', {
+    const { error } = await supabase.rpc('add_wallet_tx_referral', {
       p_user: user.id,
       p_currency: 'USDC',
       p_amount: amount,
       p_kind: 'referral_unlock',
       p_meta: { level: currentLevel.name },
     });
+
     if (error) throw error;
-    setUnlockedRewards(unlockedRewards + amount);
-    toast({ title: 'Recompensa desbloqueada', description: `Se añadieron $${fmt(amount)} a tu saldo.` });
-  } catch {
-    toast({ title: 'Error al desbloquear recompensa', variant: 'destructive' });
+
+    setUnlockedRewards((prev) => prev + amount);
+    toast({
+      title: 'Recompensa desbloqueada',
+      description: `Se añadieron $${fmt(amount)} a tu saldo.`,
+    });
+  } catch (err) {
+    console.error('Error RPC:', err);
+    toast({
+      title: 'Error al desbloquear recompensa',
+      description: 'No se pudo registrar la transacción.',
+      variant: 'destructive',
+    });
   } finally {
     setUnlocking(false);
   }
 };
+
 
   const benefitsTable = useMemo(() => buildBenefitsTable(level1Pct, level2Pct), [level1Pct, level2Pct]);
 
