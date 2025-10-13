@@ -20,8 +20,10 @@ import TradingBotsPage from '@/pages/TradingBotsPage';
 import UserStatsPage from '@/pages/UserStatsPage';
 import RewardsPage from '@/pages/RewardsPage';
 import WalletPage from '@/pages/WalletPage';
-
 import ProtectedRoute, { GuestRoute } from '@/routes/ProtectedRoute';
+
+// 🆕 Import del nuevo panel de verificación KYC
+import AdminKycPage from '@/pages/admin/AdminKycPage';
 
 export default function App() {
   return (
@@ -30,7 +32,7 @@ export default function App() {
         <Toaster />
 
         <Routes>
-          {/* públicas */}
+          {/* RUTAS PÚBLICAS */}
           <Route path="/" element={<LandingPage />} />
           <Route
             path="/login"
@@ -49,7 +51,7 @@ export default function App() {
             }
           />
 
-          {/* privadas con layout */}
+          {/* RUTAS PRIVADAS (USUARIOS AUTENTICADOS) */}
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/dashboard" element={<Dashboard />} />
@@ -64,19 +66,21 @@ export default function App() {
               <Route path="/stats" element={<UserStatsPage />} />
               <Route path="/rewards" element={<RewardsPage />} />
               <Route path="/wallet" element={<WalletPage />} />
-              {/* fallback privado (si estás logueado y la ruta no existe) */}
+              {/* Fallback privado */}
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Route>
           </Route>
 
-          {/* admin */}
+          {/* RUTAS ADMIN */}
           <Route element={<ProtectedRoute adminOnly />}>
             <Route element={<Layout />}>
               <Route path="/admin" element={<AdminDashboard />} />
+              {/* 🆕 Nueva ruta: panel de verificación KYC */}
+              <Route path="/admin/kyc" element={<AdminKycPage />} />
             </Route>
           </Route>
 
-          {/* fallback público (no logueado) */}
+          {/* Fallback público (no logueado) */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </DataProvider>

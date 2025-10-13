@@ -1,9 +1,33 @@
-// src/pages/Profile.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { User, Bell, Shield, TrendingUp, Users, Wallet, Bot, Copy, Camera, Trash2, Save } from 'lucide-react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import {
+  User,
+  Bell,
+  Shield,
+  Settings,
+  TrendingUp,
+  Users,
+  Wallet,
+  Bot,
+  Copy,
+  Camera,
+  Trash2,
+  Save,
+  IdCard,
+} from 'lucide-react';
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui/tabs';
 import PersonalInfoTab from '@/components/profile/PersonalInfoTab';
 import SecurityTab from '@/components/profile/SecurityTab';
 import NotificationsTab from '@/components/profile/NotificationsTab';
@@ -15,6 +39,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from '@/components/ui/use-toast';
 import { supabase } from '@/lib/supabaseClient';
+import KycVerificationTab from '@/components/profile/KycVerificationTab';
+
 
 // helpers
 const fmt = (n, dec = 2) => {
@@ -24,9 +50,7 @@ const fmt = (n, dec = 2) => {
 const arr = (v) => (Array.isArray(v) ? v : []);
 
 function getInitialAvatar(profile, user) {
-  return profile?.avatar_url
-    || user?.user_metadata?.avatar_url
-    || null;
+  return profile?.avatar_url || user?.user_metadata?.avatar_url || null;
 }
 
 export default function Profile() {
@@ -42,8 +66,10 @@ export default function Profile() {
     refreshBotActivations,
   } = useData() || {};
 
-  // ---------- Estado local para UI reactiva ----------
-  const [avatarUrl, setAvatarUrl] = useState(() => getInitialAvatar(profile, user));
+  // ---------- Estado local ----------
+  const [avatarUrl, setAvatarUrl] = useState(() =>
+    getInitialAvatar(profile, user)
+  );
   const [savingAvatar, setSavingAvatar] = useState(false);
   const [name, setName] = useState(profile?.full_name || displayName || '');
   const [username, setUsername] = useState(profile?.username || '');
@@ -57,64 +83,91 @@ export default function Profile() {
     user?.user_metadata?.role ||
     (user?.email === 'admin@test.com' ? 'admin' : 'user');
 
-  // ---------- Derivados para overview ----------
+  // ---------- Datos derivados ----------
   useEffect(() => {
     if (!user?.id) return;
     refreshInvestments?.();
     refreshTransactions?.();
     refreshReferrals?.();
     refreshBotActivations?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  const userInvs = useMemo(() => arr(investments).filter(i => (i.user_id ?? i.userId) === uid), [investments, uid]);
-  const userTx   = useMemo(() => arr(transactions).filter(t => (t.user_id ?? t.userId) === uid), [transactions, uid]);
-  const userBots = useMemo(() => arr(botActivations).filter(b => (b.user_id ?? b.userId) === uid), [botActivations, uid]);
+  const userInvs = useMemo(
+    () => arr(investments).filter((i) => (i.user_id ?? i.userId) === uid),
+    [investments, uid]
+  );
+  const userTx = useMemo(
+    () => arr(transactions).filter((t) => (t.user_id ?? t.userId) === uid),
+    [transactions, uid]
+  );
+  const userBots = useMemo(
+    () => arr(botActivations).filter((b) => (b.user_id ?? b.userId) === uid),
+    [botActivations, uid]
+  );
 
-  const activeInvs = userInvs.filter(i => (i.status ?? 'active') === 'active');
-  const totalInvested = activeInvs.reduce((s, i) => s + Number(i.amount ?? 0), 0);
+  const activeInvs = userInvs.filter(
+    (i) => (i.status ?? 'active') === 'active'
+  );
+  const totalInvested = activeInvs.reduce(
+    (s, i) => s + Number(i.amount ?? 0),
+    0
+  );
   const totalEarnings = activeInvs.reduce((sum, inv) => {
     const created = new Date(inv.created_at ?? inv.createdAt ?? Date.now());
-    const days = Math.max(0, Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)));
+    const days = Math.max(
+      0,
+      Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24))
+    );
     const dur = Number(inv.duration ?? 0);
     const dReturn = Number(inv.daily_return ?? inv.dailyReturn ?? 0) / 100;
     const effectiveDays = Math.min(days, dur);
     return sum + Number(inv.amount ?? 0) * dReturn * effectiveDays;
   }, 0);
-  const depositsCompleted = userTx
-    .filter(t => (t.type ?? '').toLowerCase() === 'deposit' && (t.status ?? '').toLowerCase() === 'completed')
-    .length;
-  const botsActive = userBots.filter(b => (b.status ?? '').toLowerCase() === 'active').length;
+  const depositsCompleted = userTx.filter(
+    (t) =>
+      (t.type ?? '').toLowerCase() === 'deposit' &&
+      (t.status ?? '').toLowerCase() === 'completed'
+  ).length;
+  const botsActive = userBots.filter(
+    (b) => (b.status ?? '').toLowerCase() === 'active'
+  ).length;
   const referralsCount = arr(referrals).length;
 
-  // barra “energía” (hitos de cuenta)
+  // Barra de progreso
   const steps = [
-    { key: 'email',    done: verified,                         label: 'Email verificado' },
-    { key: 'deposit',  done: depositsCompleted > 0,            label: 'Depósito completado' },
-    { key: 'invest',   done: activeInvs.length > 0,            label: 'Inversión activa' },
-    { key: 'referral', done: referralsCount > 0,               label: 'Primer referido' },
+    { key: 'email', done: verified, label: 'Email verificado' },
+    { key: 'deposit', done: depositsCompleted > 0, label: 'Depósito completado' },
+    { key: 'invest', done: activeInvs.length > 0, label: 'Inversión activa' },
+    { key: 'referral', done: referralsCount > 0, label: 'Primer referido' },
   ];
-  const achieved = steps.filter(s => s.done).length;
+  const achieved = steps.filter((s) => s.done).length;
   const progressPct = Math.round((achieved / steps.length) * 100);
 
   const referralCode = profile?.referral_code ?? user?.referralCode ?? '';
 
-  // ---------- Avatar: seleccionar / subir ----------
+  // ---------- Avatar ----------
   const onPickFile = () => fileInputRef.current?.click();
 
   const onFileChange = async (e) => {
     const file = e.target?.files?.[0];
     if (!file) return;
     if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
-      toast({ title: 'Formato no soportado', description: 'Usa PNG, JPG o WebP.', variant: 'destructive' });
+      toast({
+        title: 'Formato no soportado',
+        description: 'Usa PNG, JPG o WebP.',
+        variant: 'destructive',
+      });
       return;
     }
     if (file.size > 3 * 1024 * 1024) {
-      toast({ title: 'Archivo muy grande', description: 'Máximo 3MB.', variant: 'destructive' });
+      toast({
+        title: 'Archivo muy grande',
+        description: 'Máximo 3MB.',
+        variant: 'destructive',
+      });
       return;
     }
     await uploadAvatar(file);
-    // limpiar input para permitir misma selección de nuevo si quiere
     e.target.value = '';
   };
 
@@ -125,45 +178,26 @@ export default function Profile() {
       const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
       const path = `${uid}/${Date.now()}.${ext}`;
 
-      // Subir a bucket "avatars" (asume bucket existente; público recomendado)
-      const { error: upErr } = await supabase
-        .storage
+      const { error: upErr } = await supabase.storage
         .from('avatars')
         .upload(path, file, { upsert: true, cacheControl: '3600' });
-
       if (upErr) throw upErr;
 
-      // Obtener URL pública
       const { data: pub } = supabase.storage.from('avatars').getPublicUrl(path);
       const publicUrl = pub?.publicUrl;
       if (!publicUrl) throw new Error('No se pudo obtener URL pública');
 
-      // Guardar en auth.user_metadata (siempre disponible)
-      const { error: authErr } = await supabase.auth.updateUser({
-        data: { avatar_url: publicUrl },
-      });
-      if (authErr) {
-        // no rompemos UX si falla, pero avisamos
-        console.warn('[auth.updateUser] error:', authErr);
-      }
-
-      // Intento best-effort: guardar en profiles.avatar_url (si existe la columna)
-      try {
-        const { error: pErr } = await supabase
-          .from('profiles')
-          .update({ avatar_url: publicUrl })
-          .eq('id', uid);
-        // Si la columna no existe, Supabase devuelve error: lo silenciamos
-        if (pErr) console.info('[profiles.update avatar_url] aviso:', pErr?.message || pErr);
-      } catch (e) {
-        // silent
-      }
+      await supabase.auth.updateUser({ data: { avatar_url: publicUrl } });
+      await supabase.from('profiles').update({ avatar_url: publicUrl }).eq('id', uid);
 
       setAvatarUrl(publicUrl);
       toast({ title: 'Foto actualizada', description: 'Tu avatar fue guardado correctamente.' });
     } catch (err) {
-      console.error('[uploadAvatar]', err);
-      toast({ title: 'No se pudo guardar la foto', description: 'Intenta nuevamente.', variant: 'destructive' });
+      toast({
+        title: 'Error al guardar',
+        description: 'Intenta nuevamente.',
+        variant: 'destructive',
+      });
     } finally {
       setSavingAvatar(false);
     }
@@ -173,47 +207,41 @@ export default function Profile() {
     if (!uid) return;
     setSavingAvatar(true);
     try {
-      // Quitar URL de auth.user_metadata
-      const { error: authErr } = await supabase.auth.updateUser({ data: { avatar_url: null } });
-      if (authErr) console.warn('[auth.updateUser clear avatar] error:', authErr);
-
-      // Best-effort en profiles.avatar_url
-      try {
-        const { error: pErr } = await supabase.from('profiles').update({ avatar_url: null }).eq('id', uid);
-        if (pErr) console.info('[profiles.update clear avatar] aviso:', pErr?.message || pErr);
-      } catch {}
-
+      await supabase.auth.updateUser({ data: { avatar_url: null } });
+      await supabase.from('profiles').update({ avatar_url: null }).eq('id', uid);
       setAvatarUrl(null);
       toast({ title: 'Foto eliminada', description: 'Tu avatar fue quitado.' });
-    } catch (e) {
-      toast({ title: 'No se pudo quitar la foto', description: 'Intenta nuevamente.', variant: 'destructive' });
     } finally {
       setSavingAvatar(false);
     }
   }
 
-  // ---------- Guardar nombre/username (tabla profiles) ----------
+  // ---------- Guardar nombre ----------
   async function saveProfileBasics() {
     if (!uid) return;
     setSavingProfile(true);
     try {
-      const payload = {};
-      if (name != null) payload.full_name = String(name).trim();
-      if (username != null) payload.username = String(username).trim();
-
-      const { error } = await supabase.from('profiles').update(payload).eq('id', uid);
-      if (error) throw error;
-
-      toast({ title: 'Perfil actualizado', description: 'Tus datos se guardaron correctamente.' });
+      const payload = {
+        full_name: name?.trim(),
+        username: username?.trim(),
+      };
+      await supabase.from('profiles').update(payload).eq('id', uid);
+      toast({
+        title: 'Perfil actualizado',
+        description: 'Tus datos se guardaron correctamente.',
+      });
     } catch (e) {
-      console.error('[saveProfileBasics]', e);
-      toast({ title: 'No se pudo guardar', description: 'Revisa los datos e intenta de nuevo.', variant: 'destructive' });
+      toast({
+        title: 'Error',
+        description: 'No se pudo guardar. Intenta de nuevo.',
+        variant: 'destructive',
+      });
     } finally {
       setSavingProfile(false);
     }
   }
 
-  // ---------- util ----------
+  // ---------- Copy util ----------
   const copy = (text, label = 'Copiado') => {
     if (!text) return;
     navigator.clipboard.writeText(text);
@@ -222,7 +250,7 @@ export default function Profile() {
 
   return (
     <div className="space-y-8">
-      {/* Hero Header */}
+      {/* Header */}
       <div className="rounded-2xl overflow-hidden border border-slate-700/50 bg-[radial-gradient(50%_120%_at_50%_0%,rgba(56,189,248,0.15),rgba(17,24,39,0))]">
         <div className="p-6 sm:p-8 md:p-10">
           <motion.div
@@ -231,17 +259,12 @@ export default function Profile() {
             transition={{ duration: 0.6 }}
             className="flex flex-col lg:flex-row gap-6 items-start lg:items-center justify-between"
           >
-            {/* Avatar + acciones */}
+            {/* Avatar */}
             <div className="flex items-center gap-5">
               <div className="relative">
                 <div className="w-24 h-24 rounded-full bg-slate-800 border border-slate-600 overflow-hidden flex items-center justify-center">
                   {avatarUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={avatarUrl}
-                      alt="Avatar"
-                      className="w-full h-full object-cover"
-                    />
+                    <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
                   ) : (
                     <User className="h-10 w-10 text-slate-400" />
                   )}
@@ -259,15 +282,19 @@ export default function Profile() {
                     {savingAvatar ? 'Guardando...' : 'Cambiar foto'}
                   </Button>
                   {avatarUrl && (
-                    <Button size="sm" variant="outline" onClick={clearAvatar} disabled={savingAvatar}>
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      Quitar
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={clearAvatar}
+                      disabled={savingAvatar}
+                    >
+                      <Trash2 className="h-4 w-4 mr-2" /> Quitar
                     </Button>
                   )}
                 </div>
               </div>
 
-              {/* Nombre / username inline-edit */}
+              {/* Nombre / username */}
               <div>
                 <div className="flex flex-col sm:flex-row sm:items-end gap-2">
                   <div>
@@ -297,10 +324,22 @@ export default function Profile() {
                 <div className="mt-3">
                   <p className="text-slate-300">{user?.email}</p>
                   <div className="flex flex-wrap items-center gap-2 mt-2">
-                    <span className={`px-3 py-1 rounded-full text-sm ${verified ? 'bg-green-500/20 text-green-400' : 'bg-slate-600/30 text-slate-300'}`}>
+                    <span
+                      className={`px-3 py-1 rounded-full text-sm ${
+                        verified
+                          ? 'bg-green-500/20 text-green-400'
+                          : 'bg-slate-600/30 text-slate-300'
+                      }`}
+                    >
                       {verified ? 'Cuenta verificada' : 'Cuenta sin verificar'}
                     </span>
-                    <span className={`px-3 py-1 rounded-full text-sm ${role === 'admin' ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-500/20 text-slate-300'}`}>
+                    <span
+                      className={`px-3 py-1 rounded-full text-sm ${
+                        role === 'admin'
+                          ? 'bg-blue-500/20 text-blue-400'
+                          : 'bg-slate-500/20 text-slate-300'
+                      }`}
+                    >
                       {role === 'admin' ? 'Administrador' : 'Usuario'}
                     </span>
                   </div>
@@ -308,7 +347,7 @@ export default function Profile() {
               </div>
             </div>
 
-            {/* Saldo y progreso */}
+            {/* Saldo / progreso */}
             <div className="min-w-[240px] max-w-sm w-full">
               <div className="flex items-center justify-between">
                 <div>
@@ -330,11 +369,13 @@ export default function Profile() {
                   />
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {steps.map(s => (
+                  {steps.map((s) => (
                     <span
                       key={s.key}
                       className={`px-2 py-0.5 rounded-full text-[11px] border ${
-                        s.done ? 'border-green-600/50 text-green-300' : 'border-slate-600/60 text-slate-400'
+                        s.done
+                          ? 'border-green-600/50 text-green-300'
+                          : 'border-slate-600/60 text-slate-400'
                       }`}
                     >
                       {s.label}
@@ -347,7 +388,7 @@ export default function Profile() {
         </div>
       </div>
 
-      {/* KPIs rápidos */}
+      {/* KPIs */}
       <motion.div
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
@@ -404,8 +445,8 @@ export default function Profile() {
         </div>
       </motion.div>
 
-      {/* Código de referido */}
-      {referralCode ? (
+      {/* Referidos */}
+      {referralCode && (
         <motion.div
           initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
@@ -420,46 +461,55 @@ export default function Profile() {
             </CardHeader>
             <CardContent className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-2xl font-bold text-green-400 tracking-wider">{referralCode}</p>
+                <p className="text-2xl font-bold text-green-400 tracking-wider">
+                  {referralCode}
+                </p>
                 <p className="text-xs text-slate-400 mt-1">
-                  Enlace: {typeof window !== 'undefined' ? `${window.location.origin}/register?ref=${referralCode}` : '—'}
+                  Enlace: {typeof window !== 'undefined'
+                    ? `${window.location.origin}/register?ref=${referralCode}`
+                    : '—'}
                 </p>
               </div>
-              <div className="shrink-0">
-                <Button
-                  onClick={() => {
-                    const link = typeof window !== 'undefined'
-                      ? `${window.location.origin}/register?ref=${referralCode}` : referralCode;
-                    copy(link, 'Enlace copiado');
-                  }}
-                  className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600"
-                >
-                  <Copy className="h-4 w-4 mr-2" /> Copiar
-                </Button>
-              </div>
+              <Button
+                onClick={() => {
+                  const link =
+                    typeof window !== 'undefined'
+                      ? `${window.location.origin}/register?ref=${referralCode}`
+                      : referralCode;
+                  copy(link, 'Enlace copiado');
+                }}
+                className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600"
+              >
+                <Copy className="h-4 w-4 mr-2" /> Copiar
+              </Button>
             </CardContent>
           </Card>
         </motion.div>
-      ) : null}
+      )}
 
-      {/* Tabs de configuración/perfil existentes */}
+      {/* Tabs principales */}
       <motion.div
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, delay: 0.1 }}
       >
         <Tabs defaultValue="personal" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 bg-slate-800">
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5 bg-slate-800">
             <TabsTrigger value="personal" className="text-white">
-              <User className="h-4 w-4 mr-2 sm:hidden md:inline-block" /> Personal
+              <User className="h-4 w-4 mr-2" /> Personal
             </TabsTrigger>
             <TabsTrigger value="security" className="text-white">
-              <Shield className="h-4 w-4 mr-2 sm:hidden md:inline-block" /> Seguridad
+              <Shield className="h-4 w-4 mr-2" /> Seguridad
             </TabsTrigger>
             <TabsTrigger value="notifications" className="text-white">
-              <Bell className="h-4 w-4 mr-2 sm:hidden md:inline-block" /> Notificaciones
+              <Bell className="h-4 w-4 mr-2" /> Notificaciones
             </TabsTrigger>
-            <TabsTrigger value="preferences" className="text-white">Preferencias</TabsTrigger>
+            <TabsTrigger value="preferences" className="text-white">
+              <Settings className="h-4 w-4 mr-2" /> Preferencias
+            </TabsTrigger>
+            <TabsTrigger value="kyc" className="text-white">
+              <IdCard className="h-4 w-4 mr-2" /> Verificación KYC
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="personal">
@@ -473,6 +523,10 @@ export default function Profile() {
           </TabsContent>
           <TabsContent value="preferences">
             <PreferencesTab />
+          </TabsContent>
+          <TabsContent value="kyc">
+              <KycVerificationTab />
+
           </TabsContent>
         </Tabs>
       </motion.div>
