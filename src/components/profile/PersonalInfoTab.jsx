@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { User, Save, Camera } from 'lucide-react';
+import { User, Save } from 'lucide-react';
 import { toast } from '@/components/ui/use-toast';
 import { useSound } from '@/contexts/SoundContext';
 
@@ -22,7 +22,7 @@ const PersonalInfoTab = () => {
     city: profile?.city || '',
   });
 
-  // 🔁 Rehidratar el form cuando cambia el perfil (realtime/refresh)
+  // 🔁 Actualizar el form cuando cambia el perfil
   useEffect(() => {
     setProfileData({
       name: profile?.full_name || '',
@@ -40,15 +40,14 @@ const PersonalInfoTab = () => {
     }
     setSaving(true);
     try {
-      // ⬅️ mapear a columnas REALES de public.profiles
       const payload = {
         full_name: (profileData.name || '').trim() || null,
         phone: (profileData.phone || '').trim() || null,
         country: (profileData.country || '').trim() || null,
         city: (profileData.city || '').trim() || null,
       };
-      await updateUser(payload);     // usa AuthContext (ya filtra columnas y setea updated_at)
-      await refreshProfile();        // fuerza lectura por las dudas
+      await updateUser(payload);
+      await refreshProfile();
       playSound?.('success');
       toast({ title: 'Perfil actualizado', description: 'Tus datos fueron guardados.' });
     } catch (e) {
@@ -58,14 +57,6 @@ const PersonalInfoTab = () => {
     } finally {
       setSaving(false);
     }
-  };
-
-  const handleImageUpload = () => {
-    playSound?.('click');
-    toast({
-      title: 'Función no implementada',
-      description: '🚧 Carga de avatar en camino. Si querés la agrego ya mismo.',
-    });
   };
 
   return (
@@ -79,29 +70,8 @@ const PersonalInfoTab = () => {
           Actualizá tu información personal y de contacto.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-6">
-        <div className="flex items-center space-x-4">
-          <div className="relative">
-            <img
-              className="w-24 h-24 rounded-full object-cover border-2 border-blue-500"
-              alt="Foto de perfil del usuario"
-              src="https://images.unsplash.com/flagged/photo-1608632359963-5828fa3b4141"
-            />
-            <Button
-              size="icon"
-              variant="outline"
-              className="absolute -bottom-2 -right-2 p-2 bg-slate-700 hover:bg-slate-600 rounded-full border-slate-500"
-              onClick={handleImageUpload}
-            >
-              <Camera className="h-4 w-4 text-white" />
-            </Button>
-          </div>
-          <div>
-            <p className="text-xl font-semibold text-white">{profileData.name || '—'}</p>
-            <p className="text-sm text-slate-400">{profileData.email || '—'}</p>
-          </div>
-        </div>
 
+      <CardContent className="space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-2">
             <Label className="text-white">Nombre Completo</Label>
