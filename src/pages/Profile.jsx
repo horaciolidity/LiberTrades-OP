@@ -20,7 +20,7 @@ import {
   Camera,
   Trash2,
   Save,
-  IdCard,
+  BadgeCheck, // ✅ reemplazo compatible
 } from 'lucide-react';
 import {
   Tabs,
@@ -508,7 +508,7 @@ export default function Profile() {
               <Settings className="h-4 w-4 mr-2" /> Preferencias
             </TabsTrigger>
             <TabsTrigger value="kyc" className="text-white">
-              <IdCard className="h-4 w-4 mr-2" /> Verificación KYC
+              <BadgeCheck className="h-4 w-4 mr-2" /> Verificación KYC
             </TabsTrigger>
           </TabsList>
 
