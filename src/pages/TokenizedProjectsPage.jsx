@@ -380,8 +380,39 @@ export default function TokenizedProjectsPage() {
   const liveTotal = round2(liveAmount + liveFee);
   const insufficient = selectedProject && liveTotal > usdBalance;
 
+
+  const MaintenanceOverlay = () => (
+  <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-slate-950/95 backdrop-blur-md text-center p-6">
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.6 }}
+      className="max-w-md text-white"
+    >
+      <h1 className="text-3xl font-bold mb-3 flex items-center justify-center">
+        <Gauge className="w-8 h-8 text-yellow-400 mr-3" />
+        Módulo en Mantenimiento
+      </h1>
+      <p className="text-slate-300 mb-6 leading-relaxed">
+        Estamos realizando mejoras y optimizaciones en este módulo para brindarte una experiencia más estable y eficiente.  
+        Volverá a estar disponible muy pronto.
+      </p>
+      <div className="flex justify-center">
+        <Button
+          variant="outline"
+          className="text-white border-slate-500 hover:bg-slate-800"
+          onClick={() => window.history.back()}
+        >
+          Volver atrás
+        </Button>
+      </div>
+    </motion.div>
+  </div>
+);
+
   return (
     <>
+    <MaintenanceOverlay /> 
       <div className="space-y-8">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8 }}>
           <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
@@ -403,6 +434,13 @@ export default function TokenizedProjectsPage() {
               ? Math.ceil((new Date(project.launch_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
               : null;
 
+
+
+
+
+
+
+              
             return (
               <motion.div
                 key={project.id}
