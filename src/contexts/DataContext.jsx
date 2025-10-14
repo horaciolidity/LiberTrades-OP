@@ -178,35 +178,50 @@ useEffect(() => {
 }, [balances]);
 // 🔹 Función global para modificar saldo en tiempo real
 // ✅ Actualiza saldo global con opción de persistencia en Supabase
+// 🔹 Función global para modificar saldo en tiempo real (v2)
 const updateBalanceGlobal = useCallback(
-  async (delta, c = 'USDC', persist = true, reason = 'manual') => {
-    setLiveBalances((prev) => ({
-      ...prev,
-      [c]: (prev[c] || 0) + delta,
-    }));
+  async (delta, currency = 'USDC', persist = true, kind = null, meta = {}) => {
+    try {
+      // 🔸 Actualiza el estado local en vivo
+      setLiveBalances((prev) => ({
+        ...prev,
+        [currency]: (prev?.[currency] || 0) + delta,
+      }));
 
-    if (persist && user?.id) {
-      try {
-        const kind =
-          reason === 'trade_open' ? 'trade_open' :
-          reason === 'trade_close' ? 'trade_close' :
-          delta >= 0 ? 'bot_refund' : 'bot_fee';
+      // 🔸 Solo si persist es true, actualiza también Supabase
+      if (persist && user?.id) {
+        const txKind =
+          kind ||
+          (delta >= 0
+            ? 'trade_close'   // ingreso por cierre
+            : 'trade_open');   // egreso por apertura
 
-        const { error } = await supabase.rpc('add_wallet_tx', {
+        const { data, error } = await supabase.rpc('add_wallet_tx', {
           p_user: user.id,
-          p_currency: c,
+          p_currency: currency,
           p_amount: delta,
-          p_kind: kind,
-          p_meta: { description: `Ajuste automático (${reason})` },
+          p_kind: txKind,
+          p_meta: meta,
         });
+
         if (error) throw error;
-      } catch (e) {
-        console.warn('[updateBalanceGlobal persist]', e.message);
+
+        if (data?.ok) {
+          console.log(
+            `[updateBalanceGlobal] Nuevo balance ${currency}:`,
+            data.new_balance
+          );
+        } else if (data?.error) {
+          console.warn('[updateBalanceGlobal]', data.error);
+        }
       }
+    } catch (err) {
+      console.error('[updateBalanceGlobal]', err.message);
     }
   },
   [user?.id]
 );
+
 
 
 
