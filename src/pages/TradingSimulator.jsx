@@ -355,21 +355,19 @@ export default function TradingSimulator() {
       return;
     }
 
-    // Bloquear nocional en saldo real
-    const { data: balRow, error: bErr } = await supabase
-      .from('balances')
-      .select('usdc')
-      .eq('user_id', user.id)
-      .single();
+    // ✅ Registrar movimiento y actualizar saldo con trigger
+const { error: txErr } = await supabase.rpc('add_wallet_tx', {
+  p_user: user.id,
+  p_currency: 'USDC',
+  p_amount: -Number(tradeData.amount),
+  p_kind: 'trade_open',
+  p_meta: { pair: tradeData.pair, price: tradeData.price }
+});
 
-    if (!bErr) {
-      const current = Number(balRow?.usdc || 0);
-      const next = Math.max(0, current - Number(tradeData.amount || 0));
-      await supabase
-        .from('balances')
-        .update({ usdc: next, updated_at: new Date().toISOString() })
-        .eq('user_id', user.id);
-    }
+if (txErr) {
+  console.warn('[handleTrade] add_wallet_tx fallback:', txErr.message);
+}
+
 
     playSound?.('invest');
     fetchRealData();
@@ -396,7 +394,28 @@ export default function TradingSimulator() {
     // closeTrade devuelve JSON: { ok, error?, already? }
     const ok = (res === true) || (res?.ok === true) || (res?.already === true);
     await fetchRealData();
-    if (ok) { playSound?.('success'); return true; }
+    if (ok) {
+  // ✅ Registrar ganancia/pérdida y liberar capital
+  const tr = realTrades.find((x) => x.id === tradeId);
+  const profitOrRefundAmount = Number(tr?.profit ?? 0);
+
+  const { error: txErr } = await supabase.rpc('add_wallet_tx', {
+    p_user: user.id,
+    p_currency: 'USDC',
+    p_amount: profitOrRefundAmount,
+    p_kind: 'trade_close',
+    p_meta: { trade_id: tradeId, pair: tr?.pair }
+  });
+
+  if (txErr) {
+    console.warn('[handleCloseTrade] add_wallet_tx failed:', txErr.message);
+  }
+
+  await fetchRealData();
+  playSound?.('success');
+  return true;
+}
+
 
     // si vino “TRADE_NOT_FOUND” lo tratamos como ‘ya estaba cerrado’
     if (String(res?.error || '').includes('TRADE_NOT_FOUND')) {
