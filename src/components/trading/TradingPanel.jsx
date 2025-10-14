@@ -33,102 +33,83 @@ const noSlash = (pair) => String(pair || '').replace('/', '');
 export default function TradingPanel({
   selectedPair,
   setSelectedPair,
-  onTrade,                 // (tradeData) => Promise<void>
-  mode = 'demo',           // 'demo' | 'real'
-  balance = 0,             // USDC
-  cryptoPrices = {},       // opcional (fallback)
-  resetBalance,            // opcional (solo demo)
+  onTrade,
+  mode = 'demo',
+  balance = 0,
+  cryptoPrices = {},
+  resetBalance,
 }) {
   const {
     pairOptions: pairsFromCtx = [],
     getPairInfo,
-    // 👇 importante para que el componente re-renderice con ticks del contexto
     cryptoPrices: ctxPrices = {},
   } = useData();
 
-  // Heartbeat suave para refrescar vista con los ticks (sin depender de refs externas)
+  // Heartbeat para refrescar precios (sincroniza el render)
   const [, bump] = useState(0);
   useEffect(() => {
     const id = setInterval(() => bump((x) => (x + 1) % 1e9), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Normalizamos TODAS las opciones de pares del contexto
+  // Normalización de pares
   const normalizedCtxPairs = useMemo(() => {
     const arr = Array.isArray(pairsFromCtx) ? pairsFromCtx : [];
     return Array.from(new Set(arr.map((p) => normalizePair(p)).filter(Boolean)));
   }, [pairsFromCtx]);
 
-  // Base de pares con fallback seguro
   const basePairs = normalizedCtxPairs.length
     ? normalizedCtxPairs
     : ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT'];
 
-  // Par controlado/efectivo SIEMPRE normalizado
   const effectivePair = useMemo(() => {
     const norm = normalizePair(selectedPair || basePairs[0] || 'BTC/USDT');
     return norm;
   }, [selectedPair, basePairs]);
 
-  // Estado local del panel
+  // Estado local
   const [tradeAmount, setTradeAmount] = useState('100');
   const [tradeType, setTradeType] = useState('buy');
-  const [tradeDuration, setTradeDuration] = useState(60); // seg (sólo demo)
+  const [tradeDuration, setTradeDuration] = useState(60);
   const [isTrading, setIsTrading] = useState(false);
 
-  // Feed unificado (mismo que usa el gráfico vía DataContext)
+  // Feed principal (sincronizado con TradingSimulator)
   const fromCtx = getPairInfo?.(effectivePair) || {};
-  // Si el contexto no trae, intentamos desde el mapa crudo de ctx o props
-  const baseKey = baseFromPair(effectivePair);
-  const fromCtxMap =
-    ctxPrices?.[effectivePair] ??
-    ctxPrices?.[baseKey] ??
-    ctxPrices?.[noSlash(effectivePair)] ??
-    null;
+  const baseKey = baseFromPair(effectivePair).toUpperCase();
 
-  const fromProps =
-    cryptoPrices?.[effectivePair] ??
-    cryptoPrices?.[baseKey] ??
-    cryptoPrices?.[noSlash(effectivePair)] ??
-    null;
+  // ======================================
+  // Normalización de precios (feed unificado)
+  // ======================================
+  const livePriceGlobal = cryptoPrices?.[baseKey]?.price;
 
-// ✅ Priorizar precio en tiempo real del mapa principal
+  const backupPrice =
+    cryptoPrices?.[effectivePair]?.price ??
+    ctxPrices?.[baseKey]?.price ??
+    ctxPrices?.[effectivePair]?.price ??
+    getPairInfo?.(effectivePair)?.price ??
+    NaN;
 
-const liveFromGlobal = cryptoPrices?.[baseKey]?.price;
+  const currentPrice = useMemo(() => {
+    if (Number.isFinite(livePriceGlobal)) return Number(livePriceGlobal);
+    if (Number.isFinite(backupPrice)) return Number(backupPrice);
+    return NaN;
+  }, [livePriceGlobal, backupPrice]);
 
-const priceCandidate =
-  Number.isFinite(Number(liveFromGlobal)) ? Number(liveFromGlobal)
-  : Number.isFinite(Number(fromProps?.price)) ? Number(fromProps.price)
-  : Number.isFinite(Number(fromCtxMap?.price)) ? Number(fromCtxMap.price)
-  : Number.isFinite(Number(fromCtx.price)) ? Number(fromCtx.price)
-  : NaN;
+  const ref24h = cryptoPrices?.[baseKey]?.ref_24h ?? null;
+  const changePct = useMemo(() => {
+    if (Number.isFinite(currentPrice) && Number.isFinite(ref24h) && ref24h > 0) {
+      return ((currentPrice / ref24h) - 1) * 100;
+    }
+    return NaN;
+  }, [currentPrice, ref24h]);
 
+  // ======================================
 
-const ref24hCandidate =
-    Number.isFinite(Number(fromProps?.ref_24h)) ? Number(fromProps.ref_24h)
-      : Number.isFinite(Number(fromCtxMap?.ref_24h)) ? Number(fromCtxMap.ref_24h)
-      : Number.isFinite(Number(fromCtx.ref_24h)) ? Number(fromCtx.ref_24h)
-      : Number.isFinite(Number(fromCtx.ref24h)) ? Number(fromCtx.ref24h)
-      : NaN;
-
-const changeCandidate =
-    Number.isFinite(Number(fromProps?.change)) ? Number(fromProps.change)
-      : Number.isFinite(Number(fromCtxMap?.change)) ? Number(fromCtxMap.change)
-      : Number.isFinite(Number(fromCtx.change)) ? Number(fromCtx.change)
-      : (Number.isFinite(priceCandidate) && Number.isFinite(ref24hCandidate) && ref24hCandidate > 0
-          ? ((priceCandidate / ref24hCandidate) - 1) * 100
-          : NaN);
-
-
-  const currentPriceData = {
-    price: priceCandidate,
-    change: changeCandidate,
-  };
-
-  const currentPrice = Number(currentPriceData?.price ?? 0);
   const amountNum = Number(tradeAmount);
   const hasPrice = currentPrice > 0 && Number.isFinite(currentPrice);
-  const enoughBalance = mode === 'real' ? amountNum > 0 && amountNum <= Number(balance || 0) : amountNum > 0;
+  const enoughBalance = mode === 'real'
+    ? amountNum > 0 && amountNum <= Number(balance || 0)
+    : amountNum > 0;
 
   const canTrade = hasPrice && enoughBalance && !isTrading;
 
@@ -144,11 +125,11 @@ const changeCandidate =
     setIsTrading(true);
     try {
       const payload = {
-        pair: effectivePair,       // "BASE/QUOTE" normalizado
-        type: side,                // 'buy' | 'sell'
-        amount: amountNum,         // USD notional
-        price: currentPrice,       // precio spot actual (del feed unificado)
-        duration: tradeDuration,   // (demo)
+        pair: effectivePair,
+        type: side,
+        amount: amountNum,
+        price: currentPrice,
+        duration: tradeDuration,
         ts: Date.now(),
       };
       await onTrade(payload);
@@ -159,7 +140,6 @@ const changeCandidate =
     }
   };
 
-  // Lista para el selector (incluye el par actual por si vino “externo”)
   const allPairs = useMemo(() => {
     const arr = Array.from(new Set([effectivePair, ...basePairs])).filter(Boolean);
     return arr;
@@ -171,7 +151,7 @@ const changeCandidate =
   };
 
   const baseSym = baseFromPair(effectivePair);
-  const changeNum = Number(currentPriceData.change);
+  const changeNum = Number(changePct);
 
   return (
     <Card className="crypto-card">
