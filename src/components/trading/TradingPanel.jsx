@@ -93,7 +93,7 @@ export default function TradingPanel({
     null;
 
 // ✅ Priorizar precio en tiempo real del mapa principal
-const baseKey = baseFromPair(effectivePair);
+
 const liveFromGlobal = cryptoPrices?.[baseKey]?.price;
 
 const priceCandidate =
