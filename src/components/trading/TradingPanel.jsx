@@ -92,12 +92,17 @@ export default function TradingPanel({
     cryptoPrices?.[noSlash(effectivePair)] ??
     null;
 
-// 👉 Prioridad: mergedPrices (fromProps) > ctxPrices > DataContext
+// ✅ Priorizar precio en tiempo real del mapa principal
+const baseKey = baseFromPair(effectivePair);
+const liveFromGlobal = cryptoPrices?.[baseKey]?.price;
+
 const priceCandidate =
-    Number.isFinite(Number(fromProps?.price)) ? Number(fromProps.price)
-      : Number.isFinite(Number(fromCtxMap?.price)) ? Number(fromCtxMap.price)
-      : Number.isFinite(Number(fromCtx.price)) ? Number(fromCtx.price)
-      : NaN;
+  Number.isFinite(Number(liveFromGlobal)) ? Number(liveFromGlobal)
+  : Number.isFinite(Number(fromProps?.price)) ? Number(fromProps.price)
+  : Number.isFinite(Number(fromCtxMap?.price)) ? Number(fromCtxMap.price)
+  : Number.isFinite(Number(fromCtx.price)) ? Number(fromCtx.price)
+  : NaN;
+
 
 const ref24hCandidate =
     Number.isFinite(Number(fromProps?.ref_24h)) ? Number(fromProps.ref_24h)
