@@ -553,15 +553,22 @@ if (txErr) {
 
           {/* Panel de Trading en la columna derecha */}
           <div className="xl:col-span-3">
-            <TradingPanel
-              selectedPair={selectedPair}
-              setSelectedPair={tradingLogic.setSelectedPair}
-              onTrade={onTradeFromPanel}
-              mode={mode}
-              balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
-              cryptoPrices={mergedPrices}
-              resetBalance={mode === 'demo' ? tradingLogic.resetBalance : undefined}
-            />
+           <TradingPanel
+  selectedPair={selectedPair}
+  setSelectedPair={tradingLogic.setSelectedPair}
+  onTrade={onTradeFromPanel}
+  mode={mode}
+  balance={mode === 'demo' ? tradingLogic.virtualBalance : realBalance}
+  cryptoPrices={{
+    ...mergedPrices,
+    [baseForChart]: {
+      ...(mergedPrices[baseForChart] || {}),
+      price: Number(livePrice) || Number(mergedPrices?.[baseForChart]?.price) || 0
+    }
+  }}
+  resetBalance={mode === 'demo' ? tradingLogic.resetBalance : undefined}
+/>
+
           </div>
         </div>
 
