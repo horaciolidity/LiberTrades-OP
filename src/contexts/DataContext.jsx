@@ -179,7 +179,7 @@ useEffect(() => {
 // 🔹 Función global para modificar saldo en tiempo real
 // ✅ Actualiza saldo global con opción de persistencia en Supabase
 const updateBalanceGlobal = useCallback(
-  async (delta, c = 'USDC', persist = true) => {
+  async (delta, c = 'USDC', persist = true, reason = 'manual') => {
     setLiveBalances((prev) => ({
       ...prev,
       [c]: (prev[c] || 0) + delta,
@@ -187,13 +187,17 @@ const updateBalanceGlobal = useCallback(
 
     if (persist && user?.id) {
       try {
-        const kind = delta >= 0 ? 'bot_refund' : 'bot_fee';
+        const kind =
+          reason === 'trade_open' ? 'trade_open' :
+          reason === 'trade_close' ? 'trade_close' :
+          delta >= 0 ? 'bot_refund' : 'bot_fee';
+
         const { error } = await supabase.rpc('add_wallet_tx', {
           p_user: user.id,
           p_currency: c,
           p_amount: delta,
           p_kind: kind,
-          p_meta: { description: 'Ajuste automático por bot' },
+          p_meta: { description: `Ajuste automático (${reason})` },
         });
         if (error) throw error;
       } catch (e) {
@@ -203,6 +207,7 @@ const updateBalanceGlobal = useCallback(
   },
   [user?.id]
 );
+
 
 
 // ✅ Suscripción realtime para reflejar saldo sin recargar
@@ -429,59 +434,24 @@ useEffect(() => {
 }, []);
 
 
-  function applyMarketRules(symbol, basePrice, difficulty = "intermediate") {
-  const hour = new Date().getUTCHours();
-  let price = basePrice;
-
-  // Buscar reglas activas
-  const hits = marketRules.filter((r) => {
-    if (String(r.symbol || "").toUpperCase() !== symbol.toUpperCase()) return false;
-    if (!r.active) return false;
-
-    const inRange =
-      (r.start_hour < r.end_hour && hour >= r.start_hour && hour < r.end_hour) ||
-      (r.start_hour > r.end_hour && (hour >= r.start_hour || hour < r.end_hour)) ||
-      (r.start_hour === r.end_hour);
-
-    return inRange;
-  });
-
-  // Aplicar reglas como tendencia progresiva
-  hits.forEach((r) => {
-    const duration = (r.end_hour - r.start_hour + 24) % 24 || 24;
-    const progress = ((hour - r.start_hour + 24) % 24) / duration;
-
-    if (r.type === "percent") {
-      const factor = 1 + (r.value / 100) * progress;
-      price *= factor;
-    } else if (r.type === "absolute") {
-      const add = (Number(r.value || 0)) * progress;
-      price += add;
-    }
-  });
-
-  // --- Ajustar según "dificultad"
-  let noiseFactor = 0;
-  switch (difficulty) {
-    case "easy":
-      noiseFactor = 0.002; // ±0.2%
-      break;
-    case "intermediate":
-      noiseFactor = 0.01; // ±1%
-      break;
-    case "nervous":
-      noiseFactor = 0.05; // ±5%
-      break;
-    default:
-      noiseFactor = 0.01;
+  // ✅ Versión limpia: sin ruido en modo real
+function applyMarketRules(symbol, basePrice, difficulty = "none") {
+  if (difficulty === "none") {
+    return Number(basePrice.toFixed(6)); // sin variación
   }
 
-  // Agregar ruido aleatorio
-  const noise = (Math.random() - 0.5) * 2 * noiseFactor; 
+  // Si querés mantener simulación para DEMO:
+  const hour = new Date().getUTCHours();
+  let price = basePrice;
+  const noiseFactor =
+    difficulty === "easy" ? 0.002 :
+    difficulty === "intermediate" ? 0.01 :
+    difficulty === "nervous" ? 0.05 : 0.01;
+  const noise = (Math.random() - 0.5) * 2 * noiseFactor;
   price *= 1 + noise;
-
   return Number(price.toFixed(6));
 }
+
 
   /* ---------- Mapa dinámico a Binance ---------- */
   const liveBinanceMap = useMemo(() => {
