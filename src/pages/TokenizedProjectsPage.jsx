@@ -316,7 +316,7 @@ export default function TokenizedProjectsPage() {
       // 2) Registrar transacciones de wallet
       await addTransaction?.({
         amount: amountUsd,
-        type: 'other',
+        kind: 'other',
         currency: 'USDC',
         description: `Inversión en ${selectedProject.name} (${selectedProject.symbol})`,
         referenceType: 'project_investment',
@@ -327,7 +327,7 @@ export default function TokenizedProjectsPage() {
       if (feeUsd > 0) {
         await addTransaction?.({
           amount: feeUsd,
-          type: 'fee',
+          kind: 'fee',
           currency: 'USDC',
           description: `Fee de emisión ${fmt(issuanceFeePct)}% - ${selectedProject.symbol}`,
           referenceType: 'project_fee',

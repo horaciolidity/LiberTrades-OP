@@ -347,7 +347,7 @@ export default function RewardsPage() {
         // 2a) Transacción (tipo que sí aparece en WalletPage -> admin_credit)
         await addTransaction?.({
           amount: usdReward,
-          type: 'admin_credit',
+          kind: 'admin_credit',
           currency: 'USDC',
           description: `Recompensa: ${task.title}`,
           referenceType: 'reward',

@@ -100,7 +100,7 @@ export default function DepositPage() {
     setBusy(true);
     try {
       await addTransaction?.({
-        type: 'deposit',
+        kind: 'deposit',
         amount: depositAmount,
         currency: 'USDC',
         description: `Depósito USDC (${network}) → ${MASTER_DEPOSIT_ADDRESS.slice(0, 6)}…${MASTER_DEPOSIT_ADDRESS.slice(-4)}`,
@@ -174,7 +174,7 @@ export default function DepositPage() {
     setwBusy(true);
     try {
       await addTransaction?.({
-        type: 'withdrawal',
+        kind: 'withdrawal',
         amount: amt,
         currency: 'USDC',
         description: `Retiro USDC (${wNetwork}) → ${wAddress.slice(0, 6)}…${wAddress.slice(-4)}`,

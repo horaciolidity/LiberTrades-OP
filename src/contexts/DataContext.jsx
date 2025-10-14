@@ -1001,7 +1001,9 @@ useEffect(() => {
     }
 
     const mapped = ensureArray(data).map((tx) => {
-      let base = String(tx.type || '').toLowerCase();
+      const baseRaw = tx.kind ?? tx.type ?? '';
+      let base = String(baseRaw).toLowerCase();
+
       if (base === 'plan_purchase') base = 'investment';
 
       const ref = String(tx.reference_type || '').toLowerCase();
@@ -1024,7 +1026,7 @@ useEffect(() => {
         user_id: tx.user_id,
         userId: tx.user_id,
         id: tx.id,
-        type: displayType,
+        kind: displayType,
         rawType: tx.type,
         status: String(tx.status || '').toLowerCase(),
         amount: Number(tx.amount || 0),
@@ -1374,7 +1376,7 @@ async function addTransaction({
         user_id: user.id,
         userId: user.id,
         id: crypto?.randomUUID?.() || `${Date.now()}`,
-        type: mappedType,
+        kind: mappedType,
         status,
         amount: Number(amount || 0),
         currency,
@@ -1392,7 +1394,7 @@ async function addTransaction({
   const payload = {
     user_id: user.id,
     amount: Number(amount),
-    type,
+    kind: type,
     status,
     currency,
     description,
@@ -1429,7 +1431,7 @@ async function addTransaction({
     user_id: data.user_id,
     userId: data.user_id,
     id: data.id,
-    type: mappedType,
+    kind: mappedType,
     status: data.status,
     amount: Number(data.amount || 0),
     currency: data.currency || 'USDC',
@@ -1491,7 +1493,7 @@ async function activateBot({ botId, botName, strategy = 'default', amountUsd }) 
 if (error && String(error.message || '').toLowerCase().includes('function')) {
   await addTransaction({
     amount: -Number(amountUsd),
-    type: 'bot_lock',
+    kind: 'bot_lock',
     description: `Capital asignado a ${botName}`,
     referenceType: 'bot_activation',
     referenceId: act.id,
@@ -1576,7 +1578,7 @@ async function cancelBot(id) {
 
     await addTransaction({
       amount: refund,
-      type: 'bot_refund',
+      kind: 'bot_refund',
       description: `Devolución de capital (${act.bot_name})`,
       referenceType: 'bot_refund',
       referenceId: id,
@@ -1586,7 +1588,7 @@ async function cancelBot(id) {
     if (fee > 0) {
       await addTransaction({
         amount: -fee,
-        type: 'bot_fee',
+        kind: 'bot_fee',
         description: `Fee de cancelación (${act.bot_name})`,
         referenceType: 'bot_fee',
         referenceId: id,
@@ -1661,7 +1663,7 @@ async function cancelBot(id) {
   updateBalanceGlobal(Number(amountUsd));
   await addTransaction({
     amount: Number(amountUsd),
-    type: 'bot_profit',
+    kind: 'bot_profit',
     description: note || 'Ganancia automática',
     referenceType: 'bot_profit',
     referenceId: activationId,
@@ -1769,7 +1771,7 @@ async function cancelBot(id) {
     for (const t of ensureArray(transactions)) {
       if (String(t?.status || '').toLowerCase() !== 'completed') continue;
 
-      const kind = String(t?.type || '').toLowerCase();
+      const kind = String(t?.kind ?? t?.type ?? '').toLowerCase();
       const aid = t?.referenceId;
       if (!aid) continue;
 

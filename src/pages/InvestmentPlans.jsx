@@ -270,7 +270,7 @@ export default function InvestmentPlans() {
 
       await addTransaction?.({
         amount: amountInUSD,
-        type: 'plan_purchase',
+        kind: 'plan_purchase',
         currency: 'USDC',
         description: `Compra de ${selectedPlan.name} (${fmt(
           amt,
@@ -427,7 +427,7 @@ const syncPlanPayouts = useCallback(async () => {
         // 🧾 Registrar el payout en el historial
         await addTransaction?.({
           amount: delta,
-          type: "plan_payout",
+          kind: "plan_payout",
           currency: "USDC",
           description: `Rendimiento diario ${inv.planName || inv.plan_name}`,
           referenceType: "investment_payout",
