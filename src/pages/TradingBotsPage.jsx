@@ -450,7 +450,18 @@ const handleActivateBot = async () => {
     setBusyActivate(true);
 
     // 🔹 Descontar en tiempo real del saldo visible
-    await updateBalanceGlobal(-amount, 'USDC', false); // ⚠️ persist = false
+await updateBalanceGlobal(
+  -amount,
+  'USDC',
+  true,
+  'bot_activate',
+  {
+    bot_id: selectedBot.id,
+    bot_name: selectedBot.name,
+    strategy: selectedBot.strategy,
+    reference_id: `bot_activate:${user.id}:${Date.now()}`
+  }
+);
 
     const res = await activateBot?.({
       botId: bot.id,
@@ -529,14 +540,21 @@ const localUpdateBalance = (delta = 0) => {
         .eq('user_id', user?.id);
     }
 
-    // 🔹 Registrar el movimiento en la wallet (persistente)
-    await supabase.rpc('add_wallet_tx', {
-      p_user: user?.id,
-      p_currency: 'USDC',
-      p_amount: refund,
-      p_kind: 'bot_refund',
-      p_meta: { ref_id: id, description: `Cancelación de ${bot.botName}` },
-    });
+   await updateBalanceGlobal(
+  refund,
+  'USDC',
+  true,
+  'bot_cancel_refund',
+  {
+    activation_id: id,
+    bot_name: bot.botName,
+    refund_usd: refund,
+    fee_usd: cancelFee,
+    reference_id: `bot_cancel:${user.id}:${id}`
+  }
+);
+
+
 
     // 🔹 Actualizar balance en tiempo real (UI)
     await updateBalanceGlobal(refund, 'USDC', false);
@@ -575,7 +593,17 @@ const localUpdateBalance = (delta = 0) => {
     }
 
     // 🔹 Aumentar el saldo disponible instantáneamente
-await updateBalanceGlobal(withdrawable, 'USDC', true);
+await updateBalanceGlobal(
+  withdrawable,
+  'USDC',
+  true,
+  'bot_profit',
+  {
+    activation_id: a.id,
+    bot_name: a.botName,
+    reference_id: `bot_profit:${user.id}:${a.id}`
+  }
+);
 
     await creditBotProfit?.(a.id, withdrawable, `Take profit ${a.botName}`);
 
@@ -622,35 +650,10 @@ await updateBalanceGlobal(withdrawable, 'USDC', true);
 
   const summaryPnlValue = showNet ? totalBotNet : totalBotProfit;
   const summaryPnlLabel = showNet ? 'Ganancias (neto no retirado)' : 'Ganancias (bruto)';
-// 🚧 Toggle rápido
-const MAINTENANCE_MODE = true; // <-- ponelo en false cuando quieras volver a mostrar la página normal
-
-if (MAINTENANCE_MODE) {
-  return (
-    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-slate-950 text-center text-white p-6">
-      <h1 className="text-3xl font-bold mb-3 flex items-center justify-center">
-        <Gauge className="w-8 h-8 text-yellow-400 mr-3" />
-        Módulo en Mantenimiento
-      </h1>
-      <p className="text-slate-300 mb-6 leading-relaxed max-w-md mx-auto">
-        Estamos realizando mejoras y optimizaciones en este módulo para brindarte una experiencia más estable y eficiente.  
-        Volverá a estar disponible muy pronto.
-      </p>
-      <Button
-        variant="outline"
-        className="text-white border-slate-500 hover:bg-slate-800"
-        onClick={() => window.history.back()}
-      >
-        Volver atrás
-      </Button>
-    </div>
-  );
-}
 
   return (
     <>
 
-<MaintenanceOverlay />
 
     
       <div className="space-y-8">

@@ -47,7 +47,7 @@ export default function TradingSimulator() {
   const { playSound } = useSound();
 
   // Feed global + RPC de cierre desde DataContext
-  const { cryptoPrices: marketPrices = {}, closeTrade: closeTradeRPC } = useData();
+  const { cryptoPrices: marketPrices = {}, closeTrade: closeTradeRPC, updateBalanceGlobal } = useData();
   const tradingLogic = useTradingLogic(); // DEMO local
 
   const [mode, setMode] = useState('demo'); // 'demo' | 'real'
@@ -355,18 +355,19 @@ export default function TradingSimulator() {
       return;
     }
 
-    // ✅ Registrar movimiento y actualizar saldo con trigger
-const { error: txErr } = await supabase.rpc('add_wallet_tx', {
-  p_user: user.id,
-  p_currency: 'USDC',
-  p_amount: -Number(tradeData.amount),
-  p_kind: 'trade_open',
-  p_meta: { pair: tradeData.pair, price: tradeData.price }
-});
+   // ✅ Registrar movimiento y actualizar saldo (deducción real)
+await updateBalanceGlobal(
+  -Number(tradeData.amount),
+  'USDC',
+  true,
+  'trade_open',
+  {
+    pair: tradeData.pair,
+    price: tradeData.price,
+    reference_id: `trade_open:${user.id}:${Date.now()}`
+  }
+);
 
-if (txErr) {
-  console.warn('[handleTrade] add_wallet_tx fallback:', txErr.message);
-}
 
 
     playSound?.('invest');
@@ -395,21 +396,23 @@ if (txErr) {
     const ok = (res === true) || (res?.ok === true) || (res?.already === true);
     await fetchRealData();
     if (ok) {
-  // ✅ Registrar ganancia/pérdida y liberar capital
-  const tr = realTrades.find((x) => x.id === tradeId);
-  const profitOrRefundAmount = Number(tr?.profit ?? 0);
+  // ✅ Registrar devolución del principal + PnL (liberar capital)
+const tr = realTrades.find((x) => x.id === tradeId);
+const principal = Number(tr?.amount ?? tr?.amount_usd ?? tr?.amountAtOpen ?? 0);
+const realized = Number(tr?.profit ?? tr?.profit_usd ?? 0);
 
-  const { error: txErr } = await supabase.rpc('add_wallet_tx', {
-    p_user: user.id,
-    p_currency: 'USDC',
-    p_amount: profitOrRefundAmount,
-    p_kind: 'trade_close',
-    p_meta: { trade_id: tradeId, pair: tr?.pair }
-  });
-
-  if (txErr) {
-    console.warn('[handleCloseTrade] add_wallet_tx failed:', txErr.message);
+await updateBalanceGlobal(
+  principal + realized,
+  'USDC',
+  true,
+  'trade_close',
+  {
+    trade_id: tradeId,
+    pair: tr?.pair,
+    close_price: maybeClosePrice,
+    reference_id: `trade_close:${user.id}:${tradeId}`
   }
+);
 
   await fetchRealData();
   playSound?.('success');
