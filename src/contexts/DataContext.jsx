@@ -179,48 +179,47 @@ useEffect(() => {
 // 🔹 Función global para modificar saldo en tiempo real
 // ✅ Actualiza saldo global con opción de persistencia en Supabase
 // 🔹 Función global para modificar saldo en tiempo real (v2)
+// ✅ Versión corregida: sincronizada solo con Supabase, sin doble descuento
 const updateBalanceGlobal = useCallback(
   async (delta, currency = 'USDC', persist = true, kind = null, meta = {}) => {
+    if (!user?.id) return;
+
     try {
-      // 🔸 Actualiza el estado local en vivo
-      setLiveBalances((prev) => ({
-        ...prev,
-        [currency]: (prev?.[currency] || 0) + delta,
-      }));
-
-      // 🔸 Solo si persist es true, actualiza también Supabase
-      if (persist && user?.id) {
-        const txKind =
-          kind ||
-          (delta >= 0
-            ? 'trade_close'   // ingreso por cierre
-            : 'trade_open');   // egreso por apertura
-
-        const { data, error } = await supabase.rpc('add_wallet_tx', {
-          p_user: user.id,
-          p_currency: currency,
-          p_amount: delta,
-          p_kind: txKind,
-          p_meta: meta,
-        });
-
-        if (error) throw error;
-
-        if (data?.ok) {
-          console.log(
-            `[updateBalanceGlobal] Nuevo balance ${currency}:`,
-            data.new_balance
-          );
-        } else if (data?.error) {
-          console.warn('[updateBalanceGlobal]', data.error);
-        }
+      // 🔹 1) Solo tocar local si persist === false (modo simulador)
+      if (!persist) {
+        setLiveBalances((prev) => ({
+          ...prev,
+          [currency]: (prev?.[currency] || 0) + delta,
+        }));
+        return;
       }
+
+      // 🔹 2) Ejecutar en Supabase (backend manda el nuevo saldo)
+      const txKind = kind || (delta >= 0 ? 'trade_close' : 'trade_open');
+      const { data, error } = await supabase.rpc('add_wallet_tx', {
+        p_user: user.id,
+        p_currency: currency,
+        p_amount: delta,
+        p_kind: txKind,
+        p_meta: meta,
+      });
+
+      if (error) throw error;
+
+      // 🔹 3) Refrescar balances y transacciones (sin sumar de nuevo)
+      await Promise.all([
+        refreshBalances?.(),
+        refreshTransactions?.()
+      ]);
+
+      console.log(`[updateBalanceGlobal ✅] ${txKind} ${delta} ${currency}`);
     } catch (err) {
       console.error('[updateBalanceGlobal]', err.message);
     }
   },
   [user?.id]
 );
+
 
 
 
