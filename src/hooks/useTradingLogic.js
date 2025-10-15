@@ -66,7 +66,21 @@ export const useTradingLogic = () => {
     try {
       if (IS_REAL_MODE) {
         // 🔻 Deducción real (bloquea capital)
-        await updateBalanceGlobal(-amount, 'USDC', true, 'trade_open', { pair: selectedPair });
+await updateBalanceGlobal(-amount, 'USDC', true, 'trade_open', { pair: selectedPair });
+
+// 🔹 Refrescar saldo desde la base
+try {
+  const { data, error } = await supabase
+    .from('balances')
+    .select('usdc')
+    .eq('user_id', user.id)
+    .single();
+  if (!error && data) {
+    console.log('[refreshBalance] Nuevo saldo:', data.usdc);
+  }
+} catch (e) {
+  console.warn('[refreshBalance] Error:', e.message);
+}
       } else {
         // 🔹 Modo demo
         setVirtualBalance((prev) => Math.max(0, prev - amount));
@@ -184,11 +198,26 @@ export const useTradingLogic = () => {
           (async () => {
             try {
               if (IS_REAL_MODE) {
-                await updateBalanceGlobal(totalReturn, 'USDC', true, 'trade_close', {
-                  pair: t.pair,
-                  trade_id: t.id,
-                  profit,
-                });
+               await updateBalanceGlobal(totalReturn, 'USDC', true, 'trade_close', {
+  pair: t.pair,
+  trade_id: t.id,
+  profit,
+});
+
+// 🔹 Refrescar saldo desde la base
+try {
+  const { data, error } = await supabase
+    .from('balances')
+    .select('usdc')
+    .eq('user_id', user.id)
+    .single();
+  if (!error && data) {
+    console.log('[refreshBalance] Nuevo saldo:', data.usdc);
+  }
+} catch (e) {
+  console.warn('[refreshBalance] Error:', e.message);
+}
+
               } else {
                 setVirtualBalance((prevBal) => prevBal + totalReturn);
               }
