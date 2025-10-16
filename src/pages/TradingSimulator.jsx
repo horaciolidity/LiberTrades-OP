@@ -402,23 +402,29 @@ await updateBalanceGlobal(
     const ok = (res === true) || (res?.ok === true) || (res?.already === true);
     await fetchRealData();
     if (ok) {
-  // ✅ Registrar devolución del principal + PnL (liberar capital)
-const tr = realTrades.find((x) => x.id === tradeId);
+ 
+
+// ✅ Devolver principal + PnL real (ganancia o pérdida)
+const pnl = Number(tr?.profit ?? 0);
 const principal = Number(tr?.amount ?? tr?.amount_usd ?? tr?.amountAtOpen ?? 0);
-const realized = Number(tr?.profit ?? tr?.profit_usd ?? 0);
+const net = principal + pnl;
+
+console.log('[updateBalanceGlobal ✅]', 'trade_close', net, 'USDC', '(PnL:', pnl, ')');
 
 await updateBalanceGlobal(
-  principal + realized,
+  net,
   'USDC',
   true,
   'trade_close',
   {
     trade_id: tradeId,
     pair: tr?.pair,
+    profit: pnl,
     close_price: maybeClosePrice,
     reference_id: `trade_close:${user.id}:${tradeId}`
   }
 );
+
 
   await fetchRealData();
   playSound?.('success');
