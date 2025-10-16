@@ -1,4 +1,3 @@
-// src/hooks/useTradingLogic.js
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useData } from '@/contexts/DataContext';
@@ -8,12 +7,7 @@ import { toast } from '@/components/ui/use-toast';
 /* ---------------- Utilidades ---------------- */
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const round2 = (v) => Math.round(v * 100) / 100;
-
-/**
- * Corrige números muy pequeños que podrían redondearse a 0
- * para mostrar correctamente PnL minúsculo.
- */
-const minDisplay = (v) => {
+const clampTiny = (v) => {
   if (v > 0 && v < 0.01) return 0.01;
   if (v < 0 && v > -0.01) return -0.01;
   return v;
@@ -34,7 +28,8 @@ export const useTradingLogic = () => {
   const [trades, setTrades] = useState([]);
   const [virtualBalance, setVirtualBalance] = useState(10000);
 
-  const IS_REAL_MODE = true; // Cambiar a false para modo demo
+  // Cambiar a false si se desea modo demo
+  const IS_REAL_MODE = true;
 
   /* ---------------- Historial de precios ---------------- */
   const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
@@ -50,7 +45,9 @@ export const useTradingLogic = () => {
       const savedBalance = localStorage.getItem(`virtual_balance_iq_${user.id}`);
       if (Array.isArray(savedTrades)) setTrades(savedTrades);
       if (savedBalance != null) setVirtualBalance(num(savedBalance));
-    } catch {}
+    } catch (err) {
+      console.warn('[TradingLogic] Error al cargar localStorage', err.message);
+    }
   }, [user?.id]);
 
   useEffect(() => {
@@ -80,7 +77,6 @@ export const useTradingLogic = () => {
 
     try {
       if (IS_REAL_MODE) {
-        console.log('[updateBalanceGlobal] trade_open', -amount, 'USDC');
         await updateBalanceGlobal(-amount, 'USDC', true, 'trade_open', { pair: selectedPair });
       } else {
         setVirtualBalance((prev) => Math.max(0, prev - amount));
@@ -141,18 +137,14 @@ export const useTradingLogic = () => {
               ? (currentPrice - t.priceAtExecution) / t.priceAtExecution
               : (t.priceAtExecution - currentPrice) / t.priceAtExecution;
 
-          let profit = round2(pnlPct * t.amount);
-          if (Math.abs(profit) < 0.01 && profit !== 0) profit = profit > 0 ? 0.01 : -0.01;
+          let profit = clampTiny(round2(pnlPct * t.amount));
           const totalReturn = round2(t.amount + profit);
 
           // 🔹 Aplicar resultado
           (async () => {
             try {
               if (IS_REAL_MODE) {
-                console.log(
-                  `[updateBalanceGlobal] trade_close +${totalReturn} (PnL ${profit >= 0 ? '+' : ''}${profit}) USDC`
-                );
-
+                // Actualiza saldo con capital + PnL
                 await updateBalanceGlobal(totalReturn, 'USDC', true, 'trade_close', {
                   pair: t.pair,
                   trade_id: t.id,
@@ -164,7 +156,7 @@ export const useTradingLogic = () => {
                   .select('usdc')
                   .eq('user_id', user.id)
                   .single();
-                if (!error && data) console.log('[refreshBalance] Nuevo saldo:', data.usdc);
+                if (!error && data) console.log('[Balance actualizado]', data.usdc);
               } else {
                 setVirtualBalance((prevBal) => round2(prevBal + totalReturn));
               }
@@ -189,7 +181,7 @@ export const useTradingLogic = () => {
         })
       );
     },
-    [cryptoPrices, updateBalanceGlobal]
+    [cryptoPrices, updateBalanceGlobal, user?.id]
   );
 
   /* ---------------- Autocierre por tiempo ---------------- */
