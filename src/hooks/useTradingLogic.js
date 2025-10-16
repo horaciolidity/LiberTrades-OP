@@ -1,5 +1,6 @@
 // src/hooks/useTradingLogic.js
 import { useState, useEffect, useCallback } from 'react';
+import { supabase } from '@/lib/supabaseClient';
 import { useData } from '@/contexts/DataContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from '@/components/ui/use-toast';
@@ -12,22 +13,22 @@ export const useTradingLogic = () => {
 
   // --------- Estado principal ----------
   const [selectedPair, setSelectedPair] = useState('BTC/USDT');
-  const [tradeAmount, setTradeAmount] = useState('100');  // string para no trabar el <Input />
-  const [tradeType, setTradeType] = useState('buy');      // 'buy' | 'sell'
+  const [tradeAmount, setTradeAmount] = useState('100'); // string para no trabar el <Input />
+  const [tradeType, setTradeType] = useState('buy'); // 'buy' | 'sell'
   const [tradeDuration, setTradeDuration] = useState(60); // segundos
   const [isTrading, setIsTrading] = useState(false);
   const [trades, setTrades] = useState([]);
   const [virtualBalance, setVirtualBalance] = useState(10000);
 
-  const IS_REAL_MODE = true; // 🔹 Cambiar a false para modo demo (solo virtual)
+  const IS_REAL_MODE = true; // 🔹 Cambiar a false para modo demo
 
-  // Historial de precios para el gráfico
+  // --------- Historial de precios ----------
   const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
   const priceHistory = Array.isArray(cryptoPrices?.[base]?.history)
     ? cryptoPrices[base].history
     : [];
 
-  // --------- Carga/persistencia local ----------
+  // --------- Carga y persistencia local ----------
   useEffect(() => {
     if (!user?.id) return;
     try {
@@ -65,24 +66,17 @@ export const useTradingLogic = () => {
 
     try {
       if (IS_REAL_MODE) {
-        // 🔻 Deducción real (bloquea capital)
-await updateBalanceGlobal(-amount, 'USDC', true, 'trade_open', { pair: selectedPair });
+        console.log('[updateBalanceGlobal] trade_open', -amount, 'USDC');
+        await updateBalanceGlobal(-amount, 'USDC', true, 'trade_open', { pair: selectedPair });
 
-// 🔹 Refrescar saldo desde la base
-try {
-  const { data, error } = await supabase
-    .from('balances')
-    .select('usdc')
-    .eq('user_id', user.id)
-    .single();
-  if (!error && data) {
-    console.log('[refreshBalance] Nuevo saldo:', data.usdc);
-  }
-} catch (e) {
-  console.warn('[refreshBalance] Error:', e.message);
-}
+        // 🔹 Refrescar saldo en Supabase
+        const { data, error } = await supabase
+          .from('balances')
+          .select('usdc')
+          .eq('user_id', user.id)
+          .single();
+        if (!error && data) console.log('[refreshBalance] Nuevo saldo:', data.usdc);
       } else {
-        // 🔹 Modo demo
         setVirtualBalance((prev) => Math.max(0, prev - amount));
       }
 
@@ -104,7 +98,6 @@ try {
       };
 
       setTrades((prev) => [newTrade, ...prev]);
-
       toast({
         title: 'Trade abierto',
         description: `${tradeType.toUpperCase()} $${amount.toFixed(2)} ${baseSym} a $${currentPrice.toFixed(2)}`,
@@ -117,65 +110,14 @@ try {
     }
   }, [tradeAmount, selectedPair, cryptoPrices, tradeType, tradeDuration, updateBalanceGlobal]);
 
-  // --------- Apertura programática (compatibilidad) ----------
-  const openTrade = useCallback(
-    async (opts = {}) => {
-      const nextPair = opts.pair || selectedPair;
-      const nextType = opts.type || tradeType;
-      const nextAmount = num(opts.amount ?? tradeAmount);
-
-      const baseSym = (nextPair.split?.('/')?.[0] || 'BTC').toUpperCase();
-      const currentPrice = num(opts.priceAtExecution ?? cryptoPrices?.[baseSym]?.price);
-      if (!currentPrice || !nextAmount) return;
-
-      const durSec = Math.max(1, num(opts.duration ?? tradeDuration) || 60);
-
-      try {
-        if (IS_REAL_MODE) {
-          await updateBalanceGlobal(-nextAmount, 'USDC', true, 'trade_open', { pair: nextPair });
-        } else {
-          setVirtualBalance((prev) => Math.max(0, prev - nextAmount));
-        }
-
-        const now = Date.now();
-        const newTrade = {
-          id: String(now),
-          pair: nextPair,
-          type: nextType,
-          amount: nextAmount,
-          priceAtExecution: currentPrice,
-          timestamp: now,
-          duration: durSec * 1000,
-          durationSeconds: durSec,
-          closeAt: now + durSec * 1000,
-          status: 'open',
-          profit: 0,
-        };
-
-        setTrades((prev) => [newTrade, ...prev]);
-
-        toast({
-          title: 'Trade abierto',
-          description: `${String(nextType).toUpperCase()} $${nextAmount.toFixed(2)} ${baseSym} a $${currentPrice.toFixed(2)}`,
-        });
-      } catch (err) {
-        console.error('[openTrade] Error:', err.message);
-      }
-    },
-    [cryptoPrices, selectedPair, tradeType, tradeAmount, tradeDuration, updateBalanceGlobal]
-  );
-
   // --------- Cerrar trade ----------
   const closeTrade = useCallback(
-    async (tradeId, arg2 = null /* closePrice | manual */) => {
+    async (tradeId, arg2 = null) => {
       let manual = false;
       let providedClosePrice = null;
 
-      if (typeof arg2 === 'number' && Number.isFinite(arg2)) {
-        providedClosePrice = Number(arg2);
-      } else if (typeof arg2 === 'boolean') {
-        manual = arg2;
-      }
+      if (typeof arg2 === 'number' && Number.isFinite(arg2)) providedClosePrice = Number(arg2);
+      else if (typeof arg2 === 'boolean') manual = arg2;
 
       setTrades((prevTrades) =>
         prevTrades.map((t) => {
@@ -194,30 +136,22 @@ try {
           const profit = pnlPct * t.amount;
           const totalReturn = t.amount + profit;
 
-          // 🔹 Acreditación real o demo
           (async () => {
             try {
               if (IS_REAL_MODE) {
-               await updateBalanceGlobal(totalReturn, 'USDC', true, 'trade_close', {
-  pair: t.pair,
-  trade_id: t.id,
-  profit,
-});
+                console.log('[updateBalanceGlobal] trade_close', totalReturn, 'USDC');
+                await updateBalanceGlobal(totalReturn, 'USDC', true, 'trade_close', {
+                  pair: t.pair,
+                  trade_id: t.id,
+                  profit,
+                });
 
-// 🔹 Refrescar saldo desde la base
-try {
-  const { data, error } = await supabase
-    .from('balances')
-    .select('usdc')
-    .eq('user_id', user.id)
-    .single();
-  if (!error && data) {
-    console.log('[refreshBalance] Nuevo saldo:', data.usdc);
-  }
-} catch (e) {
-  console.warn('[refreshBalance] Error:', e.message);
-}
-
+                const { data, error } = await supabase
+                  .from('balances')
+                  .select('usdc')
+                  .eq('user_id', user.id)
+                  .single();
+                if (!error && data) console.log('[refreshBalance] Nuevo saldo:', data.usdc);
               } else {
                 setVirtualBalance((prevBal) => prevBal + totalReturn);
               }
@@ -257,12 +191,14 @@ try {
     return () => clearInterval(interval);
   }, [trades, closeTrade]);
 
+  // --------- Reset demo ----------
   const resetBalance = () => {
     setVirtualBalance(10000);
     setTrades([]);
     toast({ title: 'Balance reiniciado', description: 'Tu saldo demo volvió a $10,000' });
   };
 
+  // --------- Totales ----------
   const totalProfit = trades
     .filter((t) => t.status === 'closed')
     .reduce((sum, t) => sum + num(t.profit), 0);
@@ -286,7 +222,6 @@ try {
     priceHistory,
     cryptoPrices,
     executeTrade,
-    openTrade,
     closeTrade,
     resetBalance,
   };
