@@ -393,10 +393,16 @@ export default function InvestmentPlans() {
 
   // ===== Sincronizar payouts (idempotente en cliente) =====
   const syncingRef = useRef(false);
+const lastSyncRef = useRef(0);
 
 const syncPlanPayouts = useCallback(async () => {
+  const now = Date.now();
+
   if (!user?.id || syncingRef.current) return;
+  if (now - lastSyncRef.current < 60 * 60 * 1000) return; 
   syncingRef.current = true;
+  lastSyncRef.current = now;
+
   try {
     // 🔄 Actualiza inversiones y transacciones antes de calcular
     await Promise.all([refreshInvestments?.(), refreshTransactions?.()]);
