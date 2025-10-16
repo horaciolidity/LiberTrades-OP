@@ -1662,7 +1662,7 @@ async function cancelBot(id) {
     for (const t of ensureArray(transactions)) {
       if (String(t?.status || '').toLowerCase() !== 'completed') continue;
 
-      const kind = String(t?.kind ?? t?.type ?? '').toLowerCase();
+      const kind = String(t?.kind ?? t?.kind ?? '').toLowerCase();
       const aid = t?.referenceId;
       if (!aid) continue;
 
