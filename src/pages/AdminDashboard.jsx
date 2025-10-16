@@ -102,7 +102,7 @@ export default function AdminDashboard() {
   const [ruleForm, setRuleForm] = useState({
     start_hour: 9,
     end_hour: 12,
-    type: 'percent',          // 'percent' | 'absolute'
+    kind: 'percent',          // 'percent' | 'absolute'
     value: 5,
     label: 'Sube en la mañana',
     active: true,
@@ -254,7 +254,7 @@ export default function AdminDashboard() {
   };
 
   const fetchPending = async () => {
-    const sel = 'id, user_id, amount, type, status, currency, created_at';
+    const sel = 'id, user_id, amount, kind, status, currency, created_at';
     const { data: dep, error: dErr } = await supabase
       .from(TX_TABLE)
       .select(sel)
@@ -453,7 +453,7 @@ export default function AdminDashboard() {
         symbol: selectedSymbol,
         start_hour: Number(ruleForm.start_hour),
         end_hour: Number(ruleForm.end_hour),
-        type: ruleForm.type,
+        kind: ruleForm.kind,
         value: Number(ruleForm.value || 0),
         label: ruleForm.label?.trim() || null,
         active: !!ruleForm.active,
@@ -469,7 +469,7 @@ export default function AdminDashboard() {
       }
       const { error } = await supabase.from('market_rules').insert(payload);
       if (error) throw error;
-      toast({ title: 'Regla creada', description: payload.label || `${payload.type} ${payload.value}` });
+      toast({ title: 'Regla creada', description: payload.label || `${payload.kind} ${payload.value}` });
       await fetchRulesForSymbol(selectedSymbol);
     } catch (e) {
       toast({ title: 'No se pudo crear la regla', description: e.message, variant: 'destructive' });
@@ -691,7 +691,7 @@ export default function AdminDashboard() {
           (r.start_hour === r.end_hour))
     );
     hits.forEach((r) => {
-      if (r.type === "percent") price *= 1 + Number(r.value || 0) / 100;
+      if (r.kind === "percent") price *= 1 + Number(r.value || 0) / 100;
       else price += Number(r.value || 0);
     });
 
@@ -1075,7 +1075,7 @@ export default function AdminDashboard() {
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <Select value={ruleForm.type} onValueChange={(val) => setRuleForm((v) => ({ ...v, type: val }))}>
+                  <Select value={ruleForm.kind} onValueChange={(val) => setRuleForm((v) => ({ ...v, kind: val }))}>
                     <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
                       <SelectValue placeholder="Tipo efecto" />
                     </SelectTrigger>
@@ -1086,7 +1086,7 @@ export default function AdminDashboard() {
                   </Select>
                   <Input
                     type="number"
-                    placeholder={ruleForm.type === 'percent' ? '% (ej: -3, 5)' : 'Δ precio (ej: -100, 200)'}
+                    placeholder={ruleForm.kind === 'percent' ? '% (ej: -3, 5)' : 'Δ precio (ej: -100, 200)'}
                     className="bg-slate-800 border-slate-600 text-white"
                     value={ruleForm.value}
                     onChange={(e) => setRuleForm((v) => ({ ...v, value: e.target.value }))}
@@ -1125,10 +1125,10 @@ export default function AdminDashboard() {
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-white text-sm font-semibold">
-                          {r.label || (r.type === 'percent' ? `${r.value}%` : `${r.value >= 0 ? '+' : ''}${r.value}`)}
+                          {r.label || (r.kind === 'percent' ? `${r.value}%` : `${r.value >= 0 ? '+' : ''}${r.value}`)}
                         </p>
                         <p className="text-slate-400 text-xs">
-                          {r.start_hour}:00 → {r.end_hour}:00 · {r.type === 'percent' ? (<><Percent className="inline h-3 w-3" /> %</>) : 'Abs'} · {r.active ? 'Activa' : 'Inactiva'}
+                          {r.start_hour}:00 → {r.end_hour}:00 · {r.kind === 'percent' ? (<><Percent className="inline h-3 w-3" /> %</>) : 'Abs'} · {r.active ? 'Activa' : 'Inactiva'}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
