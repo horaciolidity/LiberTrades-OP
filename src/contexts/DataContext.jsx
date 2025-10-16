@@ -166,6 +166,80 @@ export function DataProvider({ children }) {
   /* ---------------- Estado negocio ---------------- */
   const [investments, setInvestments] = useState([]);
   const [transactions, setTransactions] = useState([]);
+
+  // ---- Transacciones (fetch + insert seguro) ----
+const refreshTransactions = useCallback(async () => {
+  if (!user?.id) return;
+  try {
+    const { data, error } = await supabase
+      .from('wallet_transactions')
+      .select('id, created_at, kind, status, currency, amount, description')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (error) throw error;
+    setTransactions(Array.isArray(data) ? data : []);
+  } catch (e) {
+    console.warn('[refreshTransactions]', e.message);
+  }
+}, [user?.id]);
+
+// ⚠️ addTransaction: depósitos/retiros "pendientes" NO tocan saldo
+const addTransaction = useCallback(async (tx) => {
+  if (!user?.id) throw new Error('No user');
+
+  const kind = String(tx?.kind || '').toLowerCase(); // 'deposit' | 'withdrawal' | ...
+  const status = String(tx?.status || '').toLowerCase();
+
+  // 1) Si es depósito/retiro pendiente → insertar en wallet_transactions y listo
+  if ((kind === 'deposit' || kind === 'withdrawal') && status === 'pending') {
+    const payload = {
+      user_id: user.id,
+      kind, // usamos 'kind' (esquema canónico)
+      amount: Number(tx.amount || 0),
+      currency: tx.currency || 'USDC',
+      status: 'pending',
+      description: tx.description || null,
+      // opcional: metadata con reference_id para idempotencia
+      metadata: tx.metadata || {},
+    };
+    const { error } = await supabase.from('wallet_transactions').insert(payload);
+    if (error) throw error;
+    await refreshTransactions();
+    return;
+  }
+
+  // 2) Resto de casos → usar RPC contable (acredita/debita saldo de inmediato)
+  const delta = Number(tx.amount || 0) * (kind === 'trade_open' || kind === 'bot_fee' || kind === 'withdrawal' ? -1 : 1);
+  const meta = tx.metadata || {};
+  const k = tx.kind || (delta >= 0 ? 'trade_close' : 'trade_open');
+
+  const { error } = await supabase.rpc('add_wallet_tx', {
+    p_user: user.id,
+    p_currency: tx.currency || 'USDC',
+    p_amount: delta,
+    p_kind: k,
+    p_meta: meta,
+  });
+  if (error) throw error;
+
+  await Promise.all([refreshBalances?.(), refreshTransactions()]);
+}, [user?.id, refreshBalances, refreshTransactions]);
+
+// Cargar al inicio y suscribirse en tiempo real
+useEffect(() => { refreshTransactions(); }, [refreshTransactions]);
+
+useEffect(() => {
+  if (!user?.id) return;
+  const ch = supabase
+    .channel('wallet_tx_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'wallet_transactions', filter: `user_id=eq.${user.id}` }, () => {
+      refreshTransactions();
+    })
+    .subscribe();
+  return () => { try { supabase.removeChannel(ch); } catch {} };
+}, [user?.id, refreshTransactions]);
+
   const [referrals, setReferrals] = useState([]);
   const [botActivations, setBotActivations] = useState([]);
 // 🔹 Saldo local en tiempo real (sin depender del backend)
@@ -1312,119 +1386,7 @@ useEffect(() => {
     };
   }
 
-  // DataContext.jsx
-// ✅ addTransaction — ahora solo recalcula balance si la transacción está 'completed'
-async function addTransaction({
-  amount,
-  type,
-  currency = 'USDC',
-  description = '',
-  referenceType = null,
-  referenceId = null,
-  status = 'completed',
-}) {
-  if (!user?.id) return null;
 
-  const isCompleted = String(status).toLowerCase() === 'completed';
-
-  // ——————————— 1) PRIMERO INTENTAMOS RPC ———————————
-  try {
-    const { error: rpcErr } = await supabase.rpc('add_wallet_tx', {
-      p_user: user.id,
-      p_currency: currency,
-      p_amount: Number(amount),
-      p_kind: type,
-      p_meta: {
-        description,
-        reference_type: referenceType,
-        reference_id: referenceId,
-        status,
-      },
-    });
-
-    if (!rpcErr) {
-      await refreshTransactions();
-
-      // ⚠️ Solo recalcular si la transacción está completada
-      if (isCompleted) {
-        try {
-          const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
-          if (r1.error) await supabase.rpc('recalc_user_balances');
-        } catch {}
-        try { refreshBalances?.(); } catch {}
-      }
-
-      const mappedType = type === 'plan_purchase' ? 'investment' : type;
-
-      return {
-        user_id: user.id,
-        userId: user.id,
-        id: crypto?.randomUUID?.() || `${Date.now()}`,
-        kind: mappedType,
-        status,
-        amount: Number(amount || 0),
-        currency,
-        description: description || '',
-        createdAt: new Date().toISOString(),
-        referenceType,
-        referenceId,
-      };
-    }
-  } catch (e) {
-    console.warn('[addTransaction] RPC add_wallet_tx no disponible, usando fallback:', e?.message || e);
-  }
-
-  // ——————————— 2) FALLBACK DIRECTO ———————————
-  const payload = {
-    user_id: user.id,
-    amount: Number(amount),
-    kind: type,
-    status,
-    currency,
-    description,
-    reference_type: referenceType,
-    reference_id: referenceId,
-  };
-
-  const { data, error } = await supabase
-    .from('wallet_transactions')
-    .insert(payload)
-    .select('*')
-    .single();
-
-  if (error) {
-    console.error('[addTransaction] insert error:', error);
-    return null;
-  }
-
-  await refreshTransactions();
-
-  // ⚠️ Solo recalcular si está completada
-  if (isCompleted) {
-    try {
-      const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
-      if (r1.error) await supabase.rpc('recalc_user_balances');
-    } catch {}
-    try { refreshBalances?.(); } catch {}
-  }
-
-  let mappedType = data.type;
-  if (mappedType === 'plan_purchase') mappedType = 'investment';
-
-  return {
-    user_id: data.user_id,
-    userId: data.user_id,
-    id: data.id,
-    kind: mappedType,
-    status: data.status,
-    amount: Number(data.amount || 0),
-    currency: data.currency || 'USDC',
-    description: data.description || '',
-    createdAt: data.created_at,
-    referenceType: data.reference_type,
-    referenceId: data.reference_id,
-  };
-}
 
 
 

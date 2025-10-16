@@ -204,12 +204,12 @@ export default function DepositPage() {
   // ===== Últimos movimientos =====
   const lastDeposits = useMemo(() => {
     const list = Array.isArray(transactions) ? transactions : [];
-    return list.filter((t) => (t?.type || '').toLowerCase() === 'deposit').slice(0, 5);
+    return list.filter((t) => (t?.kind || '').toLowerCase() === 'deposit').slice(0, 5);
   }, [transactions]);
 
   const lastWithdrawals = useMemo(() => {
     const list = Array.isArray(transactions) ? transactions : [];
-    return list.filter((t) => (t?.type || '').toLowerCase() === 'withdrawal').slice(0, 5);
+    return list.filter((t) => (t?.kind || '').toLowerCase() === 'withdrawal').slice(0, 5);
   }, [transactions]);
 
   return (

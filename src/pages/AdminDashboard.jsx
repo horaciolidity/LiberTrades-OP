@@ -258,7 +258,7 @@ export default function AdminDashboard() {
     const { data: dep, error: dErr } = await supabase
       .from(TX_TABLE)
       .select(sel)
-      .eq('type', 'deposit')
+      .eq('kind', 'deposit')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
     if (dErr) throw dErr;
@@ -266,7 +266,7 @@ export default function AdminDashboard() {
     const { data: wit, error: wErr } = await supabase
       .from(TX_TABLE)
       .select(sel)
-      .eq('type', 'withdrawal')
+      .eq('kind', 'withdrawal')
       .eq('status', 'pending')
       .order('created_at', { ascending: true });
     if (wErr) throw wErr;
@@ -290,7 +290,7 @@ export default function AdminDashboard() {
     const fromISO = new Date(Date.now() - 30 * 864e5).toISOString();
     const { data: tx30, error } = await supabase
       .from(TX_TABLE)
-      .select('amount, type, status, created_at, user_id')
+      .select('amount, kind, status, created_at, user_id')
       .gte('created_at', fromISO)
       .eq('status', 'completed');
     if (error) throw error;
@@ -554,7 +554,7 @@ export default function AdminDashboard() {
       const positive = delta >= 0;
       const insertTx = {
         user_id: userId,
-        type: positive ? 'admin_credit' : 'fee',
+        kind: positive ? 'admin_credit' : 'fee',
         amount: Math.abs(delta),
         status: 'completed',
         currency: 'USDC',
