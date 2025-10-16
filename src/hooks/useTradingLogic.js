@@ -225,6 +225,7 @@ export const useTradingLogic = () => {
     openTrades,
     totalProfit,
     virtualBalance,
+    setVirtualBalance,
     priceHistory,
     cryptoPrices,
     executeTrade,
