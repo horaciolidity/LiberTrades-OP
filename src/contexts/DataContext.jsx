@@ -1041,63 +1041,7 @@ function applyMarketRules(symbol, basePrice, difficulty = "none") {
     setInvestments(mapped);
   }
 
-  async function refreshTransactions() {
-    if (!user?.id) {
-      setTransactions([]);
-      return;
-    }
-    const { data, error } = await supabase
-      .from('wallet_transactions')
-      .select('*')
-      .limit(200)
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
-    if (error) {
-      console.error('[refreshTransactions] error:', error);
-      setTransactions([]);
-      return;
-    }
-
-    const mapped = ensureArray(data).map((tx) => {
-      const baseRaw = tx.kind ?? tx.type ?? '';
-      let base = String(baseRaw).toLowerCase();
-
-      if (base === 'plan_purchase') base = 'investment';
-
-      const ref = String(tx.reference_type || '').toLowerCase();
-      let displayType = base;
-
-      if (
-        ref === 'plan_payout' ||
-        ref === 'plan_profit' ||
-        ref === 'investment_profit' ||
-        ref === 'roi_payout' ||
-        base === 'plan_payout' ||
-        base === 'investment_profit' ||
-        base === 'plan_profit' ||
-        base === 'roi_payout'
-      ) {
-        displayType = 'plan_payout';
-      }
-
-      return {
-        user_id: tx.user_id,
-        userId: tx.user_id,
-        id: tx.id,
-        kind: displayType,
-        rawType: tx.type,
-        status: String(tx.status || '').toLowerCase(),
-        amount: Number(tx.amount || 0),
-        currency: tx.currency || 'USDC',
-        description: tx.description || '',
-        createdAt: tx.created_at,
-        referenceType: tx.reference_type,
-        referenceId: tx.reference_id,
-      };
-    });
-
-    setTransactions(mapped);
-  }
+  
 
   async function refreshReferrals() {
     if (!user?.id) {
