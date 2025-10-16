@@ -167,7 +167,7 @@ export function DataProvider({ children }) {
   const [investments, setInvestments] = useState([]);
   const [transactions, setTransactions] = useState([]);
 
-  // ---- Transacciones (fetch + insert seguro) ----
+// ---- Transacciones (fetch + insert seguro) ----
 const refreshTransactions = useCallback(async () => {
   if (!user?.id) return;
   try {
@@ -191,16 +191,15 @@ const addTransaction = useCallback(async (tx) => {
   const kind = String(tx?.kind || '').toLowerCase(); // 'deposit' | 'withdrawal' | ...
   const status = String(tx?.status || '').toLowerCase();
 
-  // 1) Si es depósito/retiro pendiente → insertar en wallet_transactions y listo
+  // 1️⃣ Depósitos o retiros pendientes → solo registrar transacción
   if ((kind === 'deposit' || kind === 'withdrawal') && status === 'pending') {
     const payload = {
       user_id: user.id,
-      kind, // usamos 'kind' (esquema canónico)
+      kind,
       amount: Number(tx.amount || 0),
       currency: tx.currency || 'USDC',
       status: 'pending',
       description: tx.description || null,
-      // opcional: metadata con reference_id para idempotencia
       metadata: tx.metadata || {},
     };
     const { error } = await supabase.from('wallet_transactions').insert(payload);
@@ -209,8 +208,9 @@ const addTransaction = useCallback(async (tx) => {
     return;
   }
 
-  // 2) Resto de casos → usar RPC contable (acredita/debita saldo de inmediato)
-  const delta = Number(tx.amount || 0) * (kind === 'trade_open' || kind === 'bot_fee' || kind === 'withdrawal' ? -1 : 1);
+  // 2️⃣ Otros tipos → RPC contable (impacta saldo real)
+  const delta = Number(tx.amount || 0) *
+    (kind === 'trade_open' || kind === 'bot_fee' || kind === 'withdrawal' ? -1 : 1);
   const meta = tx.metadata || {};
   const k = tx.kind || (delta >= 0 ? 'trade_close' : 'trade_open');
 
@@ -225,6 +225,7 @@ const addTransaction = useCallback(async (tx) => {
 
   await Promise.all([refreshBalances?.(), refreshTransactions()]);
 }, [user?.id, refreshBalances, refreshTransactions]);
+
 
 // Cargar al inicio y suscribirse en tiempo real
 useEffect(() => { refreshTransactions(); }, [refreshTransactions]);
