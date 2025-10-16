@@ -49,6 +49,11 @@ export default function TradingSimulator() {
   // Feed global + RPC de cierre desde DataContext
   const { cryptoPrices: marketPrices = {}, closeTrade: closeTradeRPC, updateBalanceGlobal } = useData();
   const tradingLogic = useTradingLogic(); // DEMO local
+  // Sincroniza el modo (demo / real) con el hook
+useEffect(() => {
+  tradingLogic.setIsRealMode(mode === 'real');
+}, [mode]);
+
 
   const [mode, setMode] = useState('demo'); // 'demo' | 'real'
 
