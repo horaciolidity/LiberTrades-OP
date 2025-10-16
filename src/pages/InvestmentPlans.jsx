@@ -416,7 +416,7 @@ const syncPlanPayouts = useCallback(async () => {
       const already = txns
         .filter(
           (t) =>
-            String(t.type).toLowerCase() === "plan_payout" &&
+            String(t.kind || t.kind || "").toLowerCase() === "plan_payout" &&
             String(t.referenceId) === String(inv.id)
         )
         .reduce((acc, t) => acc + Number(t.amount || 0), 0);
@@ -502,19 +502,7 @@ useEffect(() => {
 }, [syncPlanPayouts]);
 
 
-  useEffect(() => {
-    if (!user?.id) return;
-    syncPlanPayouts();
-  }, [user?.id, syncPlanPayouts]);
-
-  useEffect(() => {
-    const onVis = () => {
-      if (!document.hidden) syncPlanPayouts();
-    };
-    document.addEventListener('visibilitychange', onVis);
-    return () => document.removeEventListener('visibilitychange', onVis);
-  }, [syncPlanPayouts]);
-
+ 
   // ===== UI =====
   return (
     <div className="space-y-8">
