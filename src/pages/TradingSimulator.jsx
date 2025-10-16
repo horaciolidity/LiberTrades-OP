@@ -381,10 +381,30 @@ await updateBalanceGlobal(
   };
 
 const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) => {
-  if (mode === 'demo') {
-    tradingLogic.closeTrade(tradeId, true);
-    return true;
-  }
+ if (mode === 'demo') {
+  const tr = tradingLogic.trades.find((x) => x.id === tradeId);
+  if (!tr) return true;
+
+  const base = parseBaseFromPair(tr.pair || selectedPair);
+  const live = Number(mergedPrices?.[base]?.price ?? 0);
+  const entry = Number(tr.priceAtExecution ?? tr.price ?? 0);
+  const amountUsd = Number(tr.amountAtOpen ?? tr.amount ?? 0);
+  const side = String(tr.type || '').toLowerCase();
+  const qty = amountUsd / entry;
+  const pnl = side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
+  const totalReturn = amountUsd + pnl;
+
+  // 🔹 Actualiza el balance virtual directamente
+  tradingLogic.setVirtualBalance((prev) => prev + totalReturn);
+
+  // 🔹 Cierra el trade dentro del hook
+  tradingLogic.closeTrade(tradeId, true);
+
+  console.log('[DEMO closeTrade ✅]', { entry, live, pnl, totalReturn });
+  playSound?.('success');
+  return true;
+}
+
   if (!tradeId) return false;
 
   try {
