@@ -5,30 +5,44 @@ import { useData } from '@/contexts/DataContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from '@/components/ui/use-toast';
 
+/* ---------------- Utilidades ---------------- */
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+const round2 = (v) => Math.round(v * 100) / 100;
 
+/**
+ * Corrige números muy pequeños que podrían redondearse a 0
+ * para mostrar correctamente PnL minúsculo.
+ */
+const minDisplay = (v) => {
+  if (v > 0 && v < 0.01) return 0.01;
+  if (v < 0 && v > -0.01) return -0.01;
+  return v;
+};
+
+/* ===================================================
+   Hook principal de lógica de trading
+   =================================================== */
 export const useTradingLogic = () => {
   const { cryptoPrices, updateBalanceGlobal } = useData();
   const { user } = useAuth();
 
-  // --------- Estado principal ----------
   const [selectedPair, setSelectedPair] = useState('BTC/USDT');
-  const [tradeAmount, setTradeAmount] = useState('100'); // string para no trabar el <Input />
-  const [tradeType, setTradeType] = useState('buy'); // 'buy' | 'sell'
-  const [tradeDuration, setTradeDuration] = useState(60); // segundos
+  const [tradeAmount, setTradeAmount] = useState('100');
+  const [tradeType, setTradeType] = useState('buy');
+  const [tradeDuration, setTradeDuration] = useState(60);
   const [isTrading, setIsTrading] = useState(false);
   const [trades, setTrades] = useState([]);
   const [virtualBalance, setVirtualBalance] = useState(10000);
 
-  const IS_REAL_MODE = true; // 🔹 Cambiar a false para modo demo
+  const IS_REAL_MODE = true; // Cambiar a false para modo demo
 
-  // --------- Historial de precios ----------
+  /* ---------------- Historial de precios ---------------- */
   const base = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
   const priceHistory = Array.isArray(cryptoPrices?.[base]?.history)
     ? cryptoPrices[base].history
     : [];
 
-  // --------- Carga y persistencia local ----------
+  /* ---------------- Carga local ---------------- */
   useEffect(() => {
     if (!user?.id) return;
     try {
@@ -36,9 +50,7 @@ export const useTradingLogic = () => {
       const savedBalance = localStorage.getItem(`virtual_balance_iq_${user.id}`);
       if (Array.isArray(savedTrades)) setTrades(savedTrades);
       if (savedBalance != null) setVirtualBalance(num(savedBalance));
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [user?.id]);
 
   useEffect(() => {
@@ -47,7 +59,9 @@ export const useTradingLogic = () => {
     localStorage.setItem(`virtual_balance_iq_${user.id}`, String(virtualBalance));
   }, [trades, virtualBalance, user?.id]);
 
-  // --------- Abrir trade ----------
+  /* ===================================================
+     Abrir Trade (Buy / Sell)
+     =================================================== */
   const executeTrade = useCallback(async () => {
     const amount = num(tradeAmount);
     if (!amount || amount <= 0) {
@@ -68,14 +82,6 @@ export const useTradingLogic = () => {
       if (IS_REAL_MODE) {
         console.log('[updateBalanceGlobal] trade_open', -amount, 'USDC');
         await updateBalanceGlobal(-amount, 'USDC', true, 'trade_open', { pair: selectedPair });
-
-        // 🔹 Refrescar saldo en Supabase
-        const { data, error } = await supabase
-          .from('balances')
-          .select('usdc')
-          .eq('user_id', user.id)
-          .single();
-        if (!error && data) console.log('[refreshBalance] Nuevo saldo:', data.usdc);
       } else {
         setVirtualBalance((prev) => Math.max(0, prev - amount));
       }
@@ -91,7 +97,6 @@ export const useTradingLogic = () => {
         priceAtExecution: currentPrice,
         timestamp: now,
         duration: durSec * 1000,
-        durationSeconds: durSec,
         closeAt: now + durSec * 1000,
         status: 'open',
         profit: 0,
@@ -110,7 +115,9 @@ export const useTradingLogic = () => {
     }
   }, [tradeAmount, selectedPair, cryptoPrices, tradeType, tradeDuration, updateBalanceGlobal]);
 
-  // --------- Cerrar trade ----------
+  /* ===================================================
+     Cerrar Trade (automático o manual)
+     =================================================== */
   const closeTrade = useCallback(
     async (tradeId, arg2 = null) => {
       let manual = false;
@@ -128,18 +135,24 @@ export const useTradingLogic = () => {
           const currentPrice = Number.isFinite(providedClosePrice) ? providedClosePrice : live;
           if (!currentPrice) return t;
 
+          // Calcular PnL
           const pnlPct =
             t.type === 'buy'
               ? (currentPrice - t.priceAtExecution) / t.priceAtExecution
               : (t.priceAtExecution - currentPrice) / t.priceAtExecution;
 
-          const profit = pnlPct * t.amount;
-          const totalReturn = t.amount + profit;
+          let profit = round2(pnlPct * t.amount);
+          if (Math.abs(profit) < 0.01 && profit !== 0) profit = profit > 0 ? 0.01 : -0.01;
+          const totalReturn = round2(t.amount + profit);
 
+          // 🔹 Aplicar resultado
           (async () => {
             try {
               if (IS_REAL_MODE) {
-                console.log('[updateBalanceGlobal] trade_close', totalReturn, 'USDC');
+                console.log(
+                  `[updateBalanceGlobal] trade_close +${totalReturn} (PnL ${profit >= 0 ? '+' : ''}${profit}) USDC`
+                );
+
                 await updateBalanceGlobal(totalReturn, 'USDC', true, 'trade_close', {
                   pair: t.pair,
                   trade_id: t.id,
@@ -153,7 +166,7 @@ export const useTradingLogic = () => {
                   .single();
                 if (!error && data) console.log('[refreshBalance] Nuevo saldo:', data.usdc);
               } else {
-                setVirtualBalance((prevBal) => prevBal + totalReturn);
+                setVirtualBalance((prevBal) => round2(prevBal + totalReturn));
               }
             } catch (err) {
               console.warn('[closeTrade] Error al devolver saldo:', err.message);
@@ -162,7 +175,7 @@ export const useTradingLogic = () => {
 
           toast({
             title: `Trade cerrado ${manual ? '(Manual)' : ''}`,
-            description: `Resultado: ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} USDC`,
+            description: `PnL: ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} USDC`,
             variant: profit >= 0 ? 'default' : 'destructive',
           });
 
@@ -171,7 +184,6 @@ export const useTradingLogic = () => {
             status: 'closed',
             profit,
             priceAtClose: currentPrice,
-            closeprice: currentPrice,
             closeAt: Date.now(),
           };
         })
@@ -180,7 +192,7 @@ export const useTradingLogic = () => {
     [cryptoPrices, updateBalanceGlobal]
   );
 
-  // --------- Autocierre por tiempo ----------
+  /* ---------------- Autocierre por tiempo ---------------- */
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
@@ -191,20 +203,20 @@ export const useTradingLogic = () => {
     return () => clearInterval(interval);
   }, [trades, closeTrade]);
 
-  // --------- Reset demo ----------
+  /* ---------------- Utilidades ---------------- */
   const resetBalance = () => {
     setVirtualBalance(10000);
     setTrades([]);
     toast({ title: 'Balance reiniciado', description: 'Tu saldo demo volvió a $10,000' });
   };
 
-  // --------- Totales ----------
   const totalProfit = trades
     .filter((t) => t.status === 'closed')
     .reduce((sum, t) => sum + num(t.profit), 0);
 
   const openTrades = trades.filter((t) => t.status === 'open');
 
+  /* ---------------- Export ---------------- */
   return {
     selectedPair,
     setSelectedPair,
