@@ -581,6 +581,7 @@ const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) =
           totalProfit={stats.totalProfit}
           openTradesCount={stats.openTradesCount}
           totalTradesCount={stats.totalTradesCount}
+          mode={mode}
         />
 
         {/* GRID principal: Chart (izq) + Panel (der) */}
