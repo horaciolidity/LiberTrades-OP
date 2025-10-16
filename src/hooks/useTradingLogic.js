@@ -145,11 +145,14 @@ export const useTradingLogic = () => {
             try {
               if (IS_REAL_MODE) {
                 // Actualiza saldo con capital + PnL
-                await updateBalanceGlobal(totalReturn, 'USDC', true, 'trade_close', {
-                  pair: t.pair,
-                  trade_id: t.id,
-                  profit,
-                });
+                // ✅ Devuelve solo la diferencia (PnL real, no el capital completo)
+await updateBalanceGlobal(profit, 'USDC', true, 'trade_pnl', {
+  pair: t.pair,
+  trade_id: t.id,
+  profit,
+  reference_id: `trade_pnl:${user.id}:${t.id}`,
+});
+
 
                 const { data, error } = await supabase
                   .from('balances')

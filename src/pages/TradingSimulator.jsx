@@ -441,7 +441,7 @@ await updateBalanceGlobal(
   // Bridge único para el Panel (demo/real)
   const onTradeFromPanel = async (payload) => {
     if (mode === 'demo') {
-      tradingLogic.openTrade({
+      tradingLogic.executeTrade({
         pair: payload.pair,
         type: payload.type,
         amount: Number(payload.amount),
