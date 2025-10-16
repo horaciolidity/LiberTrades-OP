@@ -380,11 +380,11 @@ await updateBalanceGlobal(
     fetchRealData();
   };
 
-  // Cierra trade:
-  //  - DEMO: usa tradingLogic local
-  //  - REAL: RPC close_trade vía DataContext (sin UPDATE a mano)
- const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) => {
-  if (mode === 'demo') { tradingLogic.closeTrade(tradeId, true); return true; }
+const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) => {
+  if (mode === 'demo') {
+    tradingLogic.closeTrade(tradeId, true);
+    return true;
+  }
   if (!tradeId) return false;
 
   try {
@@ -396,58 +396,67 @@ await updateBalanceGlobal(
       closePrice = Number.isFinite(live) ? live : null;
     }
 
-    const res = await closeTradeRPC?.(String(tradeId), Number.isFinite(closePrice) ? closePrice : null, true);
+    const res = await closeTradeRPC?.(
+      String(tradeId),
+      Number.isFinite(closePrice) ? closePrice : null,
+      true
+    );
 
-    // closeTrade devuelve JSON: { ok, error?, already? }
-    const ok = (res === true) || (res?.ok === true) || (res?.already === true);
-    await fetchRealData();
+    const ok =
+      res === true ||
+      res?.ok === true ||
+      res?.already === true ||
+      res?.status === 'closed';
+
     if (ok) {
- 
+      const tr = realTrades.find((x) => x.id === tradeId);
+      if (!tr) {
+        console.warn('[handleCloseTrade] trade not found');
+        return false;
+      }
 
-// ✅ Devolver principal + PnL real (ganancia o pérdida)
-const pnl = Number(tr?.profit ?? 0);
-const principal = Number(tr?.amount ?? tr?.amount_usd ?? tr?.amountAtOpen ?? 0);
-const net = principal + pnl;
+      const base = parseBaseFromPair(tr.pair);
+      const live = Number(mergedPrices?.[base]?.price ?? 0);
+      const entry = Number(tr.price ?? tr.priceAtExecution ?? 0);
+      const amountUsd = Number(tr.amount ?? tr.amount_usd ?? tr.amountAtOpen ?? 0);
+      const side = String(tr.type || '').toLowerCase();
+      const qty = amountUsd / entry;
+      const pnl = side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
+      const totalReturn = amountUsd + pnl;
 
-console.log('[updateBalanceGlobal ✅]', 'trade_close', net, 'USDC', '(PnL:', pnl, ')');
+      console.log('[handleCloseTrade ✅]', { entry, live, pnl, totalReturn });
 
-await updateBalanceGlobal(
-  net,
-  'USDC',
-  true,
-  'trade_close',
-  {
-    trade_id: tradeId,
-    pair: tr?.pair,
-    profit: pnl,
-    close_price: maybeClosePrice,
-    reference_id: `trade_close:${user.id}:${tradeId}`
-  }
-);
+      // 🔹 Devuelve monto + PnL con persistencia segura
+      await updateBalanceGlobal(totalReturn, 'USDC', true, 'trade_close', {
+        trade_id: tradeId,
+        pair: tr.pair,
+        entry_price: entry,
+        close_price: live,
+        profit: pnl,
+        reference_id: `trade_close:${user.id}:${tradeId}`,
+      });
 
-
-  await fetchRealData();
-  playSound?.('success');
-  return true;
-}
-
-
-    // si vino “TRADE_NOT_FOUND” lo tratamos como ‘ya estaba cerrado’
-    if (String(res?.error || '').includes('TRADE_NOT_FOUND')) {
-      await fetchRealData(); 
+      playSound?.('success');
+      await fetchRealData();
       return true;
     }
+
+    if (String(res?.error || '').includes('TRADE_NOT_FOUND')) {
+      await fetchRealData();
+      return true;
+    }
+
     return false;
   } catch (e) {
-    // idem: si la API tira el texto, lo tratamos como éxito silencioso
     if (String(e?.message || '').toUpperCase().includes('TRADE NO ENCONTRADO')) {
-      await fetchRealData(); 
+      await fetchRealData();
       return true;
     }
     console.error('[handleCloseTrade RPC]', e);
     return false;
   }
 };
+
 
 
   // Bridge único para el Panel (demo/real)
