@@ -233,25 +233,19 @@ export default function AdminDashboard() {
 
   // ---------- fetchers ----------
   const fetchUsers = async () => {
-    const { data: profs, error: pErr } = await supabase
-      .from('profiles')
-      .select('id, email, username, role, created_at')
-      .order('created_at', { ascending: false });
-    if (pErr) throw pErr;
+  const { data, error } = await supabase.rpc('admin_list_users_with_balances');
+  if (error) {
+    console.error(error);
+    toast({ title: 'Error cargando usuarios', description: error.message, variant: 'destructive' });
+    return;
+  }
+  setUsers((data || []).map(u => ({
+    ...u,
+    balance: Number(u.usdc ?? 0),
+    demo_balance: Number(u.demo_balance ?? 0),
+  })));
+};
 
-    const { data: bals, error: bErr } = await supabase
-      .from('balances')
-      .select('user_id, usdc, demo_balance');
-    if (bErr) throw bErr;
-
-    const balMap = Object.fromEntries((bals || []).map((b) => [b.user_id, b]));
-    const merged = (profs || []).map((p) => ({
-      ...p,
-      balance: Number(balMap[p.id]?.usdc ?? 0),
-      demo_balance: Number(balMap[p.id]?.demo_balance ?? 0),
-    }));
-    setUsers(merged);
-  };
 
   const fetchPending = async () => {
     const sel = 'id, user_id, amount, kind, status, currency, created_at';
