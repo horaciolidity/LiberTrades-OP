@@ -540,13 +540,13 @@ const delta = parseFloat(String(deltaStr).replace(',', '.').trim());
   }
 
   try {
-    const { data, error } = await supabase.rpc('admin_adjust_balance', {
-      p_user_id: userId,
-      p_amount: delta,
-      p_note: delta >= 0
-        ? 'Recarga manual desde panel admin'
-        : 'Descuento manual desde panel admin',
-    });
+   const amount = parseFloat(delta);
+await supabase.rpc('admin_adjust_balance', {
+  p_user_id: userId,
+  p_amount: amount, // envía exactamente lo que escribas, positivo o negativo
+  p_note: amount >= 0 ? 'Recarga manual desde panel' : 'Descuento manual desde panel',
+});
+
 
     if (error) throw error;
 
