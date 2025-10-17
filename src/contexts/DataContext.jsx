@@ -1282,32 +1282,23 @@ async function getAvailableBalance(currency = 'USDC') {
 
  async function recalcAndRefreshBalances() {
   if (!user?.id) return;
+
+  console.log('[recalcAndRefreshBalances called]', new Date().toISOString());
+
   try {
     // intenta con param y sin param
     const r1 = await supabase.rpc('recalc_user_balances', { p_user_id: user.id });
     if (r1.error) await supabase.rpc('recalc_user_balances');
-  } catch {}
-  try { refreshBalances?.(); } catch {}
-}
-// 🔹 Suscripción en tiempo real a la tabla de balances
-useEffect(() => {
-  if (!user?.id) return;
-  const sub = supabase
-    .channel('balances-changes')
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'balances', filter: `user_id=eq.${user.id}` },
-      (payload) => {
-        console.log('[Realtime balance update]', payload);
-        refreshBalances?.();
-      }
-    )
-    .subscribe();
+  } catch (e) {
+    console.warn('[recalcAndRefreshBalances] RPC error:', e.message);
+  }
 
-  return () => {
-    supabase.removeChannel(sub);
-  };
-}, [user?.id]);
+  try {
+    await refreshBalances?.();
+  } catch (e) {
+    console.warn('[recalcAndRefreshBalances] refresh error:', e.message);
+  }
+}
 
 
   async function canActivateBot(amountUsd, currency = 'USDC') {
@@ -1507,13 +1498,13 @@ async function cancelBot(id) {
       });
     }
 
-    // 5️⃣ Refrescar UI en tiempo real
-    await Promise.all([
-      refreshBotActivations(),
-      refreshTransactions(),
-      recalcAndRefreshBalances(),
-    ]);
-    await refreshBalances?.();
+    // 5️⃣ Refrescar UI en tiempo real (sin recalc para evitar doble suma)
+await Promise.all([
+  refreshBotActivations(),
+  refreshTransactions(),
+  refreshBalances?.(),
+]);
+
 
     console.log('[cancelBot] Refund aplicado correctamente:', refund);
     return { ok: true, refund, fee };
