@@ -166,6 +166,26 @@ export function DataProvider({ children }) {
   /* ---------------- Estado negocio ---------------- */
   const [investments, setInvestments] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const lastSyncRef = useRef(0);
+const syncingRef = useRef(false);
+
+const syncPlanPayouts = useCallback(async () => {
+  const now = Date.now();
+  if (!user?.id || syncingRef.current) return;
+  if (now - lastSyncRef.current < 60 * 60 * 1000) return; // Evita loop: máx 1 sync por hora
+
+  syncingRef.current = true;
+  lastSyncRef.current = now;
+
+  try {
+    // 👉 aquí va el código que revisa inversiones activas o paga retornos
+  } catch (err) {
+    console.error("Error en syncPlanPayouts:", err);
+  } finally {
+    syncingRef.current = false;
+  }
+}, [user?.id]);
+
 
 // ---- Transacciones (fetch + insert seguro) ----
 const refreshTransactions = useCallback(async () => {
