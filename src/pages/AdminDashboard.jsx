@@ -529,8 +529,9 @@ export default function AdminDashboard() {
   };
 
  const adjustBalance = async (userId, deltaStr) => {
-const delta = parseFloat(String(deltaStr).replace(',', '.').trim());
-  if (!deltaStr || !Number.isFinite(delta)) {
+  const delta = parseFloat(String(deltaStr).replace(',', '.').trim());
+
+  if (!Number.isFinite(delta)) {
     toast({
       title: 'Monto inválido',
       description: 'Ingresa +100 para recargar o -50 para descontar.',
@@ -540,24 +541,33 @@ const delta = parseFloat(String(deltaStr).replace(',', '.').trim());
   }
 
   try {
-   const amount = parseFloat(delta);
-await supabase.rpc('admin_adjust_balance', {
-  p_user_id: userId,
-  p_amount: amount, // envía exactamente lo que escribas, positivo o negativo
-  p_note: amount >= 0 ? 'Recarga manual desde panel' : 'Descuento manual desde panel',
-});
+    // 🚫 Evitar montos 0
+    if (delta === 0) {
+      toast({
+        title: 'Monto 0',
+        description: 'Ingresa un valor distinto de 0.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
+    // ✅ Llamada al RPC
+    const { data, error } = await supabase.rpc('admin_adjust_balance', {
+      p_user_id: userId,
+      p_amount: delta, // positivo o negativo
+      p_note: delta >= 0 ? 'Recarga manual desde panel' : 'Descuento manual desde panel',
+    });
 
     if (error) throw error;
 
     if (data?.ok) {
       toast({
         title: 'Balance actualizado',
-        description: `Nuevo ajuste: ${delta >= 0 ? '+' : ''}${delta} USDC`,
+        description: `${delta >= 0 ? '+' : ''}${delta} USDC (${data.msg || 'OK'})`,
       });
     } else {
       toast({
-        title: 'Error',
+        title: 'Error en ajuste',
         description: data?.error || 'No se pudo ajustar el saldo',
         variant: 'destructive',
       });
@@ -565,16 +575,18 @@ await supabase.rpc('admin_adjust_balance', {
 
     await reloadAll();
   } catch (e) {
-    console.error(e);
+    console.error('[adjustBalance]', e);
     toast({
       title: 'Error ajustando balance',
-      description: e.message,
+      description: e.message || 'Fallo inesperado',
       variant: 'destructive',
     });
   } finally {
     setAdjustValues((v) => ({ ...v, [userId]: '' }));
   }
 };
+
+
 
 
 
