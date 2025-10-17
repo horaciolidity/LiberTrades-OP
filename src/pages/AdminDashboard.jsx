@@ -528,7 +528,8 @@ export default function AdminDashboard() {
     return Number(data?.usdc || 0);
   };
 
- const adjustBalance = async (userId, deltaStr) => {
+const adjustBalance = async (userId, deltaStr) => {
+  // 1) Parseo robusto del input (soporta “-100”, “-100,5”, etc.)
   const delta = parseFloat(String(deltaStr).replace(',', '.').trim());
 
   if (!Number.isFinite(delta)) {
@@ -540,18 +541,17 @@ export default function AdminDashboard() {
     return;
   }
 
-  try {
-    // 🚫 Evitar montos 0
-    if (delta === 0) {
-      toast({
-        title: 'Monto 0',
-        description: 'Ingresa un valor distinto de 0.',
-        variant: 'destructive',
-      });
-      return;
-    }
+  if (delta === 0) {
+    toast({
+      title: 'Monto 0',
+      description: 'Ingresa un valor distinto de 0.',
+      variant: 'destructive',
+    });
+    return;
+  }
 
-    // ✅ Llamada al RPC
+  try {
+    // 2) Llamada al RPC (¡OJO! Siempre destructurá data y error)
     const { data, error } = await supabase.rpc('admin_adjust_balance', {
       p_user_id: userId,
       p_amount: delta, // positivo o negativo
@@ -560,20 +560,34 @@ export default function AdminDashboard() {
 
     if (error) throw error;
 
-    if (data?.ok) {
-      toast({
-        title: 'Balance actualizado',
-        description: `${delta >= 0 ? '+' : ''}${delta} USDC (${data.msg || 'OK'})`,
-      });
-    } else {
+    if (!data?.ok) {
       toast({
         title: 'Error en ajuste',
         description: data?.error || 'No se pudo ajustar el saldo',
         variant: 'destructive',
       });
+      return;
     }
 
-    await reloadAll();
+    // 3) Feedback
+    const { new_balance, old_balance, msg } = data;
+    toast({
+      title: 'Balance actualizado',
+      description:
+        `${delta >= 0 ? '+' : ''}${delta} USDC • ${msg || 'OK'}` +
+        (Number.isFinite(new_balance) ? ` • Nuevo saldo: $${Number(new_balance).toFixed(2)}` : ''),
+    });
+
+    // 4) Actualización local INSTANTÁNEA (sin recargar todo)
+    if (Number.isFinite(new_balance)) {
+      setUsers(prev =>
+        prev.map(u => (u.id === userId ? { ...u, balance: Number(new_balance) } : u))
+      );
+    } else {
+      // Fallback: si por alguna razón no vino el new_balance, hacé un refresh suave
+      await new Promise(r => setTimeout(r, 400));
+      await fetchUsers();
+    }
   } catch (e) {
     console.error('[adjustBalance]', e);
     toast({
@@ -582,7 +596,8 @@ export default function AdminDashboard() {
       variant: 'destructive',
     });
   } finally {
-    setAdjustValues((v) => ({ ...v, [userId]: '' }));
+    // 5) Limpiar el input del usuario
+    setAdjustValues(v => ({ ...v, [userId]: '' }));
   }
 };
 
