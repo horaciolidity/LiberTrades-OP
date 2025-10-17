@@ -529,7 +529,7 @@ export default function AdminDashboard() {
   };
 
  const adjustBalance = async (userId, deltaStr) => {
-  const delta = Number(deltaStr);
+const delta = parseFloat(String(deltaStr).replace(',', '.').trim());
   if (!deltaStr || !Number.isFinite(delta)) {
     toast({
       title: 'Monto inválido',
