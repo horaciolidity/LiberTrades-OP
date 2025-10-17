@@ -529,7 +529,6 @@ export default function AdminDashboard() {
   };
 
 const adjustBalance = async (userId, deltaStr) => {
-  // 1) Parseo robusto del input (soporta “-100”, “-100,5”, etc.)
   const delta = parseFloat(String(deltaStr).replace(',', '.').trim());
 
   if (!Number.isFinite(delta)) {
@@ -551,43 +550,35 @@ const adjustBalance = async (userId, deltaStr) => {
   }
 
   try {
-    // 2) Llamada al RPC (¡OJO! Siempre destructurá data y error)
+    // 🔒 Ejecuta el RPC y espera confirmación real
     const { data, error } = await supabase.rpc('admin_adjust_balance', {
       p_user_id: userId,
-      p_amount: delta, // positivo o negativo
-      p_note: delta >= 0 ? 'Recarga manual desde panel' : 'Descuento manual desde panel',
+      p_amount: delta,
+      p_note:
+        delta >= 0
+          ? 'Recarga manual desde panel admin'
+          : 'Descuento manual desde panel admin',
     });
 
     if (error) throw error;
 
-    if (!data?.ok) {
+    if (data?.ok) {
       toast({
-        title: 'Error en ajuste',
+        title: 'Balance actualizado',
+        description: `${data.msg} | Nuevo saldo: ${data.new_balance?.toFixed(2)}`,
+      });
+    } else {
+      toast({
+        title: 'Error',
         description: data?.error || 'No se pudo ajustar el saldo',
         variant: 'destructive',
       });
-      return;
     }
 
-    // 3) Feedback
-    const { new_balance, old_balance, msg } = data;
-    toast({
-      title: 'Balance actualizado',
-      description:
-        `${delta >= 0 ? '+' : ''}${delta} USDC • ${msg || 'OK'}` +
-        (Number.isFinite(new_balance) ? ` • Nuevo saldo: $${Number(new_balance).toFixed(2)}` : ''),
-    });
-
-    // 4) Actualización local INSTANTÁNEA (sin recargar todo)
-    if (Number.isFinite(new_balance)) {
-      setUsers(prev =>
-        prev.map(u => (u.id === userId ? { ...u, balance: Number(new_balance) } : u))
-      );
-    } else {
-      // Fallback: si por alguna razón no vino el new_balance, hacé un refresh suave
-      await new Promise(r => setTimeout(r, 400));
-      await fetchUsers();
-    }
+    // ✅ Espera 300 ms antes de recargar lista
+    setTimeout(async () => {
+      await reloadAll(true);
+    }, 300);
   } catch (e) {
     console.error('[adjustBalance]', e);
     toast({
@@ -596,13 +587,9 @@ const adjustBalance = async (userId, deltaStr) => {
       variant: 'destructive',
     });
   } finally {
-    // 5) Limpiar el input del usuario
-    setAdjustValues(v => ({ ...v, [userId]: '' }));
+    setAdjustValues((v) => ({ ...v, [userId]: '' }));
   }
 };
-
-
-
 
 
 const approveDeposit = async (tx) => {
