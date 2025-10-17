@@ -573,34 +573,23 @@ export default function AdminDashboard() {
     }
   };
 
-  const approveDeposit = async (tx) => {
-    try {
-      const { data: rpcData, error: rpcErr } = await supabase.rpc('approve_deposit', { p_tx_id: tx.id });
-      if (!rpcErr && rpcData && rpcData.ok) {
-        toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
-        await maybeRefreshSelf(tx.user_id);
-        await reloadAll();
-        return;
-      }
-      // Fallback manual con upsert
-      const current = await getBalanceOrZero(tx.user_id);
-      const newUsdc = current + Number(tx.amount || 0);
-      await upsertBalance(tx.user_id, newUsdc);
-
-      const { error: tErr } = await supabase
-        .from(TX_TABLE)
-        .update({ status: 'completed', updated_at: new Date().toISOString() })
-        .eq('id', tx.id);
-      if (tErr) throw tErr;
-
-      toast({ title: 'Depósito aprobado (fallback)', description: `Acreditado $${fmt(tx.amount)}` });
-      await maybeRefreshSelf(tx.user_id);
-      await reloadAll();
-    } catch (e) {
-      console.error(e);
-      toast({ title: 'Error aprobando depósito', description: e.message, variant: 'destructive' });
+const approveDeposit = async (tx) => {
+  try {
+    const { data, error } = await supabase.rpc('approve_deposit', { p_tx_id: tx.id });
+    if (error) throw error;
+    if (data?.ok) {
+      toast({ title: 'Depósito aprobado', description: `Acreditado $${fmt(tx.amount)}` });
     }
-  };
+    await maybeRefreshSelf(tx.user_id);
+    await reloadAll();
+  } catch (e) {
+    console.error(e);
+    toast({ title: 'Error aprobando depósito', description: e.message, variant: 'destructive' });
+  }
+};
+
+
+
 
   const approveWithdrawal = async (tx) => {
     try {
