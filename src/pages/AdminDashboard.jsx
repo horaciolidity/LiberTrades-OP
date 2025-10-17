@@ -528,44 +528,55 @@ export default function AdminDashboard() {
     return Number(data?.usdc || 0);
   };
 
-  const adjustBalance = async (userId, deltaStr) => {
-    const delta = Number(deltaStr);
-    if (!deltaStr || !Number.isFinite(delta)) {
-      toast({ title: 'Monto inválido', description: 'Ingresa +100 o -50', variant: 'destructive' });
-      return;
+ const adjustBalance = async (userId, deltaStr) => {
+  const delta = Number(deltaStr);
+  if (!deltaStr || !Number.isFinite(delta)) {
+    toast({
+      title: 'Monto inválido',
+      description: 'Ingresa +100 para recargar o -50 para descontar.',
+      variant: 'destructive',
+    });
+    return;
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('admin_adjust_balance', {
+      p_user_id: userId,
+      p_amount: delta,
+      p_note: delta >= 0
+        ? 'Recarga manual desde panel admin'
+        : 'Descuento manual desde panel admin',
+    });
+
+    if (error) throw error;
+
+    if (data?.ok) {
+      toast({
+        title: 'Balance actualizado',
+        description: `Nuevo ajuste: ${delta >= 0 ? '+' : ''}${delta} USDC`,
+      });
+    } else {
+      toast({
+        title: 'Error',
+        description: data?.error || 'No se pudo ajustar el saldo',
+        variant: 'destructive',
+      });
     }
-    try {
-      const current = await getBalanceOrZero(userId);
-      const newUsdc = current + delta;
-      if (newUsdc < 0) {
-        toast({ title: 'Saldo insuficiente', description: 'No puedes dejar el saldo negativo', variant: 'destructive' });
-        return;
-      }
 
-      await upsertBalance(userId, newUsdc);
+    await reloadAll();
+  } catch (e) {
+    console.error(e);
+    toast({
+      title: 'Error ajustando balance',
+      description: e.message,
+      variant: 'destructive',
+    });
+  } finally {
+    setAdjustValues((v) => ({ ...v, [userId]: '' }));
+  }
+};
 
-      // TIPOS válidos: deposit|withdrawal|plan_purchase|admin_credit|refund|fee|transfer|other
-      const positive = delta >= 0;
-      const insertTx = {
-        user_id: userId,
-        kind: positive ? 'admin_credit' : 'fee',
-        amount: Math.abs(delta),
-        status: 'completed',
-        currency: 'USDC',
-        description: positive ? 'Ajuste admin (+)' : 'Ajuste admin (-)',
-      };
-      const { error: tErr } = await supabase.from(TX_TABLE).insert(insertTx);
-      if (tErr) throw tErr;
 
-      toast({ title: 'Balance actualizado', description: `Nuevo saldo: $${fmt(newUsdc)}` });
-      await maybeRefreshSelf(userId);
-      await reloadAll();
-      setAdjustValues((v) => ({ ...v, [userId]: '' }));
-    } catch (e) {
-      console.error(e);
-      toast({ title: 'Error ajustando balance', description: e.message, variant: 'destructive' });
-    }
-  };
 
 const approveDeposit = async (tx) => {
   try {
