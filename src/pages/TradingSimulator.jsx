@@ -402,8 +402,7 @@ const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) =
     const qty = amountUsd / entry;
     const pnl = side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
 
-    // 💰 Devuelve el capital invertido + ganancia/pérdida
-    tradingLogic.setVirtualBalance(prev => prev + amountUsd + pnl);
+   
 
     // 🔹 Cierra el trade dentro del hook
     tradingLogic.closeTrade(tradeId, true);
@@ -479,8 +478,7 @@ const onTradeFromPanel = async (payload) => {
       return;
     }
 
-    // 💸 Descuenta el monto del saldo virtual
-    tradingLogic.setVirtualBalance(prev => prev - amt);
+    
 
     // 🔹 Ejecuta la operación demo
     tradingLogic.executeTrade({

@@ -28,8 +28,6 @@ export const useTradingLogic = () => {
   const [isTrading, setIsTrading] = useState(false);
   const [trades, setTrades] = useState([]);
   const [virtualBalance, setVirtualBalance] = useState(10000);
-
-  // 🔹 Ahora el modo se controla dinámicamente desde el componente padre
   const [isRealMode, setIsRealMode] = useState(false);
 
   /* ---------------- Historial de precios ---------------- */
@@ -124,66 +122,54 @@ export const useTradingLogic = () => {
       if (typeof arg2 === 'number' && Number.isFinite(arg2)) providedClosePrice = Number(arg2);
       else if (typeof arg2 === 'boolean') manual = arg2;
 
-      setTrades((prevTrades) =>
-        prevTrades.map((t) => {
-          if (t.id !== tradeId || t.status !== 'open') return t;
+      const t = trades.find((x) => x.id === tradeId && x.status === 'open');
+      if (!t) return;
 
-          const baseSym = (t.pair.split?.('/')?.[0] || 'BTC').toUpperCase();
-          const live = num(cryptoPrices?.[baseSym]?.price);
-          const currentPrice = Number.isFinite(providedClosePrice) ? providedClosePrice : live;
-          if (!currentPrice) return t;
+      const baseSym = (t.pair.split?.('/')?.[0] || 'BTC').toUpperCase();
+      const live = num(cryptoPrices?.[baseSym]?.price);
+      const currentPrice = Number.isFinite(providedClosePrice) ? providedClosePrice : live;
+      if (!currentPrice) return;
 
-          // Calcular PnL
-          const pnlPct =
-            t.type === 'buy'
-              ? (currentPrice - t.priceAtExecution) / t.priceAtExecution
-              : (t.priceAtExecution - currentPrice) / t.priceAtExecution;
+      // Calcular PnL
+      const pnlPct =
+        t.type === 'buy'
+          ? (currentPrice - t.priceAtExecution) / t.priceAtExecution
+          : (t.priceAtExecution - currentPrice) / t.priceAtExecution;
 
-          let profit = clampTiny(round2(pnlPct * t.amount));
+      const profit = clampTiny(round2(pnlPct * t.amount));
 
-          (async () => {
-            try {
-              if (isRealMode) {
-                // ✅ Solo aplica la diferencia (PnL)
-                await updateBalanceGlobal(profit, 'USDC', true, 'trade_pnl', {
-                  pair: t.pair,
-                  trade_id: t.id,
-                  profit,
-                  reference_id: `trade_pnl:${user.id}:${t.id}`,
-                });
-
-                const { data, error } = await supabase
-                  .from('balances')
-                  .select('usdc')
-                  .eq('user_id', user.id)
-                  .single();
-                if (!error && data) console.log('[Balance actualizado]', data.usdc);
-              } else {
-                // Solo afecta saldo virtual
-                setVirtualBalance((prevBal) => round2(prevBal + profit));
-              }
-            } catch (err) {
-              console.warn('[closeTrade] Error al devolver saldo:', err.message);
-            }
-          })();
-
-          toast({
-            title: `Trade cerrado ${manual ? '(Manual)' : ''}`,
-            description: `PnL: ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} USDC`,
-            variant: profit >= 0 ? 'default' : 'destructive',
-          });
-
-          return {
-            ...t,
-            status: 'closed',
+      try {
+        if (isRealMode) {
+          // ✅ Solo aplica la diferencia (PnL)
+          await updateBalanceGlobal(profit, 'USDC', true, 'trade_pnl', {
+            pair: t.pair,
+            trade_id: t.id,
             profit,
-            priceAtClose: currentPrice,
-            closeAt: Date.now(),
-          };
-        })
+            reference_id: `trade_pnl:${user.id}:${t.id}`,
+          });
+        } else {
+          // 💰 Devuelve el capital + ganancia/pérdida
+          setVirtualBalance((prevBal) => round2(prevBal + t.amount + profit));
+        }
+      } catch (err) {
+        console.warn('[closeTrade] Error al devolver saldo:', err.message);
+      }
+
+      setTrades((prev) =>
+        prev.map((x) =>
+          x.id === tradeId
+            ? { ...x, status: 'closed', profit, priceAtClose: currentPrice, closeAt: Date.now() }
+            : x
+        )
       );
+
+      toast({
+        title: `Trade cerrado ${manual ? '(Manual)' : ''}`,
+        description: `PnL: ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} USDC`,
+        variant: profit >= 0 ? 'default' : 'destructive',
+      });
     },
-    [cryptoPrices, updateBalanceGlobal, user?.id, isRealMode]
+    [cryptoPrices, updateBalanceGlobal, user?.id, isRealMode, trades]
   );
 
   /* ---------------- Autocierre por tiempo ---------------- */
