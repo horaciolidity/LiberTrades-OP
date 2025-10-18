@@ -183,6 +183,11 @@ useEffect(() => {
     }
     setRealBalance(Number(balanceRow?.usdc ?? 0));
 
+
+     // 🟨 ADVERTENCIA si el saldo es negativo
+  if (Number(balanceRow?.usdc ?? 0) < 0)
+    console.warn('[Saldo negativo detectado]', balanceRow);
+
     const { data: tradesData, error: trErr } = await supabase
       .from('trades')
       .select('*')
@@ -447,14 +452,18 @@ const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) =
       console.log('[handleCloseTrade ✅]', { entry, live, pnl, totalReturn });
 
       // 🔹 Devuelve monto + PnL con persistencia segura
-      await updateBalanceGlobal(totalReturn, 'USDC', true, 'trade_close', {
-        trade_id: tradeId,
-        pair: tr.pair,
-        entry_price: entry,
-        close_price: live,
-        profit: pnl,
-        reference_id: `trade_close:${user.id}:${tradeId}`,
-      });
+      // ✅ No ejecutar persistencia: el RPC close_trade ya acredita capital + PnL
+// Solo refrescamos el saldo para actualizar visualmente
+await updateBalanceGlobal(totalReturn, 'USDC', false, 'trade_close', {
+  trade_id: tradeId,
+  pair: tr.pair,
+  entry_price: entry,
+  close_price: live,
+  profit: pnl,
+  reference_id: `trade_close:${user.id}:${tradeId}`,
+});
+await fetchRealData();
+
 
       playSound?.('success');
       await fetchRealData();
