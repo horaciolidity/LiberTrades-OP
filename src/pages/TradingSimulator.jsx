@@ -451,18 +451,24 @@ const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) =
 
       console.log('[handleCloseTrade ✅]', { entry, live, pnl, totalReturn });
 
-      // 🔹 Devuelve monto + PnL con persistencia segura
-      // ✅ No ejecutar persistencia: el RPC close_trade ya acredita capital + PnL
-// Solo refrescamos el saldo para actualizar visualmente
-await updateBalanceGlobal(totalReturn, 'USDC', false, 'trade_close', {
-  trade_id: tradeId,
-  pair: tr.pair,
-  entry_price: entry,
-  close_price: live,
-  profit: pnl,
-  reference_id: `trade_close:${user.id}:${tradeId}`,
-});
+// ✅ Verificamos si el backend ya manejó el crédito (pnl o balance)
+const backendAcredita = res?.balance != null || res?.pnl_usd != null || res?.ok === true;
+
+// 🔹 Solo actualizar visualmente si el backend NO devolvió datos contables
+if (!backendAcredita) {
+  await updateBalanceGlobal(totalReturn, 'USDC', false, 'trade_close', {
+    trade_id: tradeId,
+    pair: tr.pair,
+    entry_price: entry,
+    close_price: live,
+    profit: pnl,
+    reference_id: `trade_close:${user.id}:${tradeId}`,
+  });
+}
+
+// 🔁 Refrescar saldo siempre desde la BD para mantener consistencia
 await fetchRealData();
+
 
 
       playSound?.('success');
