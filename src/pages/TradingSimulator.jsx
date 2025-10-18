@@ -385,31 +385,35 @@ await updateBalanceGlobal(
     fetchRealData();
   };
 
+/* =================== Trading actions =================== */
+
+// 🟩 Cerrar trade (demo o real)
 const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) => {
- if (mode === 'demo') {
-  const tr = tradingLogic.trades.find((x) => x.id === tradeId);
-  if (!tr) return true;
+  /* ===== MODO DEMO ===== */
+  if (mode === 'demo') {
+    const tr = tradingLogic.trades.find((x) => x.id === tradeId);
+    if (!tr) return true;
 
-  const base = parseBaseFromPair(tr.pair || selectedPair);
-  const live = Number(mergedPrices?.[base]?.price ?? 0);
-  const entry = Number(tr.priceAtExecution ?? tr.price ?? 0);
-  const amountUsd = Number(tr.amountAtOpen ?? tr.amount ?? 0);
-  const side = String(tr.type || '').toLowerCase();
-  const qty = amountUsd / entry;
-  const pnl = side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
-  const totalReturn = amountUsd + pnl;
+    const base = parseBaseFromPair(tr.pair || selectedPair);
+    const live = Number(mergedPrices?.[base]?.price ?? 0);
+    const entry = Number(tr.priceAtExecution ?? tr.price ?? 0);
+    const amountUsd = Number(tr.amountAtOpen ?? tr.amount ?? 0);
+    const side = String(tr.type || '').toLowerCase();
+    const qty = amountUsd / entry;
+    const pnl = side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
 
-  // 🔹 Actualiza el balance virtual directamente
-  tradingLogic.setVirtualBalance((prev) => prev + totalReturn);
+    // 💰 Devuelve el capital invertido + ganancia/pérdida
+    tradingLogic.setVirtualBalance(prev => prev + amountUsd + pnl);
 
-  // 🔹 Cierra el trade dentro del hook
-  tradingLogic.closeTrade(tradeId, true);
+    // 🔹 Cierra el trade dentro del hook
+    tradingLogic.closeTrade(tradeId, true);
 
-  console.log('[DEMO closeTrade ✅]', { entry, live, pnl, totalReturn });
-  playSound?.('success');
-  return true;
-}
+    console.log('[DEMO closeTrade ✅]', { entry, live, pnl, amountUsd, newBalance: tradingLogic.virtualBalance });
+    playSound?.('success');
+    return true;
+  }
 
+  /* ===== MODO REAL ===== */
   if (!tradeId) return false;
 
   try {
@@ -434,31 +438,8 @@ const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) =
       res?.status === 'closed';
 
     if (ok) {
-      const tr = realTrades.find((x) => x.id === tradeId);
-      if (!tr) {
-        console.warn('[handleCloseTrade] trade not found');
-        return false;
-      }
-
-      const base = parseBaseFromPair(tr.pair);
-      const live = Number(mergedPrices?.[base]?.price ?? 0);
-      const entry = Number(tr.price ?? tr.priceAtExecution ?? 0);
-      const amountUsd = Number(tr.amount ?? tr.amount_usd ?? tr.amountAtOpen ?? 0);
-      const side = String(tr.type || '').toLowerCase();
-      const qty = amountUsd / entry;
-      const pnl = side === 'sell' ? (entry - live) * qty : (live - entry) * qty;
-      const totalReturn = amountUsd + pnl;
-
-      console.log('[handleCloseTrade ✅]', { entry, live, pnl, totalReturn });
-
-// ✅ Verificamos si el backend ya manejó el crédito (pnl o balance)
-const backendAcredita = res?.balance != null || res?.pnl_usd != null || res?.ok === true;
-
-// El RPC ya acreditó capital + PnL → solo refrescamos UI
-await fetchRealData();
-
-      playSound?.('success');
       await fetchRealData();
+      playSound?.('success');
       return true;
     }
 
@@ -479,27 +460,55 @@ await fetchRealData();
 };
 
 
+// 🟦 Abrir trade desde el panel
+const onTradeFromPanel = async (payload) => {
+  /* ===== MODO DEMO ===== */
+  if (mode === 'demo') {
+    const amt = Number(payload.amount);
+    const price = Number(payload.price);
 
-  // Bridge único para el Panel (demo/real)
-  const onTradeFromPanel = async (payload) => {
-    if (mode === 'demo') {
-      tradingLogic.executeTrade({
-        pair: payload.pair,
-        type: payload.type,
-        amount: Number(payload.amount),
-        priceAtExecution: Number(payload.price),
-        duration: payload.duration,
-      });
+    if (!Number.isFinite(amt) || amt <= 0) {
+      console.warn('[Demo trade] monto inválido');
       return;
     }
-    // REAL
-    await handleTrade({
+
+    // ❌ Evita operar si no hay saldo suficiente
+    if (amt > tradingLogic.virtualBalance) {
+      console.warn('Saldo insuficiente en modo demo');
+      playSound?.('error');
+      return;
+    }
+
+    // 💸 Descuenta el monto del saldo virtual
+    tradingLogic.setVirtualBalance(prev => prev - amt);
+
+    // 🔹 Ejecuta la operación demo
+    tradingLogic.executeTrade({
       pair: payload.pair,
       type: payload.type,
-      amount: Number(payload.amount),
-      price: Number(payload.price),
+      amount: amt,
+      priceAtExecution: price,
+      duration: payload.duration,
     });
-  };
+
+    console.log('[DEMO trade opened]', { pair: payload.pair, amt, price, newBalance: tradingLogic.virtualBalance });
+    playSound?.('invest');
+    return;
+  }
+
+  /* ===== MODO REAL ===== */
+  await handleTrade({
+    pair: payload.pair,
+    type: payload.type,
+    amount: Number(payload.amount),
+    price: Number(payload.price),
+  });
+};
+
+
+
+
+  
 
   // =================== Stats (con unrealized) ===================
   const demoRealized = useMemo(
