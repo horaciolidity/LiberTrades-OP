@@ -404,13 +404,25 @@ const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) =
 
    
 
-    // 🔹 Cierra el trade dentro del hook
-    tradingLogic.closeTrade(tradeId, true);
+   // 🔹 Cierra el trade dentro del hook
+  tradingLogic.closeTrade(tradeId, true);
 
-    console.log('[DEMO closeTrade ✅]', { entry, live, pnl, amountUsd, newBalance: tradingLogic.virtualBalance });
-    playSound?.('success');
-    return true;
-  }
+  // 💰 Ajustar saldo demo para reflejar capital + PnL
+  const newBalance = tradingLogic.virtualBalance + amountUsd + pnl;
+  tradingLogic.setVirtualBalance(newBalance);
+
+  console.log('[DEMO closeTrade ✅]', {
+    entry,
+    live,
+    pnl,
+    amountUsd,
+    newBalance,
+  });
+
+  playSound?.('success');
+  return true;
+}
+
 
   /* ===== MODO REAL ===== */
   if (!tradeId) return false;
@@ -480,14 +492,15 @@ const onTradeFromPanel = async (payload) => {
 
     
 
-    // 🔹 Ejecuta la operación demo
-    tradingLogic.executeTrade({
-      pair: payload.pair,
-      type: payload.type,
-      amount: amt,
-      priceAtExecution: price,
-      duration: payload.duration,
-    });
+    // 🔹 Ejecuta correctamente la operación demo (sin romper hook)
+tradingLogic.setSelectedPair(payload.pair);
+tradingLogic.setTradeType(payload.type);
+tradingLogic.setTradeAmount(amt);
+tradingLogic.setTradeDuration(payload.duration || 60);
+
+// Ejecuta con el modo interno del hook (usa los states previos)
+await tradingLogic.executeTrade();
+
 
     console.log('[DEMO trade opened]', { pair: payload.pair, amt, price, newBalance: tradingLogic.virtualBalance });
     playSound?.('invest');
