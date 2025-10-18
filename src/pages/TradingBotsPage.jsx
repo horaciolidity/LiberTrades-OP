@@ -471,10 +471,15 @@ await updateBalanceGlobal(
     });
 
     if (!res?.ok) {
-      toast({ title: 'Error', description: res?.msg || 'No se pudo activar el bot.', variant: 'destructive' });
-      await updateBalance(amount); // revertir si falla
-      return;
-    }
+  toast({ title: 'Error', description: res?.msg || 'No se pudo activar el bot.', variant: 'destructive' });
+  await updateBalanceGlobal(amount, 'USDC', true, 'bot_activate_revert', {
+    bot_id: selectedBot.id,
+    bot_name: selectedBot.name,
+    reason: 'activation_failed'
+  });
+  return;
+}
+
 
     toast({ title: 'Bot activado', description: `${bot.name} por $${fmt(amount)}.` });
     setSelectedBot(null);
@@ -540,7 +545,7 @@ const localUpdateBalance = (delta = 0) => {
         .eq('user_id', user?.id);
     }
 
-   await updateBalanceGlobal(
+await updateBalanceGlobal(
   refund,
   'USDC',
   true,
@@ -650,10 +655,35 @@ await updateBalanceGlobal(
 
   const summaryPnlValue = showNet ? totalBotNet : totalBotProfit;
   const summaryPnlLabel = showNet ? 'Ganancias (neto no retirado)' : 'Ganancias (bruto)';
+// 🚧 Toggle rápido
+const MAINTENANCE_MODE = true; // <-- ponelo en false cuando quieras volver a mostrar la página normal
+
+if (MAINTENANCE_MODE) {
+  return (
+    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-slate-950 text-center text-white p-6">
+      <h1 className="text-3xl font-bold mb-3 flex items-center justify-center">
+        <Gauge className="w-8 h-8 text-yellow-400 mr-3" />
+        Módulo en Mantenimiento
+      </h1>
+      <p className="text-slate-300 mb-6 leading-relaxed max-w-md mx-auto">
+        Estamos realizando mejoras y optimizaciones en este módulo para brindarte una experiencia más estable y eficiente.  
+        Volverá a estar disponible muy pronto.
+      </p>
+      <Button
+        variant="outline"
+        className="text-white border-slate-500 hover:bg-slate-800"
+        onClick={() => window.history.back()}
+      >
+        Volver atrás
+      </Button>
+    </div>
+  );
+}
 
   return (
     <>
 
+    <MaintenanceOverlay /> 
 
     
       <div className="space-y-8">

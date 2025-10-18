@@ -197,6 +197,8 @@ const refreshTransactions = useCallback(async () => {
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(100);
+
+
     if (error) throw error;
     setTransactions(Array.isArray(data) ? data : []);
   } catch (e) {
@@ -271,10 +273,7 @@ useEffect(() => {
   const guess = balances?.USDC || balances?.USD || 0;
   setLiveBalances({ USDC: guess, USD: guess });
 }, [balances]);
-// 🔹 Función global para modificar saldo en tiempo real
-// ✅ Actualiza saldo global con opción de persistencia en Supabase
-// 🔹 Función global para modificar saldo en tiempo real (v2)
-// ✅ Versión corregida: sincronizada solo con Supabase, sin doble descuento
+
 const updateBalanceGlobal = useCallback(
   async (delta, currency = 'USDC', persist = true, kind = null, meta = {}) => {
     if (!user?.id) return;
@@ -298,6 +297,13 @@ const updateBalanceGlobal = useCallback(
         p_kind: txKind,
         p_meta: meta,
       });
+
+      // 🔹 Reflejo visual inmediato antes de esperar al backend
+setLiveBalances((prev) => ({
+  ...prev,
+  [currency]: (prev?.[currency] || 0) + delta,
+}));
+
 
       if (error) throw error;
 
