@@ -29,7 +29,7 @@ export const useTradingLogic = () => {
   const [trades, setTrades] = useState([]);
   const [virtualBalance, setVirtualBalance] = useState(10000);
 
-  // 🔹 Ahora el modo se controla dinámicamente desde el componente padre
+  // 🔹 Se controla desde el componente padre (simulador)
   const [isRealMode, setIsRealMode] = useState(false);
 
   /* ---------------- Historial de precios ---------------- */
@@ -60,58 +60,70 @@ export const useTradingLogic = () => {
   /* ===================================================
      Abrir Trade (Buy / Sell)
      =================================================== */
-  const executeTrade = useCallback(async () => {
-    const amount = num(tradeAmount);
-    if (!amount || amount <= 0) {
-      toast({ title: 'Error', description: 'Ingresa un monto válido', variant: 'destructive' });
-      return;
-    }
-
-    const baseSym = (selectedPair.split?.('/')?.[0] || 'BTC').toUpperCase();
-    const currentPrice = num(cryptoPrices?.[baseSym]?.price);
-    if (!currentPrice) {
-      toast({ title: 'Error', description: 'No se pudo obtener el precio actual', variant: 'destructive' });
-      return;
-    }
-
-    setIsTrading(true);
-
-    try {
-      if (isRealMode) {
-        console.log('[updateBalanceGlobal] trade_open', -amount, 'USDC');
-        await updateBalanceGlobal(-amount, 'USDC', true, 'trade_open', { pair: selectedPair });
-      } else {
-        setVirtualBalance((prev) => Math.max(0, prev - amount));
+  // 👉 acepta overrides opcionales para evitar condiciones de carrera en DEMO
+  const executeTrade = useCallback(
+    async (
+      amountOverride = null,
+      typeOverride = null,
+      pairOverride = null,
+      durationOverride = null
+    ) => {
+      const amount = num(amountOverride ?? tradeAmount);
+      if (!amount || amount <= 0) {
+        toast({ title: 'Error', description: 'Ingresa un monto válido', variant: 'destructive' });
+        return;
       }
 
-      const now = Date.now();
-      const durSec = Math.max(1, num(tradeDuration) || 60);
+      const pair = String(pairOverride ?? selectedPair);
+      const type = String(typeOverride ?? tradeType);
+      const durSec = Math.max(1, num(durationOverride ?? tradeDuration) || 60);
 
-      const newTrade = {
-        id: String(now),
-        pair: selectedPair,
-        type: tradeType,
-        amount,
-        priceAtExecution: currentPrice,
-        timestamp: now,
-        duration: durSec * 1000,
-        closeAt: now + durSec * 1000,
-        status: 'open',
-        profit: 0,
-      };
+      const baseSym = (pair.split?.('/')?.[0] || 'BTC').toUpperCase();
+      const currentPrice = num(cryptoPrices?.[baseSym]?.price);
+      if (!currentPrice) {
+        toast({ title: 'Error', description: 'No se pudo obtener el precio actual', variant: 'destructive' });
+        return;
+      }
 
-      setTrades((prev) => [newTrade, ...prev]);
-      toast({
-        title: 'Trade abierto',
-        description: `${tradeType.toUpperCase()} $${amount.toFixed(2)} ${baseSym} a $${currentPrice.toFixed(2)}`,
-      });
-    } catch (err) {
-      console.error('[executeTrade] Error:', err.message);
-      toast({ title: 'Error', description: 'No se pudo abrir el trade', variant: 'destructive' });
-    } finally {
-      setIsTrading(false);
-    }
-  }, [tradeAmount, selectedPair, cryptoPrices, tradeType, tradeDuration, updateBalanceGlobal, isRealMode]);
+      setIsTrading(true);
+
+      try {
+        if (isRealMode) {
+          // ⚠️ REAL: se mantiene igual (debita capital en saldo real)
+          await updateBalanceGlobal(-amount, 'USDC', true, 'trade_open', { pair });
+        } else {
+          // DEMO: descontar capital al abrir
+          setVirtualBalance((prev) => Math.max(0, prev - amount));
+        }
+
+        const now = Date.now();
+        const newTrade = {
+          id: String(now),
+          pair,
+          type,
+          amount,
+          priceAtExecution: currentPrice,
+          timestamp: now,
+          duration: durSec * 1000,
+          closeAt: now + durSec * 1000,
+          status: 'open',
+          profit: 0,
+        };
+
+        setTrades((prev) => [newTrade, ...prev]);
+        toast({
+          title: 'Trade abierto',
+          description: `${type.toUpperCase()} $${amount.toFixed(2)} ${baseSym} a $${currentPrice.toFixed(2)}`,
+        });
+      } catch (err) {
+        console.error('[executeTrade] Error:', err.message);
+        toast({ title: 'Error', description: 'No se pudo abrir el trade', variant: 'destructive' });
+      } finally {
+        setIsTrading(false);
+      }
+    },
+    [tradeAmount, selectedPair, cryptoPrices, tradeType, tradeDuration, updateBalanceGlobal, isRealMode]
+  );
 
   /* ===================================================
      Cerrar Trade (automático o manual)
@@ -144,7 +156,7 @@ export const useTradingLogic = () => {
           (async () => {
             try {
               if (isRealMode) {
-                // ✅ Solo aplica la diferencia (PnL)
+                // ✅ REAL (igual que antes): sólo aplica la diferencia (PnL)
                 await updateBalanceGlobal(profit, 'USDC', true, 'trade_pnl', {
                   pair: t.pair,
                   trade_id: t.id,
@@ -159,8 +171,9 @@ export const useTradingLogic = () => {
                   .single();
                 if (!error && data) console.log('[Balance actualizado]', data.usdc);
               } else {
-                // Solo afecta saldo virtual
-                setVirtualBalance((prevBal) => round2(prevBal + profit));
+                // 🟩 DEMO: devolver capital + PnL
+                const capitalUsd = num(t.amount);
+                setVirtualBalance((prevBal) => round2(prevBal + capitalUsd + profit));
               }
             } catch (err) {
               console.warn('[closeTrade] Error al devolver saldo:', err.message);
@@ -228,7 +241,7 @@ export const useTradingLogic = () => {
     setVirtualBalance,
     priceHistory,
     cryptoPrices,
-    executeTrade,
+    executeTrade,     // ahora acepta overrides opcionales
     closeTrade,
     resetBalance,
     isRealMode,

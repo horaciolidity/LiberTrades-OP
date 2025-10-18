@@ -472,6 +472,7 @@ const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) =
 
 
 // 🟦 Abrir trade desde el panel
+// 🟦 Abrir trade desde el panel
 const onTradeFromPanel = async (payload) => {
   /* ===== MODO DEMO ===== */
   if (mode === 'demo') {
@@ -483,29 +484,33 @@ const onTradeFromPanel = async (payload) => {
       return;
     }
 
-    // ❌ Evita operar si no hay saldo suficiente
     if (amt > tradingLogic.virtualBalance) {
       console.warn('Saldo insuficiente en modo demo');
       playSound?.('error');
       return;
     }
 
-    
+    // ✅ Ejecuta el trade demo sin tocar los estados manualmente
+    await tradingLogic.executeTrade(
+      amt,
+      payload.type,
+      payload.pair,
+      payload.duration || 60
+    );
 
-    // 🔹 Ejecuta correctamente la operación demo (sin romper hook)
-tradingLogic.setSelectedPair(payload.pair);
-tradingLogic.setTradeType(payload.type);
-tradingLogic.setTradeAmount(amt);
-tradingLogic.setTradeDuration(payload.duration || 60);
+    console.log('[DEMO trade opened ✅]', {
+      pair: payload.pair,
+      amt,
+      price,
+      newBalance: tradingLogic.virtualBalance,
+    });
 
-// Ejecuta con el modo interno del hook (usa los states previos)
-await tradingLogic.executeTrade();
-
-
-    console.log('[DEMO trade opened]', { pair: payload.pair, amt, price, newBalance: tradingLogic.virtualBalance });
     playSound?.('invest');
     return;
   }
+
+  
+
 
   /* ===== MODO REAL ===== */
   await handleTrade({
