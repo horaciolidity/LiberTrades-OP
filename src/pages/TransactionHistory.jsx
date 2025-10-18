@@ -76,7 +76,11 @@ const TransactionHistory = () => {
     const inv = Array.isArray(ctxInvestments)  ? ctxInvestments  : [];
     const userTx  = tx.filter(t => (t.user_id ?? t.userId ?? uid) === uid);
     const userInv = inv.filter(i => (i.user_id ?? i.userId ?? uid) === uid);
-    setTransactions(userTx);
+    const userTxClean = userTx.filter(
+    t => !(t.type?.startsWith('trade_') || t.kind?.startsWith('trade_') || t.referenceType === 'trade')
+  );
+    setTransactions(userTxClean);
+
     setInvestments(userInv);
     setFilteredTransactions(userTx);
   }, [ctxTransactions, ctxInvestments, user?.id]);
