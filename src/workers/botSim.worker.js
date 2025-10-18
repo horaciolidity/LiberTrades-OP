@@ -16,6 +16,11 @@ let state = {
   maxItems: 40,
 };
 
+// 🔹 Acumuladores y control de flush
+let pnlBuffer = {};       // { actId: totalPnL }
+let lastFlushAt = 0;
+const FLUSH_INTERVAL_MS = 60_000;
+
 let timer = null;
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -47,6 +52,24 @@ function emitSnapshot(reason = 'snapshot') {
   });
 }
 
+/* =====================================================
+   🔁 FLUSH acumulado de PnL (cada minuto o al cancelar)
+===================================================== */
+function flushPnL(force = false) {
+  const now = Date.now();
+  const elapsed = now - lastFlushAt;
+  if (!force && elapsed < FLUSH_INTERVAL_MS) return;
+  for (const [actId, pnl] of Object.entries(pnlBuffer)) {
+    if (!pnl || Math.abs(pnl) < 0.01) continue;
+    self.postMessage({ type: 'flushPnl', actId, total: pnl });
+    pnlBuffer[actId] = 0;
+  }
+  lastFlushAt = now;
+}
+
+/* =====================================================
+   🧠 Lógica principal de simulación
+===================================================== */
 function tick() {
   const priceDelta = {};
   for (const k of Object.keys(state.prices)) {
@@ -63,7 +86,6 @@ function tick() {
 
   for (const a of state.activations) {
     if (String(a.status || '').toLowerCase() !== 'active') continue;
-
     const list = state.trades[a.id] || [];
 
     // 🔴 Cierre de trades (10% de probabilidad por tick)
@@ -96,8 +118,8 @@ function tick() {
 
         tradeDeltas.push({ actId: a.id, change: 'close', pnl, pair: t.pair, id: t.id });
 
-        // 📌 Impacto en saldo real
-        self.postMessage({ type: 'balanceImpact', actId: a.id, pnl });
+        // Acumular al buffer y emitir flush eventual
+        pnlBuffer[a.id] = (pnlBuffer[a.id] || 0) + pnl;
       }
     }
 
@@ -119,9 +141,11 @@ function tick() {
     }
   }
 
+  // 🔁 Emitir cambios y flush periódico
   if (Object.keys(priceDelta).length || tradeDeltas.length || payoutDeltas.length) {
     self.postMessage({ type: 'delta', priceDelta, tradeDeltas, payoutDeltas });
   }
+  flushPnL();
 }
 
 function start() {
@@ -138,6 +162,9 @@ function stop() {
   self.postMessage({ type: 'stopped' });
 }
 
+/* =====================================================
+   📩 Handlers de mensajes del main thread
+===================================================== */
 self.onmessage = (e) => {
   const { type, payload } = e.data || {};
 
@@ -169,6 +196,7 @@ self.onmessage = (e) => {
     state.activations = [a, ...state.activations];
     state.trades[a.id] = [];
     state.payouts[a.id] = { profit: 0, losses: 0, fees: 0, net: 0, withdrawn: 0 };
+    pnlBuffer[a.id] = 0;
     self.postMessage({ type: 'activationAdded', id: a.id });
     return;
   }
@@ -209,6 +237,10 @@ self.onmessage = (e) => {
       pay.net += pnlSum;
       state.payouts[id] = pay;
     }
+
+    // 🔁 Flush inmediato al cancelar
+    pnlBuffer[id] = (pnlBuffer[id] || 0) + pnlSum;
+    flushPnL(true);
 
     if (tradeDeltas.length || payoutDeltas.length) {
       self.postMessage({ type: 'delta', priceDelta: {}, tradeDeltas, payoutDeltas });
@@ -254,6 +286,7 @@ self.onmessage = (e) => {
       tickMs: 3000,
       maxItems: 40,
     };
+    pnlBuffer = {};
     emitSnapshot('reset');
     return;
   }
