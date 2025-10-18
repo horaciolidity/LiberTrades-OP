@@ -454,22 +454,8 @@ const handleCloseTrade = async (tradeId, maybeClosePrice = null, force = true) =
 // ✅ Verificamos si el backend ya manejó el crédito (pnl o balance)
 const backendAcredita = res?.balance != null || res?.pnl_usd != null || res?.ok === true;
 
-// 🔹 Solo actualizar visualmente si el backend NO devolvió datos contables
-if (!backendAcredita) {
-  await updateBalanceGlobal(totalReturn, 'USDC', false, 'trade_close', {
-    trade_id: tradeId,
-    pair: tr.pair,
-    entry_price: entry,
-    close_price: live,
-    profit: pnl,
-    reference_id: `trade_close:${user.id}:${tradeId}`,
-  });
-}
-
-// 🔁 Refrescar saldo siempre desde la BD para mantener consistencia
+// El RPC ya acreditó capital + PnL → solo refrescamos UI
 await fetchRealData();
-
-
 
       playSound?.('success');
       await fetchRealData();
